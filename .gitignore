@@ -1,0 +1,72 @@
+# .gitignore généré pour projet .NET
+# Evite de commiter les build/artifacts, IDE settings, et fichiers locaux
+
+# Build folders
+[Bb]in/
+[Oo]bj/
+out/
+artifacts/
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Rider
+.idea/
+*.sln.iml
+
+# VS Code
+.vscode/
+
+# NuGet
+packages/
+*.nupkg
+*.snupkg
+.nuget/
+project.assets.json
+
+# dotnet tools
+.dotnet/
+*.dotnet/tools/
+
+# Test results
+TestResults/
+coverage/
+
+# Logs, databases, local files
+*.log
+*.sqlite
+*.db
+*.db-journal
+logs/
+
+# User secrets / local settings
+appsettings.*.json
+local.settings.json
+secrets.json
+.env
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Ignore publish output
+publish/
+*/publish/
+
+# Ignore JetBrains caches
+.idea/
+.idea/*
+
+# Ignore generated reference assemblies from build
+**/obj/**/ref/
+
+# Misc
+*.pidb
+*.userprefs
+
+# Do not ignore source control attributes
+!/.gitattributes
