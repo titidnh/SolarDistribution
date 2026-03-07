@@ -1,0 +1,146 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# SolarDistribution Worker — Configuration
+# Monter ce fichier dans le container : ./config/config.yaml → /config/config.yaml
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Home Assistant ─────────────────────────────────────────────────────────────
+home_assistant:
+  # URL de votre instance HA (accès réseau depuis le container Docker)
+  url: "http://192.168.1.100:8123"
+
+  # Long-Lived Access Token :
+  #   HA → Profil → Sécurité → Tokens d'accès longue durée → Créer un token
+  token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.VOTRE_TOKEN_ICI"
+
+  # Timeout HTTP en secondes pour les appels HA (défaut: 10)
+  timeout_seconds: 10
+
+  # Nombre de tentatives automatiques en cas d'erreur HTTP (défaut: 3)
+  retry_count: 3
+
+# ── Polling ────────────────────────────────────────────────────────────────────
+polling:
+  # Intervalle entre chaque cycle de lecture/calcul/commande (en secondes)
+  # Recommandé : 30-120s selon votre installation
+  interval_seconds: 60
+
+  # Mode simulation : lit les valeurs HA mais n'envoie AUCUNE commande
+  # Mettre à true pour tester sans risque, false pour la production
+  dry_run: false
+
+  # Différence minimale en W pour déclencher une nouvelle commande vers HA
+  # Évite le flooding si la valeur fluctue légèrement (défaut: 10W)
+  min_change_trigger_w: 10
+
+# ── Localisation (pour météo Open-Meteo) ──────────────────────────────────────
+location:
+  latitude:  50.85    # Bruxelles — adapter à votre emplacement
+  longitude:  4.35
+
+# ── Production solaire ─────────────────────────────────────────────────────────
+solar:
+  # OBLIGATOIRE : entité HA exposant la puissance surplus disponible en W
+  # = production solaire - consommation maison - charge déjà en cours
+  # Exemples selon onduleur :
+  #   SolaX    : sensor.solax_export_power
+  #   GivEnergy: sensor.givtcp_solar_to_grid
+  #   Fronius  : sensor.fronius_power_flow_surplus
+  #   Générique: sensor.solar_surplus_power
+  surplus_entity: "sensor.solar_surplus_power"
+
+  # Optionnel — utilisé pour le logging et l'entraînement ML
+  production_entity:  "sensor.solar_production_power"
+  consumption_entity: "sensor.home_consumption_power"
+
+# ── Batteries ──────────────────────────────────────────────────────────────────
+# Configurer autant de batteries que nécessaire
+batteries:
+
+  - id: 1
+    name: "Batterie Principale"
+    priority: 1              # 1 = plus haute priorité (chargée en premier)
+    capacity_wh: 10000       # Capacité totale en Wh
+    max_charge_rate_w: 3000  # Puissance max de recharge en W
+    min_percent: 20          # En-dessous = URGENT (priorité 0, chargée avant tout)
+    soft_max_percent: 80     # Cible normale (peut être ajustée par ML)
+    hard_max_percent: 100    # Plafond absolu
+
+    entities:
+      # Entité HA de lecture du % de charge (SOC)
+      # Type: sensor.*  — valeur numérique 0-100
+      soc: "sensor.battery_main_state_of_charge"
+
+      # Entité HA de type 'number' pour définir la puissance de recharge en W
+      # Utilise le service HA : number.set_value
+      # Type: number.*  — accepte une valeur numérique
+      charge_power: "number.battery_main_charge_power"
+
+      # Optionnel : switch pour activer/désactiver la recharge
+      # Si défini : turn_on avant d'écrire la puissance, turn_off si 0W alloué
+      # charge_switch: "switch.battery_main_charge_enable"
+
+      # Multiplicateur si HA attend des Ampères plutôt que des Watts
+      # Exemple : batterie 48V → value_multiplier: 0.02083 (W / 48V = A)
+      # Défaut: 1.0 (Watts directs)
+      value_multiplier: 1.0
+      value_unit: "W"
+
+  - id: 2
+    name: "Batterie Secondaire"
+    priority: 2
+    capacity_wh: 5000
+    max_charge_rate_w: 2000
+    min_percent: 20
+    soft_max_percent: 80
+    hard_max_percent: 100
+
+    entities:
+      soc: "sensor.battery_secondary_state_of_charge"
+      charge_power: "number.battery_secondary_charge_power"
+      value_multiplier: 1.0
+      value_unit: "W"
+
+# ── Base de données MariaDB ────────────────────────────────────────────────────
+database:
+  # Utiliser le nom de service docker-compose "mariadb" comme host
+  connection_string: "Server=mariadb;Port=3306;Database=solar_distribution;User=solar_user;Password=solarpass;CharSet=utf8mb4;"
+
+# ── ML.NET ─────────────────────────────────────────────────────────────────────
+ml:
+  # Dossier de stockage des modèles ML (persisté dans le volume Docker)
+  model_directory: "/data/ml_models"
+
+  # ── Feedback loop ─────────────────────────────────────────────────────────
+  # Délai en heures avant de relire le SOC réel dans HA pour évaluer une session.
+  # Le système attend N heures après une décision de charge pour mesurer l'effet réel.
+  # Trop court (< 1h) : l'effet de la charge n'est pas encore visible.
+  # Trop long (> 8h) : trop de bruit entre la décision et l'observation.
+  # Recommandé : 3-6h selon votre cycle solaire.
+  feedback_delay_hours: 4.0
+
+  # Fréquence de vérification des feedbacks en attente (en heures).
+  # Le scheduler vérifie toutes les N heures si des sessions ont un feedback à collecter.
+  feedback_check_interval_hours: 1.0
+
+  # ── Réentraînement automatique ────────────────────────────────────────────
+  # Expression cron (5 champs) pour le ré-entraînement planifié.
+  # Format : "minute heure jourMois mois jourSemaine"
+  # Exemples :
+  #   "0 3 * * 0"  → dimanche à 3h00 UTC (recommandé)
+  #   "0 3 * * *"  → tous les jours à 3h00 UTC
+  #   "0 2 * * 1"  → lundi à 2h00 UTC
+  retrain_cron: "0 3 * * 0"
+
+  # Nombre minimum de feedbacks VALIDES requis avant de lancer le premier entraînement.
+  # En-dessous de ce seuil → algo déterministe uniquement.
+  # Recommandé : 50 minimum (environ 2 jours à 1 cycle/minute),
+  # idéalement 100+ pour de bonnes métriques R².
+  min_feedback_for_retrain: 50
+
+# ── Logging ────────────────────────────────────────────────────────────────────
+logging:
+  # Niveaux : Debug | Information | Warning | Error
+  level: "Information"
+
+  # Fichier de log rotatif (null pour désactiver)
+  file_path: "/data/logs/solar-worker.log"

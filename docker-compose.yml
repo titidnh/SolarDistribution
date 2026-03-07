@@ -1,0 +1,59 @@
+version: "3.9"
+
+services:
+
+  # ── MariaDB ─────────────────────────────────────────────────────────────────
+  mariadb:
+    image: mariadb:11
+    container_name: solar_mariadb
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpass}
+      MARIADB_DATABASE:      solar_distribution
+      MARIADB_USER:          solar_user
+      MARIADB_PASSWORD:      ${DB_PASSWORD:-solarpass}
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - solar_net
+
+  # ── Solar Distribution Worker ────────────────────────────────────────────────
+  solar_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: solar_worker
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      CONFIG_PATH:         /config/config.yaml
+      DOTNET_ENVIRONMENT:  Production
+      TZ:                  ${TZ:-Europe/Brussels}
+    volumes:
+      # config.yaml — ÉDITER CE CHEMIN selon votre machine hôte
+      - ./config:/config:ro
+      # Données persistées : modèles ML + logs
+      - solar_data:/data
+    networks:
+      - solar_net
+    # Empêche le worker de tuer MariaDB avec trop de connexions
+    # (optionnel, utile si plusieurs instances)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 512m
+
+volumes:
+  mariadb_data:
+  solar_data:
+
+networks:
+  solar_net:
+    driver: bridge

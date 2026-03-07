@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>SolarDistribution.Api</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.OpenApi"       Version="1.6.22" />
+    <PackageReference Include="Swashbuckle.AspNetCore"  Version="6.9.0"  />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SolarDistribution.Core\SolarDistribution.Core.csproj" />
+    <ProjectReference Include="..\SolarDistribution.Infrastructure\SolarDistribution.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

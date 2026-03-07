@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk"           Version="17.*" />
+    <PackageReference Include="NUnit"                            Version="4.*" />
+    <PackageReference Include="NUnit3TestAdapter"                Version="4.*" />
+    <PackageReference Include="NUnit.Analyzers"                  Version="4.*">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="NSubstitute"                      Version="5.*" />
+    <PackageReference Include="NSubstitute.Analyzers.CSharp"     Version="1.*">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="FluentAssertions"                 Version="6.*" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SolarDistribution.Core\SolarDistribution.Core.csproj" />
+    <ProjectReference Include="..\SolarDistribution.Infrastructure\SolarDistribution.Infrastructure.csproj" />
+    <ProjectReference Include="..\SolarDistribution.Api\SolarDistribution.Api.csproj" />
+  </ItemGroup>
+</Project>
