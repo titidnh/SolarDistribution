@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Serilog;
 using Serilog.Events;
+using System.Net.Http.Headers;
 using SolarDistribution.Core.Services;
 using SolarDistribution.Core.Services.ML;
 using SolarDistribution.Infrastructure.Data;
@@ -81,8 +82,8 @@ var host = Host.CreateDefaultBuilder(args)
                 client.Timeout     = TimeSpan.FromSeconds(config.HomeAssistant.TimeoutSeconds);
                 client.DefaultRequestHeaders.Add(
                     "Authorization", $"Bearer {config.HomeAssistant.Token}");
-                client.DefaultRequestHeaders.Add(
-                    "Content-Type", "application/json");
+                client.DefaultRequestHeaders.Accept.Add(
+                    new MediaTypeWithQualityHeaderValue("application/json"));
             })
             .AddStandardResilienceHandler(opts =>
             {
