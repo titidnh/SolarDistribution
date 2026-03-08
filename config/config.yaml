@@ -106,6 +106,69 @@ batteries:
       value_multiplier: 1.0
       value_unit: "W"
 
+      # ── Actions conditionnelles (OPTIONNEL) ─────────────────────────────────
+      #
+      # zero_w_actions   : liste d'actions HA exécutées quand AllocatedW == 0
+      #                     (aucun surplus → batterie ne charge pas)
+      # non_zero_w_actions: liste d'actions HA exécutées quand AllocatedW > 0
+      #                     (surplus disponible → batterie charge)
+      #
+      # Chaque action a les champs suivants :
+      #
+      #   type      (obligatoire) :
+      #     "turn_on"  → homeassistant/turn_on  { entity_id }
+      #     "turn_off" → homeassistant/turn_off { entity_id }
+      #     "service"  → appel libre avec domain + service + data (JSON)
+      #
+      #   entity_id (pour turn_on / turn_off) : entité HA ciblée
+      #   domain    (pour service) : domaine HA, ex: "input_boolean", "script"
+      #   service   (pour service) : service HA, ex: "turn_on", "trigger"
+      #   data      (pour service) : payload JSON libre, ex: { entity_id: "..." }
+      #   label     (optionnel)    : nom affiché dans les logs
+      #
+      # ┌─────────────────────────────────────────────────────────────────────┐
+      # │  EXEMPLE EcoFlow Delta 3 — self-powered mode                       │
+      # │                                                                     │
+      # │  Quand 0W : activer self-powered → EcoFlow alimente la maison      │
+      # │  Quand > 0W : désactiver self-powered → onduleur solaire recharge  │
+      # └─────────────────────────────────────────────────────────────────────┘
+      #
+      # zero_w_actions:
+      #   - type: turn_on
+      #     entity_id: "switch.delta3_salon_self_powered_mode"
+      #     label: "EcoFlow self-powered ON"
+      #
+      # non_zero_w_actions:
+      #   - type: turn_off
+      #     entity_id: "switch.delta3_salon_self_powered_mode"
+      #     label: "EcoFlow self-powered OFF"
+      #
+      # ┌─────────────────────────────────────────────────────────────────────┐
+      # │  EXEMPLE avancé — script HA + notification                         │
+      # └─────────────────────────────────────────────────────────────────────┘
+      #
+      # zero_w_actions:
+      #   - type: turn_on
+      #     entity_id: "switch.delta3_salon_self_powered_mode"
+      #     label: "EcoFlow self-powered ON"
+      #   - type: service
+      #     domain: "notify"
+      #     service: "mobile_app_mon_telephone"
+      #     data:
+      #       message: "EcoFlow en mode self-powered (0W solaire)"
+      #     label: "Notification self-powered"
+      #
+      # non_zero_w_actions:
+      #   - type: turn_off
+      #     entity_id: "switch.delta3_salon_self_powered_mode"
+      #     label: "EcoFlow self-powered OFF"
+      #   - type: service
+      #     domain: "script"
+      #     service: "turn_on"
+      #     data:
+      #       entity_id: "script.ecoflow_charge_mode_actif"
+      #     label: "Script charge active"
+
   - id: 2
     name: "Batterie Secondaire"
     priority: 2
@@ -121,6 +184,19 @@ batteries:
       max_rate_read_multiplier: 1.0
       value_multiplier: 1.0
       value_unit: "W"
+
+      # Exemple EcoFlow Delta 3 — self-powered mode
+      # Décommenter et adapter les entity_id selon votre installation.
+      #
+      # zero_w_actions:
+      #   - type: turn_on
+      #     entity_id: "switch.delta3_salon_self_powered_mode"
+      #     label: "EcoFlow Delta 3 self-powered ON (0W surplus)"
+      #
+      # non_zero_w_actions:
+      #   - type: turn_off
+      #     entity_id: "switch.delta3_salon_self_powered_mode"
+      #     label: "EcoFlow Delta 3 self-powered OFF (surplus disponible)"
 
 # ── Tarification électrique ────────────────────────────────────────────────────
 #

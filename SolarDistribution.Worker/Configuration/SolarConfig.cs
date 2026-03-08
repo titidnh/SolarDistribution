@@ -119,6 +119,59 @@ public class BatteryConfig
     public BatteryEntitiesConfig Entities { get; set; } = new();
 }
 
+/// <summary>
+/// Action HA à exécuter conditionnellement selon la puissance allouée à une batterie.
+///
+/// Exemples d'utilisation :
+///   — 0W → activer le mode self-powered d'un EcoFlow
+///   — 0W → activer un switch de bypass
+///   — > 0W → désactiver le mode self-powered
+///   — > 0W → appeler un script HA personnalisé
+///
+/// Les trois types d'action supportés (type) :
+///   turn_on   → homeassistant/turn_on   (switch, input_boolean, script…)
+///   turn_off  → homeassistant/turn_off
+///   service   → appel libre : domain + service + data (JSON)
+/// </summary>
+public class HaConditionalAction
+{
+    /// <summary>
+    /// Type d'action :
+    ///   "turn_on"  → POST /api/services/homeassistant/turn_on  { entity_id }
+    ///   "turn_off" → POST /api/services/homeassistant/turn_off { entity_id }
+    ///   "service"  → POST /api/services/{domain}/{service} avec data libre
+    /// </summary>
+    public string Type { get; set; } = "turn_on";
+
+    /// <summary>
+    /// Entity ID HA ciblée (pour turn_on / turn_off).
+    /// Ex : "switch.delta3_salon_self_powered_mode"
+    /// </summary>
+    public string? EntityId { get; set; }
+
+    /// <summary>
+    /// Domaine HA pour les appels "service".
+    /// Ex : "input_boolean", "script", "notify", "automation"
+    /// </summary>
+    public string? Domain { get; set; }
+
+    /// <summary>
+    /// Service HA pour les appels "service".
+    /// Ex : "turn_on", "toggle", "trigger", "set_value"
+    /// </summary>
+    public string? Service { get; set; }
+
+    /// <summary>
+    /// Données supplémentaires transmises au service HA (JSON libre).
+    /// Ex : { "entity_id": "input_boolean.ecoflow_self_powered", "value": "1" }
+    /// Si null → payload minimal { entity_id } déduit automatiquement.
+    /// </summary>
+    public Dictionary<string, object>? Data { get; set; }
+
+    /// <summary>Label affiché dans les logs pour identifier l'action.</summary>
+    public string? Label { get; set; }
+}
+
 public class BatteryEntitiesConfig
 {
     /// <summary>HA entity exposing current state of charge % (read).</summary>
@@ -175,6 +228,30 @@ public class BatteryEntitiesConfig
 
     /// <summary>Unit of the value sent to HA (for logging). Default: "W"</summary>
     public string ValueUnit { get; set; } = "W";
+
+    /// <summary>
+    /// Actions HA exécutées quand AllocatedW == 0 (aucune puissance allouée à cette batterie).
+    ///
+    /// Cas d'usage EcoFlow :
+    ///   — activer le "self-powered mode" pour que l'EcoFlow alimente la maison
+    ///     depuis sa propre batterie quand il n'y a pas de surplus solaire
+    ///
+    /// Exécution : après l'envoi de la commande 0W, dans l'ordre de la liste.
+    /// Si DryRun = true → actions loggées mais non envoyées.
+    /// </summary>
+    public List<HaConditionalAction> ZeroWActions { get; set; } = new();
+
+    /// <summary>
+    /// Actions HA exécutées quand AllocatedW > 0 (puissance allouée à cette batterie).
+    ///
+    /// Cas d'usage EcoFlow :
+    ///   — désactiver le "self-powered mode" pour laisser l'onduleur solaire
+    ///     prendre la main et charger la batterie avec le surplus
+    ///
+    /// Exécution : avant l'envoi de la commande de puissance, dans l'ordre de la liste.
+    /// Si DryRun = true → actions loggées mais non envoyées.
+    /// </summary>
+    public List<HaConditionalAction> NonZeroWActions { get; set; } = new();
 }
 
 

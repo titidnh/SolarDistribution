@@ -8,9 +8,11 @@ namespace SolarDistribution.Worker.HA;
 /// Envoie les commandes de recharge vers HA après chaque calcul de distribution.
 ///
 /// Pour chaque batterie :
-///   1. Si ChargeSwitch configuré et AllocatedW > 0 → turn_on le switch
-///   2. Appelle number.set_value avec la puissance calculée (× ValueMultiplier)
-///   3. Si AllocatedW == 0 et ChargeSwitch configuré → turn_off le switch
+///   1. Si AllocatedW > 0 → exécute NonZeroWActions (ex: désactiver self-powered EcoFlow)
+///   2. Si ChargeSwitch configuré et AllocatedW > 0 → turn_on le switch
+///   3. Appelle number.set_value avec la puissance calculée (× ValueMultiplier)
+///   4. Si AllocatedW == 0 et ChargeSwitch configuré → turn_off le switch
+///   5. Si AllocatedW == 0 → exécute ZeroWActions (ex: activer self-powered EcoFlow)
 ///
 /// DryRun : log les commandes sans les envoyer.
 /// MinChangeTriggerW : ignore les changements inférieurs au seuil (évite le flooding HA).
@@ -89,11 +91,24 @@ public class HomeAssistantCommandSender
                 battConfig.Id, battConfig.Name,
                 battConfig.Entities.ChargePower, rawValue, battConfig.Entities.ValueUnit,
                 alloc.AllocatedW);
+
+            // Log également les actions conditionnelles en dry-run
+            LogConditionalActions(alloc.AllocatedW, battConfig);
+
             _lastSentValues[battConfig.Id] = rawValue;
             return true;
         }
 
-        // ── 1. Activer le switch si nécessaire ────────────────────────────────
+        // ── 1. NonZeroWActions : avant d'activer la charge ────────────────────
+        //    Ex: désactiver le self-powered mode EcoFlow pour laisser l'onduleur charger
+        if (alloc.AllocatedW > 0 && battConfig.Entities.NonZeroWActions.Count > 0)
+        {
+            _logger.LogDebug("Battery {Id} ({Name}): executing {Count} NonZeroW action(s)",
+                battConfig.Id, battConfig.Name, battConfig.Entities.NonZeroWActions.Count);
+            await ExecuteConditionalActionsAsync(battConfig.Entities.NonZeroWActions, battConfig, ct);
+        }
+
+        // ── 2. Activer le switch si nécessaire ────────────────────────────────
         if (battConfig.Entities.ChargeSwitch is not null)
         {
             if (alloc.AllocatedW > 0)
@@ -110,7 +125,7 @@ public class HomeAssistantCommandSender
             }
         }
 
-        // ── 2. Écrire la puissance ─────────────────────────────────────────
+        // ── 3. Écrire la puissance ─────────────────────────────────────────
         bool success = await _client.SetNumberValueAsync(
             battConfig.Entities.ChargePower, rawValue, ct);
 
@@ -133,6 +148,95 @@ public class HomeAssistantCommandSender
                 battConfig.Id, battConfig.Name, rawValue, battConfig.Entities.ValueUnit);
         }
 
+        // ── 4. ZeroWActions : après avoir envoyé 0W ───────────────────────────
+        //    Ex: activer le self-powered mode EcoFlow pour qu'il alimente la maison
+        if (alloc.AllocatedW == 0 && battConfig.Entities.ZeroWActions.Count > 0)
+        {
+            _logger.LogDebug("Battery {Id} ({Name}): executing {Count} ZeroW action(s)",
+                battConfig.Id, battConfig.Name, battConfig.Entities.ZeroWActions.Count);
+            await ExecuteConditionalActionsAsync(battConfig.Entities.ZeroWActions, battConfig, ct);
+        }
+
         return success;
+    }
+
+    // ── Exécution des actions conditionnelles ────────────────────────────────
+
+    private async Task ExecuteConditionalActionsAsync(
+        List<HaConditionalAction> actions,
+        BatteryConfig battConfig,
+        CancellationToken ct)
+    {
+        foreach (var action in actions)
+        {
+            await ExecuteSingleActionAsync(action, battConfig, ct);
+        }
+    }
+
+    private async Task ExecuteSingleActionAsync(
+        HaConditionalAction action,
+        BatteryConfig battConfig,
+        CancellationToken ct)
+    {
+        string label = action.Label ?? action.EntityId ?? $"{action.Domain}.{action.Service}";
+
+        try
+        {
+            bool ok = action.Type.ToLowerInvariant() switch
+            {
+                "turn_on" when action.EntityId is not null =>
+                    await _client.TurnOnSwitchAsync(action.EntityId, ct),
+
+                "turn_off" when action.EntityId is not null =>
+                    await _client.TurnOffSwitchAsync(action.EntityId, ct),
+
+                "service" when action.Domain is not null && action.Service is not null =>
+                    await _client.CallServiceGenericAsync(action.Domain, action.Service, action.Data, ct),
+
+                _ => LogInvalidAction(action, battConfig)
+            };
+
+            if (ok)
+                _logger.LogInformation(
+                    "Battery {Id} ({Name}): conditional action '{Label}' executed successfully",
+                    battConfig.Id, battConfig.Name, label);
+            else
+                _logger.LogWarning(
+                    "Battery {Id} ({Name}): conditional action '{Label}' returned failure",
+                    battConfig.Id, battConfig.Name, label);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "Battery {Id} ({Name}): exception executing conditional action '{Label}'",
+                battConfig.Id, battConfig.Name, label);
+        }
+    }
+
+    private void LogConditionalActions(double allocatedW, BatteryConfig battConfig)
+    {
+        var actions = allocatedW == 0
+            ? battConfig.Entities.ZeroWActions
+            : battConfig.Entities.NonZeroWActions;
+
+        string trigger = allocatedW == 0 ? "ZeroW" : "NonZeroW";
+
+        foreach (var action in actions)
+        {
+            string label = action.Label ?? action.EntityId ?? $"{action.Domain}.{action.Service}";
+            _logger.LogInformation(
+                "[DRY-RUN] Battery {Id} ({Name}): would execute {Trigger} action '{Label}' (type={Type})",
+                battConfig.Id, battConfig.Name, trigger, label, action.Type);
+        }
+    }
+
+    private bool LogInvalidAction(HaConditionalAction action, BatteryConfig battConfig)
+    {
+        _logger.LogWarning(
+            "Battery {Id} ({Name}): invalid conditional action — type='{Type}' entity='{Entity}' domain='{Domain}' service='{Service}'. " +
+            "Valid types: turn_on (requires entity_id), turn_off (requires entity_id), service (requires domain + service).",
+            battConfig.Id, battConfig.Name,
+            action.Type, action.EntityId, action.Domain, action.Service);
+        return false;
     }
 }

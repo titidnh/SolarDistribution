@@ -24,6 +24,7 @@ public interface IHomeAssistantClient
     Task<bool>     SetNumberValueAsync(string entityId, double value, CancellationToken ct = default);
     Task<bool>     TurnOnSwitchAsync(string entityId, CancellationToken ct = default);
     Task<bool>     TurnOffSwitchAsync(string entityId, CancellationToken ct = default);
+    Task<bool>     CallServiceGenericAsync(string domain, string service, Dictionary<string, object>? data, CancellationToken ct = default);
     Task<bool>     PingAsync(CancellationToken ct = default);
 }
 
@@ -110,6 +111,18 @@ public class HomeAssistantClient : IHomeAssistantClient
 
     public async Task<bool> TurnOffSwitchAsync(string entityId, CancellationToken ct = default)
         => await CallServiceAsync("homeassistant", "turn_off", new { entity_id = entityId }, ct);
+
+    /// <summary>
+    /// Appel générique vers n'importe quel service HA.
+    /// Permet d'exécuter des actions libres configurées dans ZeroWActions / NonZeroWActions.
+    /// Ex : domain="input_boolean", service="turn_on", data={ "entity_id": "..." }
+    /// </summary>
+    public async Task<bool> CallServiceGenericAsync(
+        string domain,
+        string service,
+        Dictionary<string, object>? data,
+        CancellationToken ct = default)
+        => await CallServiceAsync(domain, service, (object?)data ?? new { }, ct);
 
     public async Task<bool> PingAsync(CancellationToken ct = default)
     {
