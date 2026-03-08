@@ -26,7 +26,12 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
 # Utilisateur non-root pour la sécurité
-RUN addgroup --system solar && adduser --system --ingroup solar solar
+# Installer l'outil `adduser` puis créer l'utilisateur système `solar`
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends adduser \
+    && rm -rf /var/lib/apt/lists/* \
+    && addgroup --system solar \
+    && adduser --system --ingroup solar solar
 
 # Dossiers persistés (montés via volumes)
 RUN mkdir -p /config /data/ml_models /data/logs \
