@@ -31,10 +31,10 @@ catch (Exception ex)
 // ── Serilog ───────────────────────────────────────────────────────────────────
 var logLevel = config.Logging.Level.ToLower() switch
 {
-    "debug"   => LogEventLevel.Debug,
+    "debug" => LogEventLevel.Debug,
     "warning" => LogEventLevel.Warning,
-    "error"   => LogEventLevel.Error,
-    _         => LogEventLevel.Information
+    "error" => LogEventLevel.Error,
+    _ => LogEventLevel.Information
 };
 
 var loggerConfig = new LoggerConfiguration()
@@ -49,7 +49,7 @@ if (config.Logging.FilePath is not null)
 {
     loggerConfig.WriteTo.File(
         config.Logging.FilePath,
-        rollingInterval:  RollingInterval.Day,
+        rollingInterval: RollingInterval.Day,
         retainedFileCountLimit: 14,
         outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}");
 }
@@ -79,7 +79,7 @@ var host = Host.CreateDefaultBuilder(args)
             .AddHttpClient<IHomeAssistantClient, HomeAssistantClient>(client =>
             {
                 client.BaseAddress = new Uri(config.HomeAssistant.Url);
-                client.Timeout     = TimeSpan.FromSeconds(config.HomeAssistant.TimeoutSeconds);
+                client.Timeout = TimeSpan.FromSeconds(config.HomeAssistant.TimeoutSeconds);
                 client.DefaultRequestHeaders.Add(
                     "Authorization", $"Bearer {config.HomeAssistant.Token}");
                 client.DefaultRequestHeaders.Accept.Add(
@@ -94,9 +94,11 @@ var host = Host.CreateDefaultBuilder(args)
             });
 
         // ── Services HA ───────────────────────────────────────────────────────
+        services.AddSingleton<WeatherCacheService>();
+        services.AddHostedService(sp => sp.GetRequiredService<WeatherCacheService>());
         services.AddSingleton<HomeAssistantDataReader>();
-        services.AddSingleton<HomeAssistantCommandSender>();
         services.AddSingleton<CommandStateCache>();
+        services.AddSingleton<HomeAssistantCommandSender>();
 
         // ── Core : algo déterministe ──────────────────────────────────────────
         services.AddSingleton<IBatteryDistributionService, BatteryDistributionService>();
@@ -108,7 +110,7 @@ var host = Host.CreateDefaultBuilder(args)
         // ── ML.NET ────────────────────────────────────────────────────────────
         services.AddSingleton<IDistributionMLService>(sp =>
         {
-            var repo   = sp.GetRequiredService<IDistributionRepository>();
+            var repo = sp.GetRequiredService<IDistributionRepository>();
             var logger = sp.GetRequiredService<ILogger<DistributionMLService>>();
             return new DistributionMLService(repo, logger, config.Ml.ModelDirectory);
         });

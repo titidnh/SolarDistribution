@@ -28,31 +28,34 @@ namespace SolarDistribution.Worker.Services;
 /// </summary>
 public class SolarWorker : BackgroundService
 {
-    private readonly SolarConfig                  _config;
-    private readonly HomeAssistantDataReader      _reader;
-    private readonly HomeAssistantCommandSender   _sender;
-    private readonly SmartDistributionService     _smartService;
-    private readonly IDistributionMLService       _mlService;
-    private readonly ILogger<SolarWorker>         _logger;
+    private readonly SolarConfig _config;
+    private readonly HomeAssistantDataReader _reader;
+    private readonly HomeAssistantCommandSender _sender;
+    private readonly SmartDistributionService _smartService;
+    private readonly WeatherCacheService _weatherCache;
+    private readonly IDistributionMLService _mlService;
+    private readonly ILogger<SolarWorker> _logger;
 
     // Compteurs pour backoff sur erreurs consécutives
-    private int    _consecutiveHaErrors = 0;
+    private int _consecutiveHaErrors = 0;
     private const int MaxBackoffSeconds = 300;  // 5 minutes max
 
     public SolarWorker(
-        SolarConfig                  config,
-        HomeAssistantDataReader      reader,
-        HomeAssistantCommandSender   sender,
-        SmartDistributionService     smartService,
-        IDistributionMLService       mlService,
-        ILogger<SolarWorker>         logger)
+        SolarConfig config,
+        HomeAssistantDataReader reader,
+        HomeAssistantCommandSender sender,
+        SmartDistributionService smartService,
+        WeatherCacheService weatherCache,
+        IDistributionMLService mlService,
+        ILogger<SolarWorker> logger)
     {
-        _config       = config;
-        _reader       = reader;
-        _sender       = sender;
+        _config = config;
+        _reader = reader;
+        _sender = sender;
         _smartService = smartService;
-        _mlService    = mlService;
-        _logger       = logger;
+        _weatherCache = weatherCache;
+        _mlService = mlService;
+        _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -64,9 +67,9 @@ public class SolarWorker : BackgroundService
         _logger.LogInformation(
             "╚══════════════════════════════════════════════╝");
         _logger.LogInformation("  Interval  : {Interval}s", _config.Polling.IntervalSeconds);
-        _logger.LogInformation("  HA URL    : {Url}",       _config.HomeAssistant.Url);
-        _logger.LogInformation("  Batteries : {Count}",    _config.Batteries.Count);
-        _logger.LogInformation("  DryRun    : {DryRun}",   _config.Polling.DryRun);
+        _logger.LogInformation("  HA URL    : {Url}", _config.HomeAssistant.Url);
+        _logger.LogInformation("  Batteries : {Count}", _config.Batteries.Count);
+        _logger.LogInformation("  DryRun    : {DryRun}", _config.Polling.DryRun);
         _logger.LogInformation("  ML Status : {Status}",
             (await _mlService.GetStatusAsync(stoppingToken)).IsAvailable ? "available" : "training...");
 
@@ -150,12 +153,20 @@ public class SolarWorker : BackgroundService
         var batteries = BuildBatteries(validReadings);
 
         // ── 3. Distribution intelligente (ML + météo + persistence) ──────────
+        // Météo : snapshot du cache — pas d'appel réseau dans le cycle principal
+        var wxSnapshot = _weatherCache.GetCurrent();
+        if (wxSnapshot is null)
+            _logger.LogDebug("Weather cache empty — distribution will proceed without weather context");
+        else
+            _logger.LogDebug("Weather cache age: {Age:F0} min", _weatherCache.DataAge?.TotalMinutes ?? 0);
+
         var result = await _smartService.DistributeAsync(
-            surplusW:   snapshot.SurplusW,
-            batteries:  batteries,
-            latitude:   _config.Location.Latitude,
-            longitude:  _config.Location.Longitude,
-            ct:         ct);
+            surplusW: snapshot.SurplusW,
+            batteries: batteries,
+            latitude: _config.Location.Latitude,
+            longitude: _config.Location.Longitude,
+            weatherSnapshot: wxSnapshot,
+            ct: ct);
 
         _logger.LogInformation(
             "Distribution: engine={Engine}, allocated={Alloc}W/{Surplus}W, unused={Unused}W | session#{Id}",
@@ -220,16 +231,16 @@ public class SolarWorker : BackgroundService
 
                 return new Battery
                 {
-                    Id             = bc.Id,
-                    CapacityWh     = bc.CapacityWh,
+                    Id = bc.Id,
+                    CapacityWh = bc.CapacityWh,
                     MaxChargeRateW = effectiveMaxRate,   // ← live HA ou fallback statique
-                    MinPercent     = bc.MinPercent,
+                    MinPercent = bc.MinPercent,
                     SoftMaxPercent = bc.SoftMaxPercent,
                     HardMaxPercent = bc.HardMaxPercent,
                     CurrentPercent = reading.SocPercent, // ← valeur live HA
-                    Priority       = bc.Priority,
+                    Priority = bc.Priority,
                     // Recharge réseau d'urgence — configurée par batterie
-                    EmergencyGridChargeBelowPercent  = bc.EmergencyGridChargeBelowPercent,
+                    EmergencyGridChargeBelowPercent = bc.EmergencyGridChargeBelowPercent,
                     EmergencyGridChargeTargetPercent = bc.EmergencyGridChargeTargetPercent,
                     // IsEmergencyGridCharge calculé par SmartDistributionService.Apply()
                 };

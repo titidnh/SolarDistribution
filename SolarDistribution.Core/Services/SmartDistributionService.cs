@@ -23,54 +23,57 @@ namespace SolarDistribution.Core.Services;
 /// </summary>
 public class SmartDistributionService
 {
-    private readonly IBatteryDistributionService       _algo;
-    private readonly IDistributionMLService            _ml;
-    private readonly IWeatherService                   _weather;
-    private readonly IDistributionRepository           _repo;
-    private readonly TariffEngine                      _tariff;
-    private readonly IDistributionSessionFactory       _sessionFactory;
+    private readonly IBatteryDistributionService _algo;
+    private readonly IDistributionMLService _ml;
+    private readonly IWeatherService _weather;
+    private readonly IDistributionRepository _repo;
+    private readonly TariffEngine _tariff;
+    private readonly IDistributionSessionFactory _sessionFactory;
     private readonly ILogger<SmartDistributionService> _logger;
 
     public SmartDistributionService(
-        IBatteryDistributionService       algo,
-        IDistributionMLService            ml,
-        IWeatherService                   weather,
-        IDistributionRepository           repo,
-        TariffEngine                      tariff,
-        IDistributionSessionFactory       sessionFactory,
+        IBatteryDistributionService algo,
+        IDistributionMLService ml,
+        IWeatherService weather,
+        IDistributionRepository repo,
+        TariffEngine tariff,
+        IDistributionSessionFactory sessionFactory,
         ILogger<SmartDistributionService> logger)
     {
-        _algo           = algo;
-        _ml             = ml;
-        _weather        = weather;
-        _repo           = repo;
-        _tariff         = tariff;
+        _algo = algo;
+        _ml = ml;
+        _weather = weather;
+        _repo = repo;
+        _tariff = tariff;
         _sessionFactory = sessionFactory;
-        _logger         = logger;
+        _logger = logger;
     }
 
     public async Task<SmartDistributionResult> DistributeAsync(
-        double         surplusW,
+        double surplusW,
         IList<Battery> batteries,
-        double         latitude,
-        double         longitude,
+        double latitude,
+        double longitude,
+        WeatherData? weatherSnapshot = null,
         CancellationToken ct = default)
     {
         // ── 1. Météo ──────────────────────────────────────────────────────────
-        var wx = await _weather.GetCurrentWeatherAsync(latitude, longitude, ct);
+        // weatherSnapshot est fourni par WeatherCacheService (rafraîchi indépendamment).
+        // Fallback : appel direct si non fourni (compatibilité + tests).
+        var wx = weatherSnapshot ?? await _weather.GetCurrentWeatherAsync(latitude, longitude, ct);
         if (wx is null)
             _logger.LogWarning("Weather unavailable — proceeding without weather context");
 
         // ── 2. Contexte tarifaire (heure locale pour les créneaux) ────────────
-        var localNow    = DateTime.Now;
+        var localNow = DateTime.Now;
         var radForecast = wx?.RadiationForecast12h ?? Array.Empty<double>();
-        var tariffCtx   = _tariff.EvaluateContext(localNow, radForecast);
+        var tariffCtx = _tariff.EvaluateContext(localNow, radForecast);
 
         LogTariffContext(tariffCtx, surplusW);
 
         // ── 3. Features ML ────────────────────────────────────────────────────
         MLRecommendation? mlReco = null;
-        string decisionEngine   = "Deterministic";
+        string decisionEngine = "Deterministic";
 
         if (wx is not null)
         {
@@ -83,7 +86,7 @@ public class SmartDistributionService
 
         if (mlReco is not null)
         {
-            effective      = Apply(batteries, mlReco, tariffCtx);
+            effective = Apply(batteries, mlReco, tariffCtx);
             decisionEngine = mlReco.ConfidenceScore >= 0.75 ? "ML" : "ML-Fallback";
             _logger.LogInformation(
                 "ML: softMax={SoftMax:F1}%, preventive={Prev:F1}%, confidence={Conf:P0} [{Engine}]",
@@ -141,9 +144,9 @@ public class SmartDistributionService
     /// Les deux peuvent se cumuler — l'urgence prend toujours le dessus sur le tarif.
     /// </summary>
     private static IList<Battery> Apply(
-        IList<Battery>    src,
+        IList<Battery> src,
         MLRecommendation? reco,
-        TariffContext      tariff)
+        TariffContext tariff)
     {
         return src.Select(b =>
         {
@@ -164,20 +167,20 @@ public class SmartDistributionService
 
             return new Battery
             {
-                Id             = b.Id,
-                CapacityWh     = b.CapacityWh,
+                Id = b.Id,
+                CapacityWh = b.CapacityWh,
                 MaxChargeRateW = b.MaxChargeRateW,
-                MinPercent     = reco is null
+                MinPercent = reco is null
                     ? b.MinPercent
                     : Math.Max(b.MinPercent, reco.RecommendedPreventiveThreshold),
                 SoftMaxPercent = reco?.RecommendedSoftMaxPercent ?? b.SoftMaxPercent,
                 HardMaxPercent = b.HardMaxPercent,
                 CurrentPercent = b.CurrentPercent,
-                Priority       = b.Priority,
-                GridChargeAllowedW             = gridAllowedW,
-                EmergencyGridChargeBelowPercent  = b.EmergencyGridChargeBelowPercent,
+                Priority = b.Priority,
+                GridChargeAllowedW = gridAllowedW,
+                EmergencyGridChargeBelowPercent = b.EmergencyGridChargeBelowPercent,
                 EmergencyGridChargeTargetPercent = isEmergency ? b.EmergencyGridChargeTargetPercent : null,
-                IsEmergencyGridCharge            = isEmergency,
+                IsEmergencyGridCharge = isEmergency,
             };
         }).ToList();
     }
@@ -188,56 +191,56 @@ public class SmartDistributionService
     {
         var now = DateTime.UtcNow;
 
-        double[] rad  = wx.RadiationForecast12h.ToArray();
-        double avg6h  = rad.Take(6).DefaultIfEmpty(0).Average();
+        double[] rad = wx.RadiationForecast12h.ToArray();
+        double avg6h = rad.Take(6).DefaultIfEmpty(0).Average();
 
-        double hourRad  = 2.0 * Math.PI * now.Hour / 24.0;
+        double hourRad = 2.0 * Math.PI * now.Hour / 24.0;
         double monthRad = 2.0 * Math.PI * (now.Month - 1) / 12.0;
 
         return new DistributionFeatures
         {
-            HourOfDay   = now.Hour,
-            DayOfWeek   = (float)now.DayOfWeek,
+            HourOfDay = now.Hour,
+            DayOfWeek = (float)now.DayOfWeek,
             MonthOfYear = now.Month,
-            DayOfYear   = now.DayOfYear,
+            DayOfYear = now.DayOfYear,
 
-            SinHour   = (float)Math.Sin(hourRad),
-            CosHour   = (float)Math.Cos(hourRad),
-            SinMonth  = (float)Math.Sin(monthRad),
-            CosMonth  = (float)Math.Cos(monthRad),
+            SinHour = (float)Math.Sin(hourRad),
+            CosHour = (float)Math.Cos(hourRad),
+            SinMonth = (float)Math.Sin(monthRad),
+            CosMonth = (float)Math.Cos(monthRad),
 
-            DaylightHours    = (float)wx.DaylightHours,
+            DaylightHours = (float)wx.DaylightHours,
             HoursUntilSunset = (float)wx.HoursUntilSunset,
 
-            CloudCoverPercent      = (float)wx.CloudCoverPercent,
-            DirectRadiationWm2     = (float)wx.DirectRadiationWm2,
-            DiffuseRadiationWm2    = (float)wx.DiffuseRadiationWm2,
-            PrecipitationMmH       = (float)wx.PrecipitationMmH,
+            CloudCoverPercent = (float)wx.CloudCoverPercent,
+            DirectRadiationWm2 = (float)wx.DirectRadiationWm2,
+            DiffuseRadiationWm2 = (float)wx.DiffuseRadiationWm2,
+            PrecipitationMmH = (float)wx.PrecipitationMmH,
             AvgForecastRadiation6h = (float)avg6h,
 
-            AvgBatteryPercent   = (float)batteries.Average(b => b.CurrentPercent),
-            MinBatteryPercent   = (float)batteries.Min(b => b.CurrentPercent),
-            MaxBatteryPercent   = (float)batteries.Max(b => b.CurrentPercent),
-            TotalCapacityWh     = (float)batteries.Sum(b => b.CapacityWh),
-            UrgentBatteryCount  = batteries.Count(b => b.IsUrgent),
+            AvgBatteryPercent = (float)batteries.Average(b => b.CurrentPercent),
+            MinBatteryPercent = (float)batteries.Min(b => b.CurrentPercent),
+            MaxBatteryPercent = (float)batteries.Max(b => b.CurrentPercent),
+            TotalCapacityWh = (float)batteries.Sum(b => b.CapacityWh),
+            UrgentBatteryCount = batteries.Count(b => b.IsUrgent),
             TotalMaxChargeRateW = (float)batteries.Sum(b => b.MaxChargeRateW),
 
-            SocStdDev             = (float)StdDev(batteries.Select(b => b.CurrentPercent)),
-            CapacityRatio         = batteries.Min(b => b.CapacityWh) > 0
+            SocStdDev = (float)StdDev(batteries.Select(b => b.CurrentPercent)),
+            CapacityRatio = batteries.Min(b => b.CapacityWh) > 0
                 ? (float)(batteries.Max(b => b.CapacityWh) / batteries.Min(b => b.CapacityWh))
                 : 1.0f,
             NonUrgentBatteryCount = batteries.Count(b => !b.IsUrgent),
 
             SurplusW = (float)surplusW,
 
-            NormalizedTariff     = (float)tariff.NormalizedPrice,
-            IsOffPeakHour        = tariff.IsFavorableForGrid ? 1f : 0f,
+            NormalizedTariff = (float)tariff.NormalizedPrice,
+            IsOffPeakHour = tariff.IsFavorableForGrid ? 1f : 0f,
             HoursToNextFavorable = (float)(tariff.HoursToNextFavorable ?? 12.0),
             AvgSolarForecastGrid = (float)tariff.AvgSolarForecastWm2,
-            SolarExpectedSoon    = tariff.SolarExpectedSoon ? 1f : 0f,
-            MaxSavingsPerKwh     = (float)tariff.MaxSavingsPerKwh,
+            SolarExpectedSoon = tariff.SolarExpectedSoon ? 1f : 0f,
+            MaxSavingsPerKwh = (float)tariff.MaxSavingsPerKwh,
 
-            OptimalSoftMaxPercent      = 80,
+            OptimalSoftMaxPercent = 80,
             OptimalPreventiveThreshold = 20,
         };
     }
@@ -269,10 +272,10 @@ public class SmartDistributionService
 }
 
 public record SmartDistributionResult(
-    DistributionResult  Distribution,
-    string              DecisionEngine,
-    MLRecommendation?   MLRecommendation,
-    WeatherData?        Weather,
-    TariffContext?      Tariff,
-    long                SessionId
+    DistributionResult Distribution,
+    string DecisionEngine,
+    MLRecommendation? MLRecommendation,
+    WeatherData? Weather,
+    TariffContext? Tariff,
+    long SessionId
 );

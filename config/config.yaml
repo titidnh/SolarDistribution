@@ -16,6 +16,21 @@ polling:
   dry_run: true           # ← mettre false en production
   min_change_trigger_w: 10
 
+# ── Météo Open-Meteo ────────────────────────────────────────────────────────────
+#
+# Les données météo (radiation solaire, nuages, prévisions 12h) sont rafraîchies
+# indépendamment du cycle de distribution (polling.interval_seconds).
+# Open-Meteo met à jour ses modèles ~toutes les heures → inutile de rafraîchir
+# plus souvent que toutes les 15 minutes.
+#
+# Valeurs recommandées :
+#   15  → bon compromis précision / appels API (défaut)
+#   30  → suffisant pour la plupart des installations
+#   60  → si vous voulez minimiser les appels réseau
+#
+weather:
+  refresh_interval_minutes: 15
+
 # ── Localisation (pour météo Open-Meteo) ──────────────────────────────────────
 location:
   latitude:  50.85    # Bruxelles — adapter à votre emplacement

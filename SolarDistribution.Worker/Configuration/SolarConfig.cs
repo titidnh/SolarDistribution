@@ -6,21 +6,33 @@ namespace SolarDistribution.Worker.Configuration;
 /// </summary>
 public class SolarConfig
 {
-    public HomeAssistantConfig  HomeAssistant { get; set; } = new();
-    public PollingConfig        Polling       { get; set; } = new();
-    public LocationConfig       Location      { get; set; } = new();
-    public SolarConfig_Solar    Solar         { get; set; } = new();
-    public List<BatteryConfig>  Batteries     { get; set; } = new List<BatteryConfig>();
-    public TariffConfig         Tariff        { get; set; } = new();
-    public MariaDbConfig        Database      { get; set; } = new();
-    public MlConfig             Ml            { get; set; } = new();
-    public LoggingConfig        Logging       { get; set; } = new();
+    public HomeAssistantConfig HomeAssistant { get; set; } = new();
+    public PollingConfig Polling { get; set; } = new();
+    public LocationConfig Location { get; set; } = new();
+    public SolarConfig_Solar Solar { get; set; } = new();
+    public List<BatteryConfig> Batteries { get; set; } = new List<BatteryConfig>();
+    public TariffConfig Tariff { get; set; } = new();
+    public MariaDbConfig Database { get; set; } = new();
+    public MlConfig Ml { get; set; } = new();
+    public WeatherConfig Weather { get; set; } = new();
+    public LoggingConfig Logging { get; set; } = new();
+}
+
+public class WeatherConfig
+{
+    /// <summary>
+    /// Intervalle de rafraîchissement des données météo Open-Meteo (en minutes).
+    /// Les prévisions Open-Meteo sont mises à jour toutes les heures au maximum.
+    /// Valeur recommandée : 15 à 30 minutes.
+    /// Défaut : 15 minutes.
+    /// </summary>
+    public int RefreshIntervalMinutes { get; set; } = 15;
 }
 
 public class HomeAssistantConfig
 {
     /// <summary>URL of the HA instance e.g. http://192.168.1.100:8123</summary>
-    public string Url   { get; set; } = string.Empty;
+    public string Url { get; set; } = string.Empty;
 
     /// <summary>Long-Lived Access Token generated in the HA profile</summary>
     public string Token { get; set; } = string.Empty;
@@ -53,7 +65,7 @@ public class PollingConfig
 public class LocationConfig
 {
     /// <summary>Latitude for Open-Meteo (e.g. 50.85 for Brussels)</summary>
-    public double Latitude  { get; set; } = 50.85;
+    public double Latitude { get; set; } = 50.85;
 
     /// <summary>Longitude for Open-Meteo (e.g. 4.35 for Brussels)</summary>
     public double Longitude { get; set; } = 4.35;
@@ -97,18 +109,18 @@ public class SolarConfig_Solar
 
 public class BatteryConfig
 {
-    public int    Id       { get; set; }
-    public string Name     { get; set; } = string.Empty;
-    public int    Priority { get; set; } = 1;
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public int Priority { get; set; } = 1;
 
     /// <summary>Total capacity in Wh</summary>
-    public double CapacityWh     { get; set; }
+    public double CapacityWh { get; set; }
 
     /// <summary>Max charge power in W</summary>
     public double MaxChargeRateW { get; set; }
 
     /// <summary>Minimum % — below = URGENT</summary>
-    public double MinPercent     { get; set; } = 20;
+    public double MinPercent { get; set; } = 20;
 
     /// <summary>Soft target max % (default 80%)</summary>
     public double SoftMaxPercent { get; set; } = 80;
@@ -379,6 +391,6 @@ public class MlConfig
 
 public class LoggingConfig
 {
-    public string Level     { get; set; } = "Information";
+    public string Level { get; set; } = "Information";
     public string? FilePath { get; set; } = "/data/logs/solar-worker.log";
 }
