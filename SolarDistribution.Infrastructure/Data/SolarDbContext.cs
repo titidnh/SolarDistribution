@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using SolarDistribution.Core.Data.Entities;
+using System.Text;
 
 namespace SolarDistribution.Infrastructure.Data;
 
@@ -125,5 +126,31 @@ public class SolarDbContext : DbContext
             e.HasIndex(x => x.Status).HasDatabaseName("idx_feedback_status");
             e.HasIndex(x => x.CollectedAt).HasDatabaseName("idx_feedback_collected");
         });
+
+        // Apply snake_case naming convention for all columns to match existing DB schema
+        foreach (var entityType in model.Model.GetEntityTypes())
+        {
+            foreach (var property in entityType.GetProperties())
+            {
+                property.SetColumnName(ToSnakeCase(property.Name));
+            }
+        }
+    }
+
+    private static string ToSnakeCase(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return name;
+        var sb = new StringBuilder();
+        for (int i = 0; i < name.Length; i++)
+        {
+            var c = name[i];
+            if (char.IsUpper(c))
+            {
+                if (i > 0) sb.Append('_');
+                sb.Append(char.ToLowerInvariant(c));
+            }
+            else sb.Append(c);
+        }
+        return sb.ToString();
     }
 }
