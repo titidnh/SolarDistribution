@@ -18,6 +18,12 @@ public record BatteryReading(
     int     BatteryId,
     string  Name,
     double  SocPercent,
+    /// <summary>
+    /// Puissance max de recharge lue depuis HA (en W).
+    /// Null si MaxChargeRateEntity n'est pas configurée ou si la lecture a échoué
+    /// → l'appelant doit utiliser la valeur statique du config.yaml comme fallback.
+    /// </summary>
+    double? MaxChargeRateW,
     bool    ReadSuccess
 );
 
@@ -50,7 +56,6 @@ public class HomeAssistantDataReader
             return null;
         }
 
-        // Le surplus peut être négatif (import réseau) → on le clamp à 0
         double surplusW = Math.Max(0, surplus.Value);
 
         // ── Optionnels (production + conso) ──────────────────────────────────
@@ -63,11 +68,12 @@ public class HomeAssistantDataReader
         if (_config.Solar.ConsumptionEntity is not null)
             consumptionW = await _client.GetNumericStateAsync(_config.Solar.ConsumptionEntity, ct);
 
-        // ── SOC de chaque batterie ────────────────────────────────────────────
+        // ── SOC + MaxChargeRate de chaque batterie ────────────────────────────
         var readings = new List<BatteryReading>();
 
         foreach (var b in _config.Batteries)
         {
+            // SOC — obligatoire
             double? soc = await _client.GetNumericStateAsync(b.Entities.Soc, ct);
 
             if (soc is null)
@@ -76,12 +82,38 @@ public class HomeAssistantDataReader
                     "Cannot read SOC for battery {Id} ({Name}) entity '{Entity}'",
                     b.Id, b.Name, b.Entities.Soc);
 
-                readings.Add(new BatteryReading(b.Id, b.Name, 0, ReadSuccess: false));
+                readings.Add(new BatteryReading(b.Id, b.Name, 0, null, ReadSuccess: false));
+                continue;
             }
-            else
+
+            // MaxChargeRate — optionnel, depuis HA si l'entité est configurée
+            double? maxChargeRateW = null;
+
+            if (b.Entities.MaxChargeRateEntity is not null)
             {
-                readings.Add(new BatteryReading(b.Id, b.Name, soc.Value, ReadSuccess: true));
+                double? rawRate = await _client.GetNumericStateAsync(
+                    b.Entities.MaxChargeRateEntity, ct);
+
+                if (rawRate is not null)
+                {
+                    // Convertir en W si l'entité expose des Ampères (MaxRateReadMultiplier)
+                    maxChargeRateW = rawRate.Value * b.Entities.MaxRateReadMultiplier;
+
+                    _logger.LogDebug(
+                        "Battery {Id} ({Name}): live MaxChargeRate = {Rate:F0}W " +
+                        "(raw={Raw:F2}, multiplier={Mult})",
+                        b.Id, b.Name, maxChargeRateW, rawRate, b.Entities.MaxRateReadMultiplier);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "Battery {Id} ({Name}): cannot read MaxChargeRateEntity '{Entity}' " +
+                        "— falling back to static max_charge_rate_w={Static}W",
+                        b.Id, b.Name, b.Entities.MaxChargeRateEntity, b.MaxChargeRateW);
+                }
             }
+
+            readings.Add(new BatteryReading(b.Id, b.Name, soc.Value, maxChargeRateW, ReadSuccess: true));
         }
 
         _logger.LogInformation(
@@ -89,7 +121,10 @@ public class HomeAssistantDataReader
             surplusW,
             productionW?.ToString("F0") ?? "n/a",
             consumptionW?.ToString("F0") ?? "n/a",
-            string.Join(", ", readings.Select(r => $"{r.Name}:{r.SocPercent:F1}%")));
+            string.Join(", ", readings.Select(r =>
+                r.ReadSuccess
+                    ? $"{r.Name}:{r.SocPercent:F1}%{(r.MaxChargeRateW.HasValue ? $"/{r.MaxChargeRateW:F0}W" : "")}"
+                    : $"{r.Name}:ERR")));
 
         return new HaSnapshot(surplusW, productionW, consumptionW, readings, DateTime.UtcNow);
     }

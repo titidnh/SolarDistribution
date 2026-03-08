@@ -36,7 +36,7 @@ public class OpenMeteoWeatherService : IWeatherService
             + $"?latitude={latitude:F4}&longitude={longitude:F4}"
             + $"&current={current}"
             + $"&hourly={hourly}"
-            + $"&forecast_days=1"
+            + $"&forecast_days=2"   // 2 jours pour voir la production du lendemain matin
             + $"&timezone=auto";
 
         try

@@ -88,6 +88,7 @@ public class DistributionController : ControllerBase
                 DecisionEngine: "Deterministic",
                 MLRecommendation: null,
                 Weather: null,
+                Tariff: null,
                 SessionId: 0);
 
             return Ok(smartWrapper.ToDto());

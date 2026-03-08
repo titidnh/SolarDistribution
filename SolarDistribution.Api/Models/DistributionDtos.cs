@@ -67,7 +67,7 @@ public class DistributionResponseDto
     public double UnusedSurplusW { get; set; }
     /// <summary>"Deterministic" | "ML" | "ML-Fallback"</summary>
     public string DecisionEngine { get; set; } = string.Empty;
-    public List<BatteryChargeResultDto> Allocations { get; set; } = [];
+    public List<BatteryChargeResultDto> Allocations { get; set; } = new List<BatteryChargeResultDto>();
     public WeatherSummaryDto? Weather { get; set; }
     public MLRecommendationDto? MLRecommendation { get; set; }
 }

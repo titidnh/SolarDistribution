@@ -2,77 +2,105 @@ using Microsoft.ML.Data;
 
 namespace SolarDistribution.Core.Services.ML;
 
-// ── Données d'entraînement ────────────────────────────────────────────────────
+// ── Features ML ───────────────────────────────────────────────────────────────
 
 /// <summary>
-/// Features utilisées pour entraîner et prédire.
-/// Chaque ligne = une session de distribution historique.
+/// Features d'entrée du modèle ML.
+/// Chaque ligne = une session de distribution historique avec feedback valide.
+///
+/// ENCODAGE CYCLIQUE heure + mois :
+///   Les valeurs brutes (1-12, 0-23) sont mal perçues par les arbres car
+///   décembre (12) et janvier (1) semblent très distants.
+///   Solution : sin/cos — décembre et janvier sont adjacents sur le cercle.
+///   On garde aussi les valeurs brutes pour les seuils directs de FastTree.
+///
+/// FEATURES TARIFAIRES :
+///   Permettent au ML d'apprendre QUAND charger depuis le réseau.
+///   Ex : si tarif bas + pas de soleil prévu → SoftMax peut monter à 90%.
 /// </summary>
 public class DistributionFeatures
 {
-    // Temporel
-    [LoadColumn(0)] public float HourOfDay { get; set; }         // 0-23
-    [LoadColumn(1)] public float DayOfWeek { get; set; }         // 0-6
-    [LoadColumn(2)] public float MonthOfYear { get; set; }       // 1-12
-    [LoadColumn(3)] public float HoursUntilSunset { get; set; }  // 0-12+
+    // ── Temporel brut ─────────────────────────────────────────────────────────
+    [LoadColumn(0)]  public float HourOfDay   { get; set; }   // 0-23
+    [LoadColumn(1)]  public float DayOfWeek   { get; set; }   // 0-6
+    [LoadColumn(2)]  public float MonthOfYear { get; set; }   // 1-12
+    [LoadColumn(3)]  public float DayOfYear   { get; set; }   // 1-366 : progression annuelle
 
-    // Météo
-    [LoadColumn(4)] public float CloudCoverPercent { get; set; }
-    [LoadColumn(5)] public float DirectRadiationWm2 { get; set; }
-    [LoadColumn(6)] public float DiffuseRadiationWm2 { get; set; }
-    [LoadColumn(7)] public float PrecipitationMmH { get; set; }
-    [LoadColumn(8)] public float AvgForecastRadiation6h { get; set; } // moyenne sur 6h à venir
+    // ── Encodage cyclique heure (période = 24h) ───────────────────────────────
+    [LoadColumn(4)]  public float SinHour     { get; set; }   // sin(2π × h / 24)
+    [LoadColumn(5)]  public float CosHour     { get; set; }   // cos(2π × h / 24)
 
-    // État batteries (moyennes pondérées)
-    [LoadColumn(9)]  public float AvgBatteryPercent { get; set; }
-    [LoadColumn(10)] public float MinBatteryPercent { get; set; }
-    [LoadColumn(11)] public float MaxBatteryPercent { get; set; }
-    [LoadColumn(12)] public float TotalCapacityWh { get; set; }
-    [LoadColumn(13)] public float UrgentBatteryCount { get; set; }
+    // ── Encodage cyclique mois (période = 12) ─────────────────────────────────
+    // Juin (6) = pic de production, décembre (12) = creux.
+    [LoadColumn(6)]  public float SinMonth    { get; set; }   // sin(2π × (m-1) / 12)
+    [LoadColumn(7)]  public float CosMonth    { get; set; }   // cos(2π × (m-1) / 12)
 
-    // Surplus
-    [LoadColumn(14)] public float SurplusW { get; set; }
+    // ── Saisonnalité directe ──────────────────────────────────────────────────
+    [LoadColumn(8)]  public float DaylightHours    { get; set; }   // h de jour : 8h (déc) → 16h (juin)
+    [LoadColumn(9)]  public float HoursUntilSunset { get; set; }
 
-    // Cible : SoftMax optimal observé a posteriori (régression)
-    [LoadColumn(15)] public float OptimalSoftMaxPercent { get; set; }
+    // ── Météo ─────────────────────────────────────────────────────────────────
+    [LoadColumn(10)] public float CloudCoverPercent      { get; set; }
+    [LoadColumn(11)] public float DirectRadiationWm2     { get; set; }
+    [LoadColumn(12)] public float DiffuseRadiationWm2    { get; set; }
+    [LoadColumn(13)] public float PrecipitationMmH       { get; set; }
+    [LoadColumn(14)] public float AvgForecastRadiation6h { get; set; }  // prévision 6h
 
-    // Cible : seuil préventif optimal (régression)
-    [LoadColumn(16)] public float OptimalPreventiveThreshold { get; set; }
+    // ── État batteries ────────────────────────────────────────────────────────
+    [LoadColumn(15)] public float AvgBatteryPercent   { get; set; }
+    [LoadColumn(16)] public float MinBatteryPercent   { get; set; }
+    [LoadColumn(17)] public float MaxBatteryPercent   { get; set; }
+    [LoadColumn(18)] public float TotalCapacityWh     { get; set; }
+    [LoadColumn(19)] public float UrgentBatteryCount  { get; set; }
+    [LoadColumn(20)] public float TotalMaxChargeRateW { get; set; }
+
+    // ── Surplus solaire ───────────────────────────────────────────────────────
+    [LoadColumn(21)] public float SurplusW { get; set; }
+
+    // ── Contexte tarifaire ────────────────────────────────────────────────────
+    // Ces features permettent au ML d'apprendre à adapter le SoftMax et le seuil
+    // préventif selon le coût de l'électricité et la prévision de production.
+
+    /// <summary>Prix actuel normalisé 0→1 (0.4 €/kWh = 1.0). 0.5 si inconnu.</summary>
+    [LoadColumn(22)] public float NormalizedTariff      { get; set; }
+
+    /// <summary>1.0 si on est en créneau à tarif favorable, sinon 0.0</summary>
+    [LoadColumn(23)] public float IsOffPeakHour         { get; set; }
+
+    /// <summary>Heures avant le prochain créneau favorable (0 = déjà favorable)</summary>
+    [LoadColumn(24)] public float HoursToNextFavorable  { get; set; }
+
+    /// <summary>Rayonnement moyen prévu sur l'horizon de décision (W/m²)</summary>
+    [LoadColumn(25)] public float AvgSolarForecastGrid  { get; set; }
+
+    /// <summary>1.0 si production solaire significative attendue prochainement</summary>
+    [LoadColumn(26)] public float SolarExpectedSoon     { get; set; }
+
+    /// <summary>Économie potentielle en €/kWh si on charge réseau maintenant vs plus tard</summary>
+    [LoadColumn(27)] public float MaxSavingsPerKwh      { get; set; }
+
+    // ── Labels (cibles de régression — issus de SessionFeedback réel) ─────────
+    [LoadColumn(28)] public float OptimalSoftMaxPercent      { get; set; }
+    [LoadColumn(29)] public float OptimalPreventiveThreshold { get; set; }
 }
 
-/// <summary>Prédiction du SoftMaxPercent optimal.</summary>
 public class SoftMaxPrediction
 {
-    [ColumnName("Score")]
-    public float PredictedSoftMaxPercent { get; set; }
+    [ColumnName("Score")] public float PredictedSoftMaxPercent { get; set; }
 }
 
-/// <summary>Prédiction du seuil préventif optimal.</summary>
 public class PreventivePrediction
 {
-    [ColumnName("Score")]
-    public float PredictedPreventiveThreshold { get; set; }
+    [ColumnName("Score")] public float PredictedPreventiveThreshold { get; set; }
 }
 
 // ── Résultat de prédiction ────────────────────────────────────────────────────
 
-/// <summary>
-/// Recommandations du modèle ML pour une session de distribution.
-/// </summary>
 public record MLRecommendation(
-    /// <summary>SoftMaxPercent recommandé (ex: 70% si nuit longue prévue)</summary>
     double RecommendedSoftMaxPercent,
-
-    /// <summary>Seuil de recharge préventive recommandé (ex: 40% si peu de production demain)</summary>
     double RecommendedPreventiveThreshold,
-
-    /// <summary>Score de confiance global du modèle (0.0 à 1.0)</summary>
     double ConfidenceScore,
-
-    /// <summary>Version du modèle ayant produit cette recommandation</summary>
     string ModelVersion,
-
-    /// <summary>Explication textuelle de la décision</summary>
     string Rationale
 );
 
@@ -80,24 +108,14 @@ public record MLRecommendation(
 
 public interface IDistributionMLService
 {
-    /// <summary>
-    /// Prédit les paramètres optimaux pour la session en cours.
-    /// Retourne null si le modèle n'est pas encore disponible (pas assez de données).
-    /// </summary>
     Task<MLRecommendation?> PredictAsync(DistributionFeatures features, CancellationToken ct = default);
-
-    /// <summary>
-    /// Ré-entraîne le modèle sur l'ensemble des sessions historiques disponibles.
-    /// </summary>
-    Task<MLTrainingResult> RetrainAsync(CancellationToken ct = default);
-
-    /// <summary>Statut actuel du modèle ML.</summary>
-    MLModelStatus GetStatus();
+    Task<MLTrainingResult>  RetrainAsync(CancellationToken ct = default);
+    MLModelStatus           GetStatus();
 }
 
 public record MLTrainingResult(
-    bool Success,
-    int TrainingSamples,
+    bool   Success,
+    int    TrainingSamples,
     double SoftMaxRSquared,
     double PreventiveRSquared,
     string ModelVersion,
@@ -105,13 +123,13 @@ public record MLTrainingResult(
 );
 
 public record MLModelStatus(
-    bool IsAvailable,
-    string? ModelVersion,
-    int TrainingSamples,
-    double? SoftMaxRSquared,
-    double? PreventiveRSquared,
+    bool      IsAvailable,
+    string?   ModelVersion,
+    int       TrainingSamples,
+    double?   SoftMaxRSquared,
+    double?   PreventiveRSquared,
     DateTime? TrainedAt,
-    int SessionsInDb,
-    int ValidFeedbacksInDb,
-    int MinSessionsRequired
+    int       SessionsInDb,
+    int       ValidFeedbacksInDb,
+    int       MinSessionsRequired
 );

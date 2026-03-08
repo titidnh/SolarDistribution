@@ -9,7 +9,8 @@ public class SolarConfig
     public PollingConfig        Polling       { get; set; } = new();
     public LocationConfig       Location      { get; set; } = new();
     public SolarConfig_Solar    Solar         { get; set; } = new();
-    public List<BatteryConfig>  Batteries     { get; set; } = [];
+    public List<BatteryConfig>  Batteries     { get; set; } = new List<BatteryConfig>();
+    public TariffConfig         Tariff        { get; set; } = new();
     public MariaDbConfig        Database      { get; set; } = new();
     public MlConfig             Ml            { get; set; } = new();
     public LoggingConfig        Logging       { get; set; } = new();
@@ -104,37 +105,158 @@ public class BatteryConfig
 
 public class BatteryEntitiesConfig
 {
-    /// <summary>Entité HA exposant le % de charge actuel (lecture)</summary>
-    public string Soc          { get; set; } = string.Empty;
+    /// <summary>Entité HA exposant le % de charge actuel (lecture).</summary>
+    public string Soc { get; set; } = string.Empty;
 
     /// <summary>
     /// Entité HA de type 'number' pour définir la puissance de recharge en W (écriture).
-    /// Utilise le service number.set_value.
+    /// Utilise le service HA : number.set_value.
     /// ex: number.battery_1_charge_power, number.solax_battery_charge_max_current
     /// </summary>
-    public string ChargePower  { get; set; } = string.Empty;
+    public string ChargePower { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Entité HA exposant la puissance max de recharge acceptée par la batterie (lecture, OPTIONNEL).
+    ///
+    /// POURQUOI C'EST UTILE :
+    ///   Certains onduleurs/BMS ajustent dynamiquement leur limite de charge
+    ///   selon la température, l'état de santé (SoH), ou la phase de charge (CC/CV).
+    ///   Sans cette entité, l'algo utilise la valeur statique max_charge_rate_w du config.yaml.
+    ///   Avec cette entité, l'algo lit la vraie limite hardware à chaque cycle.
+    ///
+    /// PRIORITÉ : si définie et lisible → écrase max_charge_rate_w du config.
+    ///            si null ou lecture échouée → fallback sur max_charge_rate_w statique.
+    ///
+    /// Exemples selon onduleur :
+    ///   SolaX    : sensor.solax_battery_max_charge_current  (→ multiplier = tension V)
+    ///   GivEnergy: sensor.givtcp_battery_charge_rate
+    ///   Victron  : sensor.victron_max_charge_current
+    ///   Générique: sensor.battery_1_max_charge_power_w
+    /// </summary>
+    public string? MaxChargeRateEntity { get; set; }
 
     /// <summary>
     /// Entité HA pour activer/désactiver la recharge (optionnel).
-    /// Si défini, le switch est activé avant d'écrire la puissance.
+    /// Si défini : turn_on avant d'écrire la puissance, turn_off si 0W alloué.
     /// ex: switch.battery_1_charge_enable
     /// </summary>
     public string? ChargeSwitch { get; set; }
 
     /// <summary>
-    /// Multiplicateur appliqué à la valeur W avant envoi à HA.
+    /// Multiplicateur appliqué à la valeur W avant envoi à HA via ChargePower.
     /// Utile si l'entité HA attend des Ampères plutôt que des Watts.
-    /// ex: 0.004167 pour convertir W → A sur 240V (A = W / 240)
-    /// Défaut: 1.0 (W direct)
+    /// ex: 0.02083 pour W → A sur batterie 48V  (A = W / 48)
+    /// Défaut: 1.0 (Watts directs)
     /// </summary>
     public double ValueMultiplier { get; set; } = 1.0;
 
     /// <summary>
-    /// Unité de la valeur envoyée à HA (pour le logging).
-    /// Défaut: "W"
+    /// Multiplicateur inverse pour lire MaxChargeRateEntity et le convertir en W.
+    /// Si MaxChargeRateEntity expose des Ampères sur une batterie 48V → 48.0
+    /// Si MaxChargeRateEntity expose déjà des Watts → 1.0 (défaut)
     /// </summary>
+    public double MaxRateReadMultiplier { get; set; } = 1.0;
+
+    /// <summary>Unité de la valeur envoyée à HA (pour le logging). Défaut: "W"</summary>
     public string ValueUnit { get; set; } = "W";
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tarification électrique
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// <summary>
+/// Configuration des tarifs d'électricité réseau.
+/// Permet au système de décider s'il est rentable de charger depuis le réseau
+/// quand il n'y a pas de surplus solaire.
+/// </summary>
+public class TariffConfig
+{
+    /// <summary>Devise pour les logs (ex: "EUR", "USD").</summary>
+    public string Currency { get; set; } = "EUR";
+
+    /// <summary>
+    /// Tarif de revente du surplus solaire en €/kWh.
+    /// 0 si vous n'êtes pas rémunéré pour l'injection réseau.
+    /// </summary>
+    public double ExportPricePerKwh { get; set; } = 0.08;
+
+    /// <summary>
+    /// Seuil de prix en €/kWh en-dessous duquel la charge depuis réseau est autorisée.
+    /// Si tarif actuel < seuil ET prévision solaire faible → charge réseau permise.
+    /// Mettre à 0 pour désactiver complètement la charge depuis le réseau.
+    /// </summary>
+    public double GridChargeThresholdPerKwh { get; set; } = 0.15;
+
+    /// <summary>
+    /// Seuil de rayonnement prévu (W/m²). En-dessous → pas de production attendue
+    /// → charge réseau autorisée si tarif favorable.
+    /// </summary>
+    public double MinSolarForecastForGridBlock { get; set; } = 100.0;
+
+    /// <summary>Horizon en heures pour évaluer la prévision solaire (défaut: 4h).</summary>
+    public int SolarForecastHorizonHours { get; set; } = 4;
+
+    /// <summary>
+    /// Créneaux tarifaires. Si vide → charge réseau désactivée.
+    /// </summary>
+    public List<TariffSlot> Slots { get; set; } = new List<TariffSlot>();
+}
+
+/// <summary>
+/// Un créneau tarifaire avec plages horaires et prix.
+/// Exemples :
+///   - Heures creuses  : StartTime="22:00", EndTime="06:00", PricePerKwh=0.10
+///   - Heures pleines  : StartTime="06:00", EndTime="22:00", PricePerKwh=0.28
+///   - Week-end réduit : StartTime="00:00", EndTime="00:00", DaysOfWeek=[0,6], PricePerKwh=0.12
+/// </summary>
+public class TariffSlot
+{
+    /// <summary>Nom pour les logs (ex: "Heures Creuses", "Peak").</summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>Prix en €/kWh.</summary>
+    public double PricePerKwh { get; set; }
+
+    /// <summary>Heure de début incluse au format "HH:mm" (ex: "22:00").</summary>
+    public string StartTime { get; set; } = "00:00";
+
+    /// <summary>
+    /// Heure de fin exclue au format "HH:mm".
+    /// Peut être &lt; StartTime pour les créneaux chevauchant minuit
+    /// (ex: StartTime="22:00", EndTime="06:00" = 22h→6h).
+    /// </summary>
+    public string EndTime { get; set; } = "00:00";
+
+    /// <summary>
+    /// Jours de la semaine (0=Dimanche, 1=Lundi, ..., 6=Samedi).
+    /// null/vide = tous les jours.
+    /// Exemple : [1,2,3,4,5] = lundi au vendredi.
+    /// </summary>
+    public List<int>? DaysOfWeek { get; set; }
+
+    public TimeSpan ParsedStart => TimeSpan.Parse(StartTime);
+    public TimeSpan ParsedEnd   => TimeSpan.Parse(EndTime);
+
+    /// <summary>
+    /// Vérifie si ce créneau est actif à l'instant donné.
+    /// Gère automatiquement les créneaux chevauchant minuit.
+    /// </summary>
+    public bool IsActiveAt(DateTime localTime)
+    {
+        if (DaysOfWeek is { Count: > 0 } && !DaysOfWeek.Contains((int)localTime.DayOfWeek))
+            return false;
+
+        var tod   = localTime.TimeOfDay;
+        var start = ParsedStart;
+        var end   = ParsedEnd;
+
+        if (start == end) return true;           // toute la journée (00:00→00:00)
+        if (start < end)  return tod >= start && tod < end;   // créneau normal
+        return tod >= start || tod < end;        // créneau chevauchant minuit
+    }
+}
+
 
 public class MariaDbConfig
 {

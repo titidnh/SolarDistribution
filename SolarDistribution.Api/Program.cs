@@ -27,9 +27,13 @@ builder.Services.AddScoped<IDistributionRepository, DistributionRepository>();
 // ── Core services ─────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<IBatteryDistributionService, BatteryDistributionService>();
 builder.Services.AddScoped<SmartDistributionService>();
+// TariffEngine depends on a TariffConfig; provide a default config so DI can
+// resolve SmartDistributionService without depending on the Worker project.
+builder.Services.AddSingleton<TariffEngine>(sp => new TariffEngine(new TariffEngine.TariffConfig()));
 
 // ── ML.NET ────────────────────────────────────────────────────────────────────
-builder.Services.AddSingleton<IDistributionMLService>(sp =>
+// Register ML service as scoped because it depends on a scoped repository.
+builder.Services.AddScoped<IDistributionMLService>(sp =>
 {
     var repo   = sp.GetRequiredService<IDistributionRepository>();
     var logger = sp.GetRequiredService<ILogger<DistributionMLService>>();

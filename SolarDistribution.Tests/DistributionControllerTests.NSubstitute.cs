@@ -56,6 +56,7 @@ public class DistributionControllerTests
         SurplusInputW:   surplus,
         TotalAllocatedW: allocated,
         UnusedSurplusW:  unused,
+        GridChargedW:    0,
         Allocations: allocs.Select(a => new BatteryChargeResult(
             BatteryId:       a.id,
             AllocatedW:      a.w,
@@ -76,7 +77,7 @@ public class DistributionControllerTests
         var request = new DistributionRequestDto
         {
             SurplusW  = 500,
-            Batteries = [ Dto(1, prio: 1), Dto(2, prio: 2) ]
+            Batteries = new List<BatteryInputDto> { Dto(1, prio: 1), Dto(2, prio: 2) }
         };
 
         var fakeResult = FakeResult(500, 500, 0, (1, 307.2), (2, 192.8));
@@ -108,7 +109,7 @@ public class DistributionControllerTests
         var request = new DistributionRequestDto
         {
             SurplusW  = 1200,
-            Batteries = [ Dto(1), Dto(2) ]
+            Batteries = new List<BatteryInputDto> { Dto(1), Dto(2) }
         };
 
         _serviceMock
@@ -133,12 +134,12 @@ public class DistributionControllerTests
         var request = new DistributionRequestDto
         {
             SurplusW  = 300,
-            Batteries =
-            [
+            Batteries = new List<BatteryInputDto>
+            {
                 new BatteryInputDto { Id=1, CapacityWh=2048, MaxChargeRateW=1000,
                     MinPercent=15, SoftMaxPercent=85, HardMaxPercent=100,
                     CurrentPercent=30, Priority=1 }
-            ]
+            }
         };
 
         _serviceMock
@@ -171,7 +172,7 @@ public class DistributionControllerTests
         var request = new DistributionRequestDto
         {
             SurplusW  = 9999,
-            Batteries = [ Dto(1, pct: 100) ]
+            Batteries = new List<BatteryInputDto> { Dto(1, pct: 100) }
         };
 
         _serviceMock
@@ -197,7 +198,7 @@ public class DistributionControllerTests
         var request = new DistributionRequestDto
         {
             SurplusW  = 500,
-            Batteries = [ Dto(1), Dto(1) ] // doublon
+            Batteries = new List<BatteryInputDto> { Dto(1), Dto(1) } // doublon
         };
 
         var result = _sut.Calculate(request);
@@ -213,7 +214,7 @@ public class DistributionControllerTests
         var request = new DistributionRequestDto
         {
             SurplusW  = 500,
-            Batteries = [ Dto(1, softMax: 95, hardMax: 80) ] // incohérent
+            Batteries = new List<BatteryInputDto> { Dto(1, softMax: 95, hardMax: 80) } // incohérent
         };
 
         var result = _sut.Calculate(request);

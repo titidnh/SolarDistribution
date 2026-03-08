@@ -98,6 +98,10 @@ var host = Host.CreateDefaultBuilder(args)
         // ── Core : algo déterministe ──────────────────────────────────────────
         services.AddSingleton<IBatteryDistributionService, BatteryDistributionService>();
 
+        // ── Tarification électrique ───────────────────────────────────────────
+        services.AddSingleton(config.Tariff);   // TariffConfig
+        services.AddSingleton<TariffEngine>();   // moteur de décision tarifaire
+
         // ── ML.NET ────────────────────────────────────────────────────────────
         services.AddSingleton<IDistributionMLService>(sp =>
         {

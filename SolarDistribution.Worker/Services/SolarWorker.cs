@@ -205,15 +205,27 @@ public class SolarWorker : BackgroundService
             .Select(reading =>
             {
                 var bc = _config.Batteries.First(b => b.Id == reading.BatteryId);
+
+                // MaxChargeRateW : priorité à la valeur live lue depuis HA.
+                // Si non configurée ou lecture échouée → valeur statique du config.yaml.
+                double effectiveMaxRate = reading.MaxChargeRateW ?? bc.MaxChargeRateW;
+
+                if (reading.MaxChargeRateW.HasValue && reading.MaxChargeRateW != bc.MaxChargeRateW)
+                {
+                    _logger.LogDebug(
+                        "Battery {Id} ({Name}): MaxChargeRate live={Live:F0}W vs static={Static:F0}W — using live",
+                        bc.Id, bc.Name, reading.MaxChargeRateW, bc.MaxChargeRateW);
+                }
+
                 return new Battery
                 {
                     Id             = bc.Id,
                     CapacityWh     = bc.CapacityWh,
-                    MaxChargeRateW = bc.MaxChargeRateW,
+                    MaxChargeRateW = effectiveMaxRate,   // ← live HA ou fallback statique
                     MinPercent     = bc.MinPercent,
                     SoftMaxPercent = bc.SoftMaxPercent,
                     HardMaxPercent = bc.HardMaxPercent,
-                    CurrentPercent = reading.SocPercent,   // ← valeur live HA
+                    CurrentPercent = reading.SocPercent, // ← valeur live HA
                     Priority       = bc.Priority
                 };
             })

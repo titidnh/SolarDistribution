@@ -1,23 +1,21 @@
 namespace SolarDistribution.Core.Models;
 
-/// <summary>
-/// Charge allocation result for a single battery.
-/// </summary>
+/// <summary>Résultat d'allocation pour une batterie individuelle.</summary>
 public record BatteryChargeResult(
-    int BatteryId,
+    int    BatteryId,
     double AllocatedW,
     double PreviousPercent,
     double NewPercent,
-    bool WasUrgent,
-    string Reason
+    bool   WasUrgent,
+    bool   IsGridCharge = false,   // true = puissance venant du réseau (Pass 3)
+    string Reason = ""
 );
 
-/// <summary>
-/// Full distribution result returned by the algorithm for a given surplus input.
-/// </summary>
+/// <summary>Résultat complet d'une distribution pour un cycle donné.</summary>
 public record DistributionResult(
     double SurplusInputW,
-    double TotalAllocatedW,
-    double UnusedSurplusW,
+    double TotalAllocatedW,    // total alloué depuis surplus solaire
+    double UnusedSurplusW,     // surplus non absorbé
+    double GridChargedW,       // total chargé depuis le réseau (Pass 3)
     List<BatteryChargeResult> Allocations
 );
