@@ -4,7 +4,7 @@ using SolarDistribution.Core.Services.ML;
 namespace SolarDistribution.Api.Controllers;
 
 /// <summary>
-/// Gestion du modèle ML — ré-entraînement manuel et consultation du statut.
+/// ML model management — manual retrain and status inspection.
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
@@ -21,7 +21,7 @@ public class MlController : ControllerBase
     }
 
     /// <summary>
-    /// Statut actuel du modèle ML : disponibilité, version, métriques, nombre de sessions.
+    /// Current ML model status: availability, version, metrics, and number of sessions.
     /// </summary>
     /// <response code="200">Statut retourné</response>
     [HttpGet("status")]
@@ -44,12 +44,12 @@ public class MlController : ControllerBase
     }
 
     /// <summary>
-    /// Lance le ré-entraînement du modèle ML sur toutes les sessions disponibles en base.
-    /// Opération synchrone — peut prendre quelques secondes selon le volume de données.
+    /// Starts ML model retraining on all available sessions in the database.
+    /// Synchronous operation — may take several seconds depending on dataset size.
     /// </summary>
     /// <remarks>
-    /// Minimum 50 sessions requises pour démarrer l'entraînement.
-    /// Le modèle est automatiquement activé si R² >= 0.65 sur les deux prédictions.
+    /// Minimum 50 sessions required to start training.
+    /// The model is automatically activated if R² >= 0.65 for both predictions.
     /// </remarks>
     /// <response code="200">Entraînement réussi — métriques retournées</response>
     /// <response code="400">Pas assez de données d'entraînement</response>
@@ -88,18 +88,18 @@ public class MlController : ControllerBase
 
 public class MLModelStatusDto
 {
-    /// <summary>Le modèle est-il disponible et suffisamment confiant pour être utilisé ?</summary>
+    /// <summary>Is the model available and confident enough to be used?</summary>
     public bool IsAvailable { get; set; }
     public string? ModelVersion { get; set; }
     public int TrainingSamples { get; set; }
-    /// <summary>R² du modèle SoftMax (0.0 à 1.0 — plus proche de 1 = meilleur)</summary>
+    /// <summary>R² of the SoftMax model (0.0 to 1.0 — closer to 1 = better)</summary>
     public double? SoftMaxRSquared { get; set; }
-    /// <summary>R² du modèle seuil préventif</summary>
+    /// <summary>R² of the preventive threshold model</summary>
     public double? PreventiveRSquared { get; set; }
     public DateTime? TrainedAt { get; set; }
     public int SessionsInDb { get; set; }
     public int MinSessionsRequired { get; set; }
-    /// <summary>Progression vers le seuil minimum (0-100%)</summary>
+    /// <summary>Progress toward the minimum threshold (0-100%)</summary>
     public int ProgressPercent { get; set; }
 }
 
@@ -110,6 +110,6 @@ public class MLTrainingResultDto
     public double SoftMaxRSquared { get; set; }
     public double PreventiveRSquared { get; set; }
     public string ModelVersion { get; set; } = string.Empty;
-    /// <summary>Le modèle sera utilisé pour les prochaines distributions (R² >= 0.65)</summary>
+    /// <summary>The model will be used for future distributions (R² >= 0.65)</summary>
     public bool IsModelActive { get; set; }
 }

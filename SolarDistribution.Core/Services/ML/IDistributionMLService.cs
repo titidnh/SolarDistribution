@@ -2,51 +2,51 @@ using Microsoft.ML.Data;
 
 namespace SolarDistribution.Core.Services.ML;
 
-// ── Features ML ───────────────────────────────────────────────────────────────
+// ── ML features ───────────────────────────────────────────────────────────────
 
 /// <summary>
-/// Features d'entrée du modèle ML.
-/// Chaque ligne = une session de distribution historique avec feedback valide.
+/// Input features for the ML model.
+/// Each row represents a historical distribution session with valid feedback.
 ///
-/// ENCODAGE CYCLIQUE heure + mois :
-///   Les valeurs brutes (1-12, 0-23) sont mal perçues par les arbres car
-///   décembre (12) et janvier (1) semblent très distants.
-///   Solution : sin/cos — décembre et janvier sont adjacents sur le cercle.
-///   On garde aussi les valeurs brutes pour les seuils directs de FastTree.
+/// CYCLIC ENCODING for hour + month:
+///   Raw values (1-12, 0-23) are misleading for trees because
+///   December (12) and January (1) appear far apart.
+///   Solution: sin/cos — December and January become adjacent on the circle.
+///   We also keep raw values for FastTree direct thresholds.
 ///
-/// FEATURES TARIFAIRES :
-///   Permettent au ML d'apprendre QUAND charger depuis le réseau.
-///   Ex : si tarif bas + pas de soleil prévu → SoftMax peut monter à 90%.
+/// TARIFF FEATURES:
+///   Allow ML to learn WHEN to charge from the grid.
+///   E.g.: low tariff + no sun expected -> SoftMax may rise to 90%.
 /// </summary>
 public class DistributionFeatures
 {
-    // ── Temporel brut ─────────────────────────────────────────────────────────
+    // ── Raw temporal ─────────────────────────────────────────────────────────
     [LoadColumn(0)]  public float HourOfDay   { get; set; }   // 0-23
     [LoadColumn(1)]  public float DayOfWeek   { get; set; }   // 0-6
     [LoadColumn(2)]  public float MonthOfYear { get; set; }   // 1-12
     [LoadColumn(3)]  public float DayOfYear   { get; set; }   // 1-366 : progression annuelle
 
-    // ── Encodage cyclique heure (période = 24h) ───────────────────────────────
+    // ── Cyclic encoding hour (period = 24h) ─────────────────────────────────
     [LoadColumn(4)]  public float SinHour     { get; set; }   // sin(2π × h / 24)
     [LoadColumn(5)]  public float CosHour     { get; set; }   // cos(2π × h / 24)
 
-    // ── Encodage cyclique mois (période = 12) ─────────────────────────────────
-    // Juin (6) = pic de production, décembre (12) = creux.
+    // ── Cyclic encoding month (period = 12) ─────────────────────────────────
+    // June (6) = production peak, December (12) = low.
     [LoadColumn(6)]  public float SinMonth    { get; set; }   // sin(2π × (m-1) / 12)
     [LoadColumn(7)]  public float CosMonth    { get; set; }   // cos(2π × (m-1) / 12)
 
-    // ── Saisonnalité directe ──────────────────────────────────────────────────
+    // ── Direct seasonality ──────────────────────────────────────────────────
     [LoadColumn(8)]  public float DaylightHours    { get; set; }   // h de jour : 8h (déc) → 16h (juin)
     [LoadColumn(9)]  public float HoursUntilSunset { get; set; }
 
-    // ── Météo ─────────────────────────────────────────────────────────────────
+    // ── Weather ─────────────────────────────────────────────────────────────
     [LoadColumn(10)] public float CloudCoverPercent      { get; set; }
     [LoadColumn(11)] public float DirectRadiationWm2     { get; set; }
     [LoadColumn(12)] public float DiffuseRadiationWm2    { get; set; }
     [LoadColumn(13)] public float PrecipitationMmH       { get; set; }
     [LoadColumn(14)] public float AvgForecastRadiation6h { get; set; }  // prévision 6h
 
-    // ── État batteries ────────────────────────────────────────────────────────
+    // ── Battery state ───────────────────────────────────────────────────────
     [LoadColumn(15)] public float AvgBatteryPercent   { get; set; }
     [LoadColumn(16)] public float MinBatteryPercent   { get; set; }
     [LoadColumn(17)] public float MaxBatteryPercent   { get; set; }
@@ -54,45 +54,45 @@ public class DistributionFeatures
     [LoadColumn(19)] public float UrgentBatteryCount  { get; set; }
     [LoadColumn(20)] public float TotalMaxChargeRateW { get; set; }
 
-    // ML-4 : features de dispersion — permettent au modèle de distinguer les
-    // installations hétérogènes (batteries de capacités très différentes)
-    // des installations homogènes, sans avoir accès aux features individuelles.
+    // ML-4: dispersion features — allow the model to distinguish
+    // heterogeneous installations (batteries with very different capacities)
+    // from homogeneous ones, without access to individual features.
 
-    /// <summary>Écart-type du SOC entre les batteries (0 si une seule batterie).</summary>
+    /// <summary>Standard deviation of SOC among batteries (0 if single battery).</summary>
     [LoadColumn(21)] public float SocStdDev           { get; set; }
 
-    /// <summary>Ratio max/min des capacités installées (1.0 si batteries identiques).</summary>
+    /// <summary>Max/min ratio of installed capacities (1.0 if batteries identical).</summary>
     [LoadColumn(22)] public float CapacityRatio        { get; set; }
 
-    /// <summary>Nombre de batteries avec Priority > 0 (batteries non-urgentes).</summary>
+    /// <summary>Number of batteries with Priority > 0 (non-urgent batteries).</summary>
     [LoadColumn(23)] public float NonUrgentBatteryCount { get; set; }
 
-    // ── Surplus solaire ───────────────────────────────────────────────────────
+    // ── Solar surplus ───────────────────────────────────────────────────────
     [LoadColumn(24)] public float SurplusW { get; set; }
 
-    // ── Contexte tarifaire ────────────────────────────────────────────────────
-    // Ces features permettent au ML d'apprendre à adapter le SoftMax et le seuil
-    // préventif selon le coût de l'électricité et la prévision de production.
+    // ── Tariff context ──────────────────────────────────────────────────────
+    // These features allow ML to learn how to adapt SoftMax and the preventive
+    // threshold according to electricity cost and production forecast.
 
-    /// <summary>Prix actuel normalisé 0→1 (0.4 €/kWh = 1.0). 0.5 si inconnu.</summary>
+    /// <summary>Current normalized price 0→1 (0.4 €/kWh = 1.0). 0.5 if unknown.</summary>
     [LoadColumn(25)] public float NormalizedTariff      { get; set; }
 
-    /// <summary>1.0 si on est en créneau à tarif favorable, sinon 0.0</summary>
+    /// <summary>1.0 if currently in a favorable tariff slot, otherwise 0.0</summary>
     [LoadColumn(26)] public float IsOffPeakHour         { get; set; }
 
-    /// <summary>Heures avant le prochain créneau favorable (0 = déjà favorable)</summary>
+    /// <summary>Hours until the next favorable slot (0 = already favorable)</summary>
     [LoadColumn(27)] public float HoursToNextFavorable  { get; set; }
 
-    /// <summary>Rayonnement moyen prévu sur l'horizon de décision (W/m²)</summary>
+    /// <summary>Average forecasted radiation over the decision horizon (W/m²)</summary>
     [LoadColumn(28)] public float AvgSolarForecastGrid  { get; set; }
 
-    /// <summary>1.0 si production solaire significative attendue prochainement</summary>
+    /// <summary>1.0 if significant solar production is expected soon</summary>
     [LoadColumn(29)] public float SolarExpectedSoon     { get; set; }
 
-    /// <summary>Économie potentielle en €/kWh si on charge réseau maintenant vs plus tard</summary>
+    /// <summary>Potential savings in €/kWh if charging from grid now vs later</summary>
     [LoadColumn(30)] public float MaxSavingsPerKwh      { get; set; }
 
-    // ── Labels (cibles de régression — issus de SessionFeedback réel) ─────────
+    // ── Labels (regression targets — derived from real SessionFeedback) ─────
     [LoadColumn(31)] public float OptimalSoftMaxPercent      { get; set; }
     [LoadColumn(32)] public float OptimalPreventiveThreshold { get; set; }
 }

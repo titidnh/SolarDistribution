@@ -7,9 +7,9 @@ using SolarDistribution.Core.Services;
 namespace SolarDistribution.Api.Controllers;
 
 /// <summary>
-/// Distribution intelligente du surplus solaire.
-/// Utilise ML.NET si disponible, sinon l'algorithme déterministe en fallback.
-/// Chaque appel est persisté en base MariaDB avec les données météo associées.
+/// Intelligent distribution of solar surplus.
+/// Uses ML.NET if available, otherwise falls back to the deterministic algorithm.
+/// Each call is persisted in MariaDB with associated weather data.
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
@@ -44,16 +44,16 @@ public class DistributionController : ControllerBase
     }
 
     /// <summary>
-    /// Distribue le surplus solaire entre les batteries avec assistance ML + météo.
+    /// Distributes solar surplus among batteries with ML + weather assistance.
     /// </summary>
     /// <remarks>
-    /// **Moteur de décision :**
-    /// - `Deterministic` — algo priorité/proportionnel (fallback ou ML pas encore disponible)
-    /// - `ML` — modèle ML avec confiance >= 75%
-    /// - `ML-Fallback` — ML disponible mais confiance 65-75%, paramètres ajustés
+    /// **Decision engine:**
+    /// - `Deterministic` — priority/proportional algorithm (fallback or when ML not ready)
+    /// - `ML` — ML model with confidence >= 75%
+    /// - `ML-Fallback` — ML available but confidence 65-75%, parameters adjusted
     ///
-    /// **Météo :** si latitude/longitude fournis, les données Open-Meteo sont récupérées
-    /// et stockées. Sinon, Bruxelles par défaut.
+    /// **Weather:** if latitude/longitude are provided, Open-Meteo data is fetched
+    /// and stored. Otherwise, Brussels is used as default.
     /// </remarks>
     /// <response code="200">Distribution calculée, session persistée</response>
     /// <response code="400">Paramètres invalides</response>
@@ -101,7 +101,7 @@ public class DistributionController : ControllerBase
     }
 
     /// <summary>
-    /// Distribution sans persistance ni météo — utile pour tests ou simulation.
+    /// Distribution without persistence or weather — useful for tests or simulation.
     /// </summary>
     [HttpPost("simulate")]
     [ProducesResponseType(typeof(DistributionResponseDto), StatusCodes.Status200OK)]
@@ -126,7 +126,7 @@ public class DistributionController : ControllerBase
         });
     }
 
-    /// <summary>Retourne les 5 use cases de référence pour tests Swagger.</summary>
+    /// <summary>Returns 5 reference use cases for Swagger testing.</summary>
     [HttpGet("examples")]
     [ProducesResponseType(typeof(IEnumerable<object>), StatusCodes.Status200OK)]
     public ActionResult<IEnumerable<object>> GetExamples() => Ok(new[]

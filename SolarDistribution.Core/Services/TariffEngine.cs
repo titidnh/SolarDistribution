@@ -4,12 +4,12 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace SolarDistribution.Core.Services;
 
 // ═════════════════════════════════════════════════════════════════════════════
-// TariffConfig + TariffSlot — source de vérité unique dans Core.
-// SolarConfig.cs (Worker) référence ces types via using.
+// TariffConfig + TariffSlot — single source of truth located in Core.
+// SolarConfig.cs (Worker) references these types via using.
 // ═════════════════════════════════════════════════════════════════════════════
 
 /// <summary>
-/// Configuration des tarifs d'électricité réseau.
+/// Configuration for grid electricity tariffs.
 /// </summary>
 public class TariffConfig
 {
@@ -22,63 +22,63 @@ public class TariffConfig
 }
 
 /// <summary>
-/// Un créneau tarifaire avec plages horaires, filtre jours ISO (Lundi=1..Dimanche=7) et prix.
+/// A tariff slot with time ranges, ISO day-of-week filter (Monday=1..Sunday=7) and price.
 ///
-/// CONVENTION JOURS (ISO 8601) :
-///   1=Lundi  2=Mardi  3=Mercredi  4=Jeudi  5=Vendredi  6=Samedi  7=Dimanche
-///   Absent ou liste vide → actif tous les jours.
+/// DAY CONVENTION (ISO 8601):
+///   1=Monday  2=Tuesday  3=Wednesday  4=Thursday  5=Friday  6=Saturday  7=Sunday
+///   Missing or empty list -> active every day.
 ///
-/// EXEMPLES YAML :
+/// YAML EXAMPLES:
 ///
-///   Heures creuses semaine (chevauchant minuit) :
+///   Weekday off-peak spanning midnight:
 ///     name: "HC Semaine"
 ///     price_per_kwh: 0.10
 ///     start_time: "22:00"
 ///     end_time:   "06:00"
-///     days_of_week: [1,2,3,4,5]      # lundi→vendredi
+///     days_of_week: [1,2,3,4,5]      # Monday→Friday
 ///
-///   Week-end tarif réduit toute la journée :
+///   Reduced weekend tariff all day:
 ///     name: "Week-end"
 ///     price_per_kwh: 0.12
 ///     start_time: "00:00"
-///     end_time:   "00:00"            # start == end → TOUTE la journée
-///     days_of_week: [6,7]            # samedi + dimanche
+///     end_time:   "00:00"            # start == end -> ENTIRE day
+///     days_of_week: [6,7]            # Saturday + Sunday
 ///
-///   Nuit week-end encore moins chère :
+///   Weekend night even cheaper:
 ///     name: "Nuit Week-end"
 ///     price_per_kwh: 0.07
 ///     start_time: "22:00"
 ///     end_time:   "06:00"
-///     days_of_week: [5,6,7]          # vendredi soir, samedi soir, dimanche soir
+///     days_of_week: [5,6,7]          # Friday night, Saturday night, Sunday night
 /// </summary>
 public class TariffSlot
 {
-    /// <summary>Nom pour les logs (ex: "HC Semaine", "Week-end").</summary>
+    /// <summary>Name for logs (e.g. "HC Semaine", "Week-end").</summary>
     public string Name { get; set; } = string.Empty;
 
-    /// <summary>Prix en €/kWh pour ce créneau.</summary>
+    /// <summary>Price in €/kWh for this slot.</summary>
     public double PricePerKwh { get; set; }
 
-    /// <summary>Heure de début incluse au format "HH:mm".</summary>
+    /// <summary>Inclusive start time in "HH:mm" format.</summary>
     public string StartTime { get; set; } = "00:00";
 
     /// <summary>
-    /// Heure de fin exclue au format "HH:mm".
-    /// Si EndTime &lt; StartTime → créneau chevauchant minuit (ex: 22:00→06:00).
-    /// Si StartTime == EndTime == "00:00" → actif toute la journée.
+    /// Exclusive end time in "HH:mm" format.
+    /// If EndTime &lt; StartTime -> slot spans midnight (e.g. 22:00→06:00).
+    /// If StartTime == EndTime == "00:00" -> active for the entire day.
     /// </summary>
     public string EndTime { get; set; } = "00:00";
 
     /// <summary>
-    /// Filtre sur les jours de la semaine — convention ISO 8601 :
-    ///   1=Lundi  2=Mardi  3=Mercredi  4=Jeudi  5=Vendredi  6=Samedi  7=Dimanche
-    /// null ou liste vide → actif tous les jours.
+    /// Filter on days of the week — ISO 8601 convention:
+    ///   1=Monday  2=Tuesday  3=Wednesday  4=Thursday  5=Friday  6=Saturday  7=Sunday
+    /// null or empty list -> active every day.
     ///
-    /// IMPORTANT pour les créneaux chevauchant minuit (ex: 22:00→06:00 avec [5]) :
-    ///   Le filtre porte sur le jour en cours à l'instant évalué.
-    ///   Vendredi 23:30 → actif ✓  (vendredi=5 est dans la liste)
-    ///   Samedi   02:00 → actif ✓  (samedi=6 est dans la liste si [5,6])
-    ///   Samedi   23:30 → inactif ✗ si [5] seulement (samedi=6 absent)
+    /// IMPORTANT for slots spanning midnight (e.g. 22:00→06:00 with [5]):
+    ///   The filter applies to the current day at the evaluated instant.
+    ///   Friday 23:30 -> active ✓  (friday=5 is in the list)
+    ///   Saturday 02:00 -> active ✓  (saturday=6 is in the list if [5,6])
+    ///   Saturday 23:30 -> inactive ✗ if only [5] (saturday=6 absent)
     /// </summary>
     public List<int>? DaysOfWeek { get; set; }
 
@@ -86,9 +86,9 @@ public class TariffSlot
     public TimeSpan ParsedEnd   => TimeSpan.Parse(EndTime);
 
     /// <summary>
-    /// Vérifie si ce créneau est actif à l'instant donné (heure locale).
+    /// Checks if this slot is active at the given instant (local time).
     ///
-    /// Conversion .NET → ISO : DayOfWeek.Sunday(0) → 7, les autres restent identiques.
+    /// .NET -> ISO conversion: DayOfWeek.Sunday(0) -> 7, others remain the same.
     /// </summary>
     public bool IsActiveAt(DateTime localTime)
     {
@@ -106,9 +106,9 @@ public class TariffSlot
         var start = ParsedStart;
         var end   = ParsedEnd;
 
-        if (start == end) return true;                          // toute la journée
-        if (start < end)  return tod >= start && tod < end;    // créneau normal
-        return tod >= start || tod < end;                       // chevauchant minuit
+        if (start == end) return true;                          // entire day
+        if (start < end)  return tod >= start && tod < end;    // normal slot
+        return tod >= start || tod < end;                       // spanning midnight
     }
 }
 
@@ -117,8 +117,8 @@ public class TariffSlot
 // ═════════════════════════════════════════════════════════════════════════════
 
 /// <summary>
-/// Répond aux questions tarifaires utilisées par l'algorithme de distribution
-/// et par le ML pour optimiser l'autoconsommation.
+/// Answers tariff-related questions used by the distribution algorithm
+/// and by ML to optimize self-consumption.
 /// </summary>
 public class TariffEngine
 {
@@ -151,7 +151,7 @@ public class TariffEngine
                     "Check your tariff configuration.",
                     localTime.ToString("HH:mm"), names, diff);
 
-                LastSlotConflict = $"{localTime:HH:mm} — slots actifs simultanément : {names}";
+                LastSlotConflict = $"{localTime:HH:mm} — overlapping active slots: {names}";
             }
         }
 

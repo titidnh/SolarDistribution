@@ -5,18 +5,18 @@ using SolarDistribution.Core.Services;
 namespace SolarDistribution.Infrastructure.Services;
 
 /// <summary>
-/// Appelle l'API Open-Meteo (gratuite, sans clé) pour récupérer :
-///   - Conditions actuelles : température, nuages, précipitations, rayonnement
-///   - Prévisions horaires sur 12h : rayonnement direct + couverture nuageuse
+/// Calls the Open-Meteo API (free, no key) to retrieve:
+///   - Current conditions: temperature, clouds, precipitation, radiation
+///   - Hourly forecast for 12h: direct radiation + cloud cover
 ///
-/// Endpoint utilisé : https://api.open-meteo.com/v1/forecast
+/// Endpoint used: https://api.open-meteo.com/v1/forecast
 /// </summary>
 public class OpenMeteoWeatherService : IWeatherService
 {
     private readonly HttpClient _http;
     private readonly ILogger<OpenMeteoWeatherService> _logger;
 
-    // Calcul approximatif du coucher de soleil (±20min) — évite une dépendance externe
+    // Approximate sunset calculations (±20min) — avoids an external dependency
     private static readonly TimeSpan DefaultSunsetOffset = TimeSpan.FromHours(19);
 
     public OpenMeteoWeatherService(HttpClient http, ILogger<OpenMeteoWeatherService> logger)
@@ -28,7 +28,7 @@ public class OpenMeteoWeatherService : IWeatherService
     public async Task<WeatherData?> GetCurrentWeatherAsync(
         double latitude, double longitude, CancellationToken ct = default)
     {
-        // Variables demandées à Open-Meteo
+        // Variables requested from Open-Meteo
         const string current = "temperature_2m,cloud_cover,precipitation,direct_radiation,diffuse_radiation";
         const string hourly  = "direct_radiation,cloud_cover";
 
@@ -106,10 +106,10 @@ public class OpenMeteoWeatherService : IWeatherService
         }
     }
 
-    // ── Helpers astronomiques simples ─────────────────────────────────────────
+    // ── Simple astronomical helpers ─────────────────────────────────────────
 
     /// <summary>
-    /// Estimation de la durée du jour en heures (formule de Cooper, précision ~±15min).
+    /// Estimate daylight duration in hours (Cooper formula, accuracy ~±15min).
     /// </summary>
     private static double EstimateDaylightHours(double latitude, DateTime date)
     {
@@ -124,12 +124,11 @@ public class OpenMeteoWeatherService : IWeatherService
     }
 
     /// <summary>
-    /// Estimation des heures restantes avant le coucher du soleil.
-    /// Retourne 0 si on est déjà après le coucher.
-    /// Fix 3 : le midi solaire est corrigé par la longitude pour éviter une erreur
-    /// systématique pouvant atteindre ±2h selon le fuseau horaire de l'installation.
-    /// Formule : midi solaire UTC ≈ 12h − (longitude / 15)
-    /// Exemple : Paris (longitude ≈ 2.35°) → midi solaire ≈ 11h51 UTC
+    /// Estimate hours remaining until sunset. Returns 0 if already after sunset.
+    /// Note: solar noon is corrected by longitude to avoid a systematic error
+    /// that can reach ±2h depending on the installation timezone.
+    /// Formula: solar noon UTC ≈ 12h − (longitude / 15)
+    /// Example: Paris (longitude ≈ 2.35°) → solar noon ≈ 11:51 UTC
     /// </summary>
     private static double EstimateHoursUntilSunset(double latitude, double longitude, DateTime utcNow)
     {

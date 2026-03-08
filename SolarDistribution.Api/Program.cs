@@ -31,8 +31,8 @@ builder.Services.AddSingleton<IBatteryDistributionService, BatteryDistributionSe
 builder.Services.AddScoped<SmartDistributionService>();
 // Fix #6 : factory de sessions (mapping métier → entités EF)
 builder.Services.AddScoped<IDistributionSessionFactory, DistributionSessionFactory>();
-// TariffEngine — injecter une TariffConfig vide par défaut (API standalone sans config.yaml).
-// En production le Worker injecte la vraie config lue depuis config.yaml.
+// TariffEngine — inject an empty TariffConfig by default (API standalone without config.yaml).
+// In production the Worker injects the real config loaded from config.yaml.
 builder.Services.AddSingleton<TariffEngine>(sp => new TariffEngine(new TariffConfig()));
 
 // ── ML.NET ────────────────────────────────────────────────────────────────────
@@ -45,7 +45,7 @@ builder.Services.AddScoped<IDistributionMLService>(sp =>
     return new DistributionMLService(repo, logger, modelDir);
 });
 
-// ── Météo Open-Meteo ──────────────────────────────────────────────────────────
+// ── Open-Meteo weather service ─────────────────────────────────────────────────
 builder.Services.AddHttpClient<IWeatherService, OpenMeteoWeatherService>(client =>
 {
     client.Timeout = TimeSpan.FromSeconds(10);
@@ -61,17 +61,17 @@ builder.Services.AddSwaggerGen(options =>
         Title       = "Solar Distribution API",
         Version     = "v1",
         Description = """
-            Distribue intelligemment le surplus solaire vers les batteries.
+            Intelligently distributes solar surplus to batteries.
 
-            **Moteurs de décision :**
-            - `Deterministic` — algorithme priorité/proportionnel (toujours disponible)
-            - `ML` — modèle ML.NET (actif après 50 sessions, R² ≥ 0.65)
-            - `ML-Fallback` — ML actif mais confiance partielle
+            **Decision engines:**
+            - `Deterministic` — priority/proportional algorithm (always available)
+            - `ML` — ML.NET model (active after 50 sessions, R² ≥ 0.65)
+            - `ML-Fallback` — ML active but partially confident
 
-            **Données persistées** (MariaDB) : chaque appel `/calculate` stocke
-            la session, les états batteries, la météo Open-Meteo et le log ML.
+            **Persisted data** (MariaDB): each `/calculate` call stores
+            the session, battery states, Open-Meteo weather and ML log.
 
-            **Ré-entraînement** : `POST /api/ml/retrain` — manuel, sur demande.
+            **Retrain**: `POST /api/ml/retrain` — manual, on demand.
             """
     });
 

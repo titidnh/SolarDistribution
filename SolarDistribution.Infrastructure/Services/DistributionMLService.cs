@@ -11,11 +11,11 @@ using SolarDistribution.Core.Services.ML;
 namespace SolarDistribution.Infrastructure.Services;
 
 /// <summary>
-/// Deux modèles FastTree regression entraînés sur les sessions historiques avec feedback valide :
-///   Modèle 1 : prédit OptimalSoftMaxPercent    (quand s'arrêter de charger vers SoftMax)
-///   Modèle 2 : prédit OptimalPreventiveThreshold (seuil bas pour forcer la recharge)
+/// Two FastTree regression models trained on historical sessions with valid feedback:
+///   Model 1: predicts OptimalSoftMaxPercent    (when to stop charging toward SoftMax)
+///   Model 2: predicts OptimalPreventiveThreshold (low threshold to force charging)
 ///
-/// LABELS RÉELS : issus de SessionFeedback.ObservedOptimal* — jamais d'heuristiques codées en dur.
+/// REAL LABELS: derived from SessionFeedback.ObservedOptimal* — no hard-coded heuristics.
 /// </summary>
 public class DistributionMLService : IDistributionMLService
 {
@@ -33,9 +33,9 @@ public class DistributionMLService : IDistributionMLService
     private ITransformer? _preventiveModel;
     private MLModelMeta?  _meta;
 
-    // ML-1 : Pool maison thread-safe — évite de recréer PredictionEngine à chaque cycle.
-    // ConcurrentBag : chaque thread prend un moteur, l'utilise, le repose.
-    // Sans pool : CreatePredictionEngine() coûte ~5-20ms (allocation + JIT) à chaque appel.
+    // ML-1: Local thread-safe pool — avoids recreating PredictionEngine each cycle.
+    // ConcurrentBag: each thread takes an engine, uses it, then returns it.
+    // Without a pool: CreatePredictionEngine() costs ~5-20ms (allocation + JIT) per call.
     private ConcurrentBag<PredictionEngine<DistributionFeatures, SoftMaxPrediction>>?    _smEngines;
     private ConcurrentBag<PredictionEngine<DistributionFeatures, PreventivePrediction>>? _pvEngines;
 
@@ -74,7 +74,7 @@ public class DistributionMLService : IDistributionMLService
 
         try
         {
-            // ML-1 : emprunte un moteur du pool (ou en crée un si le pool est vide)
+            // ML-1: borrow an engine from the pool (or create one if the pool is empty)
             if (_smEngines is null || _pvEngines is null)
             {
                 _log.LogDebug("ML prediction engines not ready — fallback");
@@ -94,7 +94,7 @@ public class DistributionMLService : IDistributionMLService
             }
             finally
             {
-                // Repose les moteurs dans le pool pour la prochaine prédiction
+                // Return the engines to the pool for the next prediction
                 _smEngines.Add(smEng);
                 _pvEngines.Add(pvEng);
             }
@@ -102,8 +102,8 @@ public class DistributionMLService : IDistributionMLService
             double softMax    = Math.Clamp(rawSoftMax,    50, 100);
             double preventive = Math.Clamp(rawPreventive, 15,  60);
 
-            // ML-2 : contrainte de cohérence — garantit une marge minimale entre
-            // PreventiveThreshold et SoftMax pour éviter des états impossibles.
+            // ML-2: coherence constraint — guarantees a minimal margin between
+            // PreventiveThreshold and SoftMax to avoid impossible states.
             const double MinMarginPercent = 10.0;
             if (softMax - preventive < MinMarginPercent)
             {
@@ -135,7 +135,7 @@ public class DistributionMLService : IDistributionMLService
         }
     }
 
-    // ── Entraînement ──────────────────────────────────────────────────────────
+    // ── Training ─────────────────────────────────────────────────────────────
 
     public async Task<MLTrainingResult> RetrainAsync(CancellationToken ct = default)
     {
@@ -189,7 +189,7 @@ public class DistributionMLService : IDistributionMLService
         }
     }
 
-    /// <summary>ML-6 : async pour éviter GetAwaiter().GetResult() — risque deadlock.</summary>
+    /// <summary>ML-6: async to avoid GetAwaiter().GetResult() — risk of deadlock.</summary>
     public async Task<MLModelStatus> GetStatusAsync(CancellationToken ct = default)
     {
         int sessions  = await _repo.CountSessionsAsync(ct);
@@ -201,10 +201,10 @@ public class DistributionMLService : IDistributionMLService
     }
 
     /// <summary>
-    /// ML-5 : Détection de dérive (concept drift).
-    /// Calcule le R² du modèle actif sur les <paramref name="windowSize"/> sessions les plus récentes
-    /// avec feedback valide, et compare avec le R² de référence.
-    /// Retourne true si la dégradation dépasse <paramref name="threshold"/> (ex: 0.15).
+    /// ML-5: Concept drift detection.
+    /// Computes the R² of the active model on the <paramref name="windowSize"/> most recent
+    /// sessions with valid feedback, and compares it with the reference R².
+    /// Returns true if degradation exceeds <paramref name="threshold"/> (e.g. 0.15).
     /// </summary>
     public async Task<bool> CheckForDriftAsync(int windowSize, double threshold, CancellationToken ct = default)
     {
@@ -258,26 +258,26 @@ public class DistributionMLService : IDistributionMLService
         return false;
     }
 
-    // ── Helpers privés ────────────────────────────────────────────────────────
+    // ── Private helpers ──────────────────────────────────────────────────────
 
     private (ITransformer Model, double R2) Train(IDataView train, IDataView test, string label)
     {
         var featureCols = new[]
         {
-            // Temporel brut
+            // Raw temporal
             nameof(DistributionFeatures.HourOfDay),
             nameof(DistributionFeatures.DayOfWeek),
             nameof(DistributionFeatures.MonthOfYear),
             nameof(DistributionFeatures.DayOfYear),
-            // Cyclique
+            // Cyclical
             nameof(DistributionFeatures.SinHour),
             nameof(DistributionFeatures.CosHour),
             nameof(DistributionFeatures.SinMonth),
             nameof(DistributionFeatures.CosMonth),
-            // Saisonnalité directe
+            // Direct seasonality
             nameof(DistributionFeatures.DaylightHours),
             nameof(DistributionFeatures.HoursUntilSunset),
-            // Météo
+            // Weather
             nameof(DistributionFeatures.CloudCoverPercent),
             nameof(DistributionFeatures.DirectRadiationWm2),
             nameof(DistributionFeatures.DiffuseRadiationWm2),
@@ -290,13 +290,13 @@ public class DistributionMLService : IDistributionMLService
             nameof(DistributionFeatures.TotalCapacityWh),
             nameof(DistributionFeatures.UrgentBatteryCount),
             nameof(DistributionFeatures.TotalMaxChargeRateW),
-            // ML-4 : dispersion batteries
+            // ML-4: battery dispersion
             nameof(DistributionFeatures.SocStdDev),
             nameof(DistributionFeatures.CapacityRatio),
             nameof(DistributionFeatures.NonUrgentBatteryCount),
             // Surplus
             nameof(DistributionFeatures.SurplusW),
-            // Tarif
+            // Tariff
             nameof(DistributionFeatures.NormalizedTariff),
             nameof(DistributionFeatures.IsOffPeakHour),
             nameof(DistributionFeatures.HoursToNextFavorable),

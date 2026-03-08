@@ -1,6 +1,6 @@
-# SolarDistribution — Agent Autonome Docker
+# SolarDistribution — Autonomous Docker Agent
 
-Agent autonome qui lit le surplus solaire depuis Home Assistant et distribue intelligemment la puissance de recharge vers les batteries, avec ML.NET adaptatif et persistance MariaDB.
+Autonomous agent that reads solar surplus from Home Assistant and intelligently distributes charging power to batteries, with adaptive ML.NET and MariaDB persistence.
 
 ## Architecture
 
@@ -24,9 +24,9 @@ Projects .NET 10 :
 └── SolarDistribution.Tests             # NUnit + NSubstitute
 ```
 
-## Démarrage rapide
+## Quick start
 
-### 1. Configurer
+### 1. Configure
 
 ```bash
 # Copier et éditer le fichier de config
@@ -34,13 +34,13 @@ cp config/config.yaml config/config.yaml  # déjà présent
 nano config/config.yaml
 ```
 
-Éléments obligatoires à renseigner :
-- `home_assistant.url` → URL de votre HA
-- `home_assistant.token` → Long-Lived Access Token (HA → Profil → Sécurité)
-- `solar.surplus_mode` → `p1_invert` si vous utilisez votre compteur P1/DSMR (recommandé), `direct` si vous avez un sensor de surplus dédié
-- `solar.surplus_entity` → entity_id de votre compteur P1 (ex: `sensor.p1_power`) ou de votre sensor surplus
-- `batteries[].entities.soc` → entity_id du % charge pour chaque batterie
-- `batteries[].entities.charge_power` → entity_id `number.*` de contrôle puissance
+Required configuration items:
+- `home_assistant.url` → your HA URL
+- `home_assistant.token` → Long-Lived Access Token (HA → Profile → Security)
+- `solar.surplus_mode` → `p1_invert` if using a P1/DSMR meter (recommended), `direct` if you have a dedicated surplus sensor
+- `solar.surplus_entity` → entity_id of your P1 meter (e.g. `sensor.p1_power`) or your surplus sensor
+- `batteries[].entities.soc` → entity_id for each battery's charge %
+- `batteries[].entities.charge_power` → `number.*` entity id to control charge power
 
 ### 2. Variables d'environnement
 
