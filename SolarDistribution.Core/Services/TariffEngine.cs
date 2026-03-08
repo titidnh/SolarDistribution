@@ -1,33 +1,15 @@
-// TariffConfig and TariffSlot are defined locally in Core to avoid a project
-// dependency on the Worker project. This keeps the tariff logic colocated with
-// TariffEngine while preserving the original behavior.
-
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace SolarDistribution.Core.Services;
 
-/// <summary>
-/// Répond aux questions tarifaires utilisées par l'algorithme de distribution
-/// et par le ML pour optimiser l'autoconsommation.
-///
-/// Fix #8 : ILogger injecté pour tracer les conflits de slots tarifaires
-/// (overlap de configuration) qui étaient auparavant silencieux.
-/// </summary>
-public class TariffEngine
-{
-    private readonly TariffConfig             _config;
-    private readonly ILogger<TariffEngine>    _logger;
-
-    public TariffEngine(TariffConfig config, ILogger<TariffEngine>? logger = null)
-    {
-        _config = config;
-        _logger = logger ?? NullLogger<TariffEngine>.Instance;
-    }
+// ═════════════════════════════════════════════════════════════════════════════
+// TariffConfig + TariffSlot — source de vérité unique dans Core.
+// SolarConfig.cs (Worker) référence ces types via using.
+// ═════════════════════════════════════════════════════════════════════════════
 
 /// <summary>
-/// Minimal tariff configuration used by TariffEngine. Kept local to Core to
-/// avoid referencing the Worker project from Core.
+/// Configuration des tarifs d'électricité réseau.
 /// </summary>
 public class TariffConfig
 {
@@ -39,40 +21,118 @@ public class TariffConfig
     public List<TariffSlot> Slots { get; set; } = new List<TariffSlot>();
 }
 
+/// <summary>
+/// Un créneau tarifaire avec plages horaires, filtre jours ISO (Lundi=1..Dimanche=7) et prix.
+///
+/// CONVENTION JOURS (ISO 8601) :
+///   1=Lundi  2=Mardi  3=Mercredi  4=Jeudi  5=Vendredi  6=Samedi  7=Dimanche
+///   Absent ou liste vide → actif tous les jours.
+///
+/// EXEMPLES YAML :
+///
+///   Heures creuses semaine (chevauchant minuit) :
+///     name: "HC Semaine"
+///     price_per_kwh: 0.10
+///     start_time: "22:00"
+///     end_time:   "06:00"
+///     days_of_week: [1,2,3,4,5]      # lundi→vendredi
+///
+///   Week-end tarif réduit toute la journée :
+///     name: "Week-end"
+///     price_per_kwh: 0.12
+///     start_time: "00:00"
+///     end_time:   "00:00"            # start == end → TOUTE la journée
+///     days_of_week: [6,7]            # samedi + dimanche
+///
+///   Nuit week-end encore moins chère :
+///     name: "Nuit Week-end"
+///     price_per_kwh: 0.07
+///     start_time: "22:00"
+///     end_time:   "06:00"
+///     days_of_week: [5,6,7]          # vendredi soir, samedi soir, dimanche soir
+/// </summary>
 public class TariffSlot
 {
+    /// <summary>Nom pour les logs (ex: "HC Semaine", "Week-end").</summary>
     public string Name { get; set; } = string.Empty;
+
+    /// <summary>Prix en €/kWh pour ce créneau.</summary>
     public double PricePerKwh { get; set; }
+
+    /// <summary>Heure de début incluse au format "HH:mm".</summary>
     public string StartTime { get; set; } = "00:00";
+
+    /// <summary>
+    /// Heure de fin exclue au format "HH:mm".
+    /// Si EndTime &lt; StartTime → créneau chevauchant minuit (ex: 22:00→06:00).
+    /// Si StartTime == EndTime == "00:00" → actif toute la journée.
+    /// </summary>
     public string EndTime { get; set; } = "00:00";
+
+    /// <summary>
+    /// Filtre sur les jours de la semaine — convention ISO 8601 :
+    ///   1=Lundi  2=Mardi  3=Mercredi  4=Jeudi  5=Vendredi  6=Samedi  7=Dimanche
+    /// null ou liste vide → actif tous les jours.
+    ///
+    /// IMPORTANT pour les créneaux chevauchant minuit (ex: 22:00→06:00 avec [5]) :
+    ///   Le filtre porte sur le jour en cours à l'instant évalué.
+    ///   Vendredi 23:30 → actif ✓  (vendredi=5 est dans la liste)
+    ///   Samedi   02:00 → actif ✓  (samedi=6 est dans la liste si [5,6])
+    ///   Samedi   23:30 → inactif ✗ si [5] seulement (samedi=6 absent)
+    /// </summary>
     public List<int>? DaysOfWeek { get; set; }
 
     public TimeSpan ParsedStart => TimeSpan.Parse(StartTime);
     public TimeSpan ParsedEnd   => TimeSpan.Parse(EndTime);
 
+    /// <summary>
+    /// Vérifie si ce créneau est actif à l'instant donné (heure locale).
+    ///
+    /// Conversion .NET → ISO : DayOfWeek.Sunday(0) → 7, les autres restent identiques.
+    /// </summary>
     public bool IsActiveAt(DateTime localTime)
     {
-        if (DaysOfWeek is { Count: > 0 } && !DaysOfWeek.Contains((int)localTime.DayOfWeek))
-            return false;
+        if (DaysOfWeek is { Count: > 0 })
+        {
+            int isoDow = localTime.DayOfWeek == DayOfWeek.Sunday
+                ? 7
+                : (int)localTime.DayOfWeek;   // Lundi=1 … Samedi=6 déjà corrects
+
+            if (!DaysOfWeek.Contains(isoDow))
+                return false;
+        }
 
         var tod   = localTime.TimeOfDay;
         var start = ParsedStart;
         var end   = ParsedEnd;
 
-        if (start == end) return true;
-        if (start < end) return tod >= start && tod < end;
-        return tod >= start || tod < end;
+        if (start == end) return true;                          // toute la journée
+        if (start < end)  return tod >= start && tod < end;    // créneau normal
+        return tod >= start || tod < end;                       // chevauchant minuit
     }
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// TariffEngine
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Répond aux questions tarifaires utilisées par l'algorithme de distribution
+/// et par le ML pour optimiser l'autoconsommation.
+/// </summary>
+public class TariffEngine
+{
+    private readonly TariffConfig          _config;
+    private readonly ILogger<TariffEngine> _logger;
+
+    public TariffEngine(TariffConfig config, ILogger<TariffEngine>? logger = null)
+    {
+        _config = config;
+        _logger = logger ?? NullLogger<TariffEngine>.Instance;
+    }
+
     // ── Tarif instantané ──────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Retourne le tarif actif à l'instant donné (heure locale).
-    /// Fix #8 : Les conflits de slots (overlap de configuration) sont maintenant
-    /// tracés via ILogger plutôt que stockés silencieusement dans LastSlotConflict.
-    /// Comportement conservateur : on retourne le slot le moins cher.
-    /// </summary>
     public TariffSlot? GetActiveSlot(DateTime localTime)
     {
         var matching = _config.Slots.Where(s => s.IsActiveAt(localTime)).ToList();
@@ -80,17 +140,16 @@ public class TariffSlot
 
         if (matching.Count > 1)
         {
-            var names = string.Join(", ", matching.Select(s => $"\"{s.Name}\""));
-            double priceDiff = matching.Max(s => s.PricePerKwh) - matching.Min(s => s.PricePerKwh);
+            var names    = string.Join(", ", matching.Select(s => $"\"{s.Name}\""));
+            double diff  = matching.Max(s => s.PricePerKwh) - matching.Min(s => s.PricePerKwh);
 
-            if (priceDiff > 0.01)
+            if (diff > 0.01)
             {
-                // Fix #8 : log Warning visible en production au lieu d'une propriété silencieuse
                 _logger.LogWarning(
                     "TariffEngine: slot overlap at {Time} — active slots: {Slots} " +
                     "(price diff={Diff:F3}€/kWh). Using cheapest slot as fallback. " +
                     "Check your tariff configuration.",
-                    localTime.ToString("HH:mm"), names, priceDiff);
+                    localTime.ToString("HH:mm"), names, diff);
 
                 LastSlotConflict = $"{localTime:HH:mm} — slots actifs simultanément : {names}";
             }
@@ -99,18 +158,11 @@ public class TariffSlot
         return matching.MinBy(s => s.PricePerKwh);
     }
 
-    /// <summary>
-    /// Dernier conflit de slots détecté (null si aucun).
-    /// Conservé pour la compatibilité des tests existants.
-    /// En production, préférer les logs (Fix #8).
-    /// </summary>
     public string? LastSlotConflict { get; private set; }
 
-    /// <summary>Retourne le prix €/kWh à l'instant donné, ou null si inconnu.</summary>
     public double? GetCurrentPricePerKwh(DateTime localTime)
         => GetActiveSlot(localTime)?.PricePerKwh;
 
-    /// <summary>Vrai si on est dans un créneau dont le prix est en-dessous du seuil de charge réseau.</summary>
     public bool IsGridChargeFavorable(DateTime localTime)
     {
         if (_config.GridChargeThresholdPerKwh <= 0) return false;
@@ -118,11 +170,6 @@ public class TariffSlot
         return price.HasValue && price.Value < _config.GridChargeThresholdPerKwh;
     }
 
-    // ── Prévision tarifaire ───────────────────────────────────────────────────
-
-    /// <summary>
-    /// Retourne le tarif minimal prévu sur les N prochaines heures.
-    /// </summary>
     public double? GetMinPriceNextHours(DateTime localTime, int horizonHours)
     {
         double? min = null;
@@ -135,9 +182,6 @@ public class TariffSlot
         return min;
     }
 
-    /// <summary>
-    /// Retourne le nombre d'heures jusqu'au prochain créneau favorable (tarif bas).
-    /// </summary>
     public double? HoursUntilNextFavorableTariff(DateTime localTime)
     {
         if (IsGridChargeFavorable(localTime)) return 0;
@@ -151,40 +195,33 @@ public class TariffSlot
         return null;
     }
 
-    // ── Décision de charge réseau ─────────────────────────────────────────────
-
-    /// <summary>
-    /// Calcule le contexte tarifaire complet pour un instant donné.
-    /// </summary>
     public TariffContext EvaluateContext(DateTime localTime, double[] solarForecastWm2)
     {
-        var activeSlot     = GetActiveSlot(localTime);
-        double? currentPrice = activeSlot?.PricePerKwh;
-        bool isFavorable   = IsGridChargeFavorable(localTime);
+        var activeSlot   = GetActiveSlot(localTime);
+        double? price    = activeSlot?.PricePerKwh;
+        bool isFavorable = IsGridChargeFavorable(localTime);
 
-        int horizon        = _config.SolarForecastHorizonHours;
-        double avgSolarForecast = solarForecastWm2.Take(horizon).DefaultIfEmpty(0).Average();
-        bool solarExpected = avgSolarForecast >= _config.MinSolarForecastForGridBlock;
+        int horizon       = _config.SolarForecastHorizonHours;
+        double avgSolar   = solarForecastWm2.Take(horizon).DefaultIfEmpty(0).Average();
+        bool solarExpected = avgSolar >= _config.MinSolarForecastForGridBlock;
 
         bool gridChargeAllowed = isFavorable && !solarExpected && _config.Slots.Any();
 
-        double? maxFuturePrice = GetMaxPriceNextHours(localTime, 24);
-        double savings = (maxFuturePrice ?? 0) - (currentPrice ?? 0);
+        double? maxFuture = GetMaxPriceNextHours(localTime, 24);
+        double savings    = (maxFuture ?? 0) - (price ?? 0);
 
         return new TariffContext(
             ActiveSlotName:       activeSlot?.Name,
-            CurrentPricePerKwh:   currentPrice,
+            CurrentPricePerKwh:   price,
             IsFavorableForGrid:   isFavorable,
             GridChargeAllowed:    gridChargeAllowed,
-            AvgSolarForecastWm2:  avgSolarForecast,
+            AvgSolarForecastWm2:  avgSolar,
             SolarExpectedSoon:    solarExpected,
             HoursToNextFavorable: HoursUntilNextFavorableTariff(localTime),
             MaxSavingsPerKwh:     Math.Max(0, savings),
             ExportPricePerKwh:    _config.ExportPricePerKwh
         );
     }
-
-    // ── Helpers privés ────────────────────────────────────────────────────────
 
     private double? GetMaxPriceNextHours(DateTime localTime, int horizonHours)
     {
@@ -199,9 +236,10 @@ public class TariffSlot
     }
 }
 
-/// <summary>
-/// Contexte tarifaire calculé pour un cycle de distribution.
-/// </summary>
+// ═════════════════════════════════════════════════════════════════════════════
+// TariffContext
+// ═════════════════════════════════════════════════════════════════════════════
+
 public record TariffContext(
     string? ActiveSlotName,
     double? CurrentPricePerKwh,

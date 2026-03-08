@@ -161,7 +161,7 @@ tariff:
   # start_time et end_time : la plage [start, end[
   #   Si start > end → créneau chevauchant minuit (ex: 22:00 → 06:00)
   #   Si start == end == "00:00" → toute la journée
-  # days_of_week : liste de jours (0=Dim, 1=Lun, 2=Mar, 3=Mer, 4=Jeu, 5=Ven, 6=Sam)
+  # days_of_week : liste de jours (1=Lun, 2=Mar, 3=Mer, 4=Jeu, 5=Ven, 6=Sam, 7=Dim)
   #   Absent ou vide → tous les jours
   #
   # EXEMPLES DE CONFIGURATIONS :
@@ -196,7 +196,7 @@ tariff:
   # │      price_per_kwh: 0.12                                                  │
   # │      start_time: "00:00"                                                  │
   # │      end_time:   "00:00"    # toute la journée                            │
-  # │      days_of_week: [0, 6]   # samedi + dimanche                           │
+  # │      days_of_week: [6, 7]   # 6=Samedi + 7=Dimanche                           │
   # │                                                                           │
   # │    - name: "Jour semaine"                                                 │
   # │      price_per_kwh: 0.30                                                  │
@@ -216,17 +216,108 @@ tariff:
   # │      end_time:   "00:00"                                                  │
   # └─────────────────────────────────────────────────────────────────────────┘
 
-  # Configuration active — adapter à votre contrat :
+  # ── Configuration active — adapter à votre contrat ───────────────────────
+  #
+  # RÈGLE IMPORTANTE : si deux slots se chevauchent à un instant donné
+  # (ex: "Week-end" + "Heures Creuses" les samedi/dimanche à 23h),
+  # le moteur sélectionne automatiquement le MOINS CHER et log un Warning.
+  # Évitez les chevauchements pour une configuration propre.
+  #
+  # EXAMPLE 1 — Bi-horaire simple semaine uniquement + tarif week-end fixe :
+  #
+  #   slots:
+  #     - name: "Heures Creuses Semaine"
+  #       price_per_kwh: 0.10
+  #       start_time: "22:00"
+  #       end_time:   "06:00"     # chevauchant minuit
+  #       days_of_week: [1,2,3,4,5]
+  #
+  #     - name: "Heures Pleines Semaine"
+  #       price_per_kwh: 0.28
+  #       start_time: "06:00"
+  #       end_time:   "22:00"
+  #       days_of_week: [1,2,3,4,5]
+  #
+  #     - name: "Week-end"
+  #       price_per_kwh: 0.12     # tarif réduit toute la journée
+  #       start_time: "00:00"
+  #       end_time:   "00:00"     # start == end → TOUTE LA JOURNÉE
+  #       days_of_week: [6,7]     # 6=Samedi, 7=Dimanche
+  #
+  # EXAMPLE 2 — Week-end avec nuit encore moins chère :
+  #
+  #   slots:
+  #     - name: "Nuit Semaine"
+  #       price_per_kwh: 0.10
+  #       start_time: "22:00"
+  #       end_time:   "06:00"
+  #       days_of_week: [1,2,3,4,5]
+  #
+  #     - name: "Jour Semaine"
+  #       price_per_kwh: 0.28
+  #       start_time: "06:00"
+  #       end_time:   "22:00"
+  #       days_of_week: [1,2,3,4,5]
+  #
+  #     - name: "Nuit Week-end"
+  #       price_per_kwh: 0.07     # prix très bas la nuit du week-end
+  #       start_time: "22:00"
+  #       end_time:   "06:00"
+  #       days_of_week: [5,6,7]   # 5=vendredi, 6=samedi, 7=dimanche
+  #
+  #     - name: "Jour Week-end"
+  #       price_per_kwh: 0.12
+  #       start_time: "06:00"
+  #       end_time:   "22:00"
+  #       days_of_week: [6,7]
+  #
+  # ── Configuration active — adapter à votre contrat ───────────────────────
+  #
+  # days_of_week : 1=Lundi, 2=Mardi, 3=Mercredi, 4=Jeudi, 5=Vendredi, 6=Samedi, 7=Dimanche
+  # Absent ou vide → le slot est actif TOUS les jours de la semaine.
+  #
+  # start_time == end_time == "00:00" → le slot couvre TOUTE la journée.
+  # start_time > end_time             → créneau chevauchant minuit (ex: 22:00→06:00).
+  #
   slots:
-    - name: "Heures Creuses"
+    # ── Semaine : heures creuses (22h→6h, lundi au vendredi) ──────────────
+    - name: "HC Semaine"
       price_per_kwh: 0.10
       start_time: "22:00"
-      end_time:   "06:00"   # chevauchant minuit
+      end_time:   "06:00"       # chevauchant minuit
+      days_of_week: [1,2,3,4,5] # lundi→vendredi uniquement
 
-    - name: "Heures Pleines"
+    # ── Semaine : heures pleines (6h→22h, lundi au vendredi) ──────────────
+    - name: "HP Semaine"
       price_per_kwh: 0.28
       start_time: "06:00"
       end_time:   "22:00"
+      days_of_week: [1,2,3,4,5]
+
+    # ── Week-end : tarif réduit toute la journée ──────────────────────────
+    # start_time == end_time == "00:00" → couvre les 24h du samedi et du dimanche.
+    - name: "Week-end"
+      price_per_kwh: 0.12
+      start_time: "00:00"
+      end_time:   "00:00"       # toute la journée
+      days_of_week: [6,7]       # 6=Samedi, 7=Dimanche
+
+    # ── Exemple optionnel : nuit week-end encore moins chère ──────────────
+    # Décommenter pour différencier nuit/jour le week-end.
+    # ATTENTION : si activé avec le slot "Week-end" ci-dessus, il y aura
+    # chevauchement sur les plages 22h→6h du week-end. Choisir l'un ou l'autre.
+    #
+    # - name: "Nuit Week-end"
+    #   price_per_kwh: 0.07
+    #   start_time: "22:00"
+    #   end_time:   "06:00"
+    #   days_of_week: [5,6,7]   # 5=vendredi, 6=samedi, 7=dimanche
+    #
+    # - name: "Jour Week-end"
+    #   price_per_kwh: 0.12
+    #   start_time: "06:00"
+    #   end_time:   "22:00"
+    #   days_of_week: [6,7]
 
 # ── Base de données MariaDB ────────────────────────────────────────────────────
 database:

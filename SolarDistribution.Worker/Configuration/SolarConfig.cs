@@ -1,3 +1,4 @@
+using SolarDistribution.Core.Services;  // TariffConfig, TariffSlot définis dans Core
 namespace SolarDistribution.Worker.Configuration;
 
 /// <summary>
@@ -176,101 +177,6 @@ public class BatteryEntitiesConfig
     public string ValueUnit { get; set; } = "W";
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Tarification électrique
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// <summary>
-/// Configuration des tarifs d'électricité réseau.
-/// Permet au système de décider s'il est rentable de charger depuis le réseau
-/// quand il n'y a pas de surplus solaire.
-/// </summary>
-public class TariffConfig
-{
-    /// <summary>Devise pour les logs (ex: "EUR", "USD").</summary>
-    public string Currency { get; set; } = "EUR";
-
-    /// <summary>
-    /// Tarif de revente du surplus solaire en €/kWh.
-    /// 0 si vous n'êtes pas rémunéré pour l'injection réseau.
-    /// </summary>
-    public double ExportPricePerKwh { get; set; } = 0.08;
-
-    /// <summary>
-    /// Seuil de prix en €/kWh en-dessous duquel la charge depuis réseau est autorisée.
-    /// Si tarif actuel < seuil ET prévision solaire faible → charge réseau permise.
-    /// Mettre à 0 pour désactiver complètement la charge depuis le réseau.
-    /// </summary>
-    public double GridChargeThresholdPerKwh { get; set; } = 0.15;
-
-    /// <summary>
-    /// Seuil de rayonnement prévu (W/m²). En-dessous → pas de production attendue
-    /// → charge réseau autorisée si tarif favorable.
-    /// </summary>
-    public double MinSolarForecastForGridBlock { get; set; } = 100.0;
-
-    /// <summary>Horizon en heures pour évaluer la prévision solaire (défaut: 4h).</summary>
-    public int SolarForecastHorizonHours { get; set; } = 4;
-
-    /// <summary>
-    /// Créneaux tarifaires. Si vide → charge réseau désactivée.
-    /// </summary>
-    public List<TariffSlot> Slots { get; set; } = new List<TariffSlot>();
-}
-
-/// <summary>
-/// Un créneau tarifaire avec plages horaires et prix.
-/// Exemples :
-///   - Heures creuses  : StartTime="22:00", EndTime="06:00", PricePerKwh=0.10
-///   - Heures pleines  : StartTime="06:00", EndTime="22:00", PricePerKwh=0.28
-///   - Week-end réduit : StartTime="00:00", EndTime="00:00", DaysOfWeek=[0,6], PricePerKwh=0.12
-/// </summary>
-public class TariffSlot
-{
-    /// <summary>Nom pour les logs (ex: "Heures Creuses", "Peak").</summary>
-    public string Name { get; set; } = string.Empty;
-
-    /// <summary>Prix en €/kWh.</summary>
-    public double PricePerKwh { get; set; }
-
-    /// <summary>Heure de début incluse au format "HH:mm" (ex: "22:00").</summary>
-    public string StartTime { get; set; } = "00:00";
-
-    /// <summary>
-    /// Heure de fin exclue au format "HH:mm".
-    /// Peut être &lt; StartTime pour les créneaux chevauchant minuit
-    /// (ex: StartTime="22:00", EndTime="06:00" = 22h→6h).
-    /// </summary>
-    public string EndTime { get; set; } = "00:00";
-
-    /// <summary>
-    /// Jours de la semaine (0=Dimanche, 1=Lundi, ..., 6=Samedi).
-    /// null/vide = tous les jours.
-    /// Exemple : [1,2,3,4,5] = lundi au vendredi.
-    /// </summary>
-    public List<int>? DaysOfWeek { get; set; }
-
-    public TimeSpan ParsedStart => TimeSpan.Parse(StartTime);
-    public TimeSpan ParsedEnd   => TimeSpan.Parse(EndTime);
-
-    /// <summary>
-    /// Vérifie si ce créneau est actif à l'instant donné.
-    /// Gère automatiquement les créneaux chevauchant minuit.
-    /// </summary>
-    public bool IsActiveAt(DateTime localTime)
-    {
-        if (DaysOfWeek is { Count: > 0 } && !DaysOfWeek.Contains((int)localTime.DayOfWeek))
-            return false;
-
-        var tod   = localTime.TimeOfDay;
-        var start = ParsedStart;
-        var end   = ParsedEnd;
-
-        if (start == end) return true;           // toute la journée (00:00→00:00)
-        if (start < end)  return tod >= start && tod < end;   // créneau normal
-        return tod >= start || tod < end;        // créneau chevauchant minuit
-    }
-}
 
 
 public class MariaDbConfig

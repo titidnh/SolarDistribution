@@ -31,9 +31,9 @@ builder.Services.AddSingleton<IBatteryDistributionService, BatteryDistributionSe
 builder.Services.AddScoped<SmartDistributionService>();
 // Fix #6 : factory de sessions (mapping métier → entités EF)
 builder.Services.AddScoped<IDistributionSessionFactory, DistributionSessionFactory>();
-// TariffEngine depends on a TariffConfig; provide a default config so DI can
-// resolve SmartDistributionService without depending on the Worker project.
-builder.Services.AddSingleton<TariffEngine>(sp => new TariffEngine(new TariffEngine.TariffConfig()));
+// TariffEngine — injecter une TariffConfig vide par défaut (API standalone sans config.yaml).
+// En production le Worker injecte la vraie config lue depuis config.yaml.
+builder.Services.AddSingleton<TariffEngine>(sp => new TariffEngine(new TariffConfig()));
 
 // ── ML.NET ────────────────────────────────────────────────────────────────────
 // Register ML service as scoped because it depends on a scoped repository.
