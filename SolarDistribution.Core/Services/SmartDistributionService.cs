@@ -1,14 +1,16 @@
-using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using SolarDistribution.Core.Models;
 using SolarDistribution.Core.Services.ML;
-using SolarDistribution.Core.Data.Entities;
 using SolarDistribution.Core.Repositories;
 
 namespace SolarDistribution.Core.Services;
 
 /// <summary>
 /// Façade principale de distribution intelligente.
+///
+/// Fix #6 : La construction de l'entité DistributionSession est maintenant
+/// déléguée à IDistributionSessionFactory (implémentée dans Infrastructure).
+/// SmartDistributionService ne dépend plus directement des entités EF ni de JsonSerializer.
 ///
 /// Flux d'exécution par cycle :
 ///   1. Météo Open-Meteo (avec prévision 12h radiation + nuages)
@@ -21,11 +23,12 @@ namespace SolarDistribution.Core.Services;
 /// </summary>
 public class SmartDistributionService
 {
-    private readonly IBatteryDistributionService      _algo;
-    private readonly IDistributionMLService           _ml;
-    private readonly IWeatherService                  _weather;
-    private readonly IDistributionRepository          _repo;
-    private readonly TariffEngine                     _tariff;
+    private readonly IBatteryDistributionService       _algo;
+    private readonly IDistributionMLService            _ml;
+    private readonly IWeatherService                   _weather;
+    private readonly IDistributionRepository           _repo;
+    private readonly TariffEngine                      _tariff;
+    private readonly IDistributionSessionFactory       _sessionFactory;
     private readonly ILogger<SmartDistributionService> _logger;
 
     public SmartDistributionService(
@@ -34,14 +37,16 @@ public class SmartDistributionService
         IWeatherService                   weather,
         IDistributionRepository           repo,
         TariffEngine                      tariff,
+        IDistributionSessionFactory       sessionFactory,
         ILogger<SmartDistributionService> logger)
     {
-        _algo    = algo;
-        _ml      = ml;
-        _weather = weather;
-        _repo    = repo;
-        _tariff  = tariff;
-        _logger  = logger;
+        _algo           = algo;
+        _ml             = ml;
+        _weather        = weather;
+        _repo           = repo;
+        _tariff         = tariff;
+        _sessionFactory = sessionFactory;
+        _logger         = logger;
     }
 
     public async Task<SmartDistributionResult> DistributeAsync(
@@ -64,8 +69,8 @@ public class SmartDistributionService
         LogTariffContext(tariffCtx, surplusW);
 
         // ── 3. Features ML ────────────────────────────────────────────────────
-        MLRecommendation? mlReco  = null;
-        string decisionEngine     = "Deterministic";
+        MLRecommendation? mlReco = null;
+        string decisionEngine   = "Deterministic";
 
         if (wx is not null)
         {
@@ -74,8 +79,6 @@ public class SmartDistributionService
         }
 
         // ── 4. Batteries effectives ───────────────────────────────────────────
-        // SoftMax ajusté par ML ou par défaut.
-        // GridChargeAllowedW = MaxChargeRateW si charge réseau autorisée, sinon 0.
         IList<Battery> effective;
 
         if (mlReco is not null)
@@ -101,8 +104,8 @@ public class SmartDistributionService
                 "Grid charge: {W:F0}W [{Slot}] {Price:F3}€/kWh",
                 result.GridChargedW, tariffCtx.ActiveSlotName, tariffCtx.CurrentPricePerKwh);
 
-        // ── 6. Persistance ────────────────────────────────────────────────────
-        var session = BuildSession(result, wx, mlReco, decisionEngine, batteries, tariffCtx);
+        // ── 6. Persistance — Fix #6 : délégué à IDistributionSessionFactory ───
+        var session = _sessionFactory.Build(result, wx, mlReco, decisionEngine, batteries, tariffCtx);
         await _repo.SaveSessionAsync(session, ct);
 
         _logger.LogInformation(
@@ -114,10 +117,6 @@ public class SmartDistributionService
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Applique les recommandations ML (ou les valeurs par défaut) pour produire
-    /// les batteries effectives passées à l'algorithme.
-    /// </summary>
     private static IList<Battery> Apply(
         IList<Battery>    src,
         MLRecommendation? reco,
@@ -135,7 +134,6 @@ public class SmartDistributionService
             HardMaxPercent = b.HardMaxPercent,
             CurrentPercent = b.CurrentPercent,
             Priority       = b.Priority,
-            // Charge réseau : autorisée uniquement si TariffEngine a donné le feu vert
             GridChargeAllowedW = tariff.GridChargeAllowed ? b.MaxChargeRateW : 0
         }).ToList();
     }
@@ -154,30 +152,25 @@ public class SmartDistributionService
 
         return new DistributionFeatures
         {
-            // Temporel brut
             HourOfDay   = now.Hour,
             DayOfWeek   = (float)now.DayOfWeek,
             MonthOfYear = now.Month,
             DayOfYear   = now.DayOfYear,
 
-            // Cyclique
             SinHour   = (float)Math.Sin(hourRad),
             CosHour   = (float)Math.Cos(hourRad),
             SinMonth  = (float)Math.Sin(monthRad),
             CosMonth  = (float)Math.Cos(monthRad),
 
-            // Saisonnalité directe
             DaylightHours    = (float)wx.DaylightHours,
             HoursUntilSunset = (float)wx.HoursUntilSunset,
 
-            // Météo
             CloudCoverPercent      = (float)wx.CloudCoverPercent,
             DirectRadiationWm2     = (float)wx.DirectRadiationWm2,
             DiffuseRadiationWm2    = (float)wx.DiffuseRadiationWm2,
             PrecipitationMmH       = (float)wx.PrecipitationMmH,
             AvgForecastRadiation6h = (float)avg6h,
 
-            // Batteries
             AvgBatteryPercent   = (float)batteries.Average(b => b.CurrentPercent),
             MinBatteryPercent   = (float)batteries.Min(b => b.CurrentPercent),
             MaxBatteryPercent   = (float)batteries.Max(b => b.CurrentPercent),
@@ -185,17 +178,14 @@ public class SmartDistributionService
             UrgentBatteryCount  = batteries.Count(b => b.IsUrgent),
             TotalMaxChargeRateW = (float)batteries.Sum(b => b.MaxChargeRateW),
 
-            // ML-4 : features de dispersion des batteries
             SocStdDev             = (float)StdDev(batteries.Select(b => b.CurrentPercent)),
             CapacityRatio         = batteries.Min(b => b.CapacityWh) > 0
                 ? (float)(batteries.Max(b => b.CapacityWh) / batteries.Min(b => b.CapacityWh))
                 : 1.0f,
             NonUrgentBatteryCount = batteries.Count(b => !b.IsUrgent),
 
-            // Surplus
             SurplusW = (float)surplusW,
 
-            // Tarif
             NormalizedTariff     = (float)tariff.NormalizedPrice,
             IsOffPeakHour        = tariff.IsFavorableForGrid ? 1f : 0f,
             HoursToNextFavorable = (float)(tariff.HoursToNextFavorable ?? 12.0),
@@ -203,91 +193,11 @@ public class SmartDistributionService
             SolarExpectedSoon    = tariff.SolarExpectedSoon ? 1f : 0f,
             MaxSavingsPerKwh     = (float)tariff.MaxSavingsPerKwh,
 
-            // Labels par défaut (remplacés par SessionFeedback lors du retrain)
             OptimalSoftMaxPercent      = 80,
             OptimalPreventiveThreshold = 20,
         };
     }
 
-    private static DistributionSession BuildSession(
-        DistributionResult result, WeatherData? wx,
-        MLRecommendation? mlReco, string engine,
-        IList<Battery> orig, TariffContext tariff)
-    {
-        var session = new DistributionSession
-        {
-            RequestedAt               = DateTime.UtcNow,
-            SurplusW                  = result.SurplusInputW,
-            TotalAllocatedW           = result.TotalAllocatedW,
-            UnusedSurplusW            = result.UnusedSurplusW,
-            GridChargedW              = result.GridChargedW,
-            DecisionEngine            = engine,
-            MlConfidenceScore         = mlReco?.ConfidenceScore,
-            TariffSlotName            = tariff.ActiveSlotName,
-            TariffPricePerKwh         = tariff.CurrentPricePerKwh,
-            WasGridChargeFavorable    = tariff.IsFavorableForGrid,
-            SolarExpectedSoon         = tariff.SolarExpectedSoon,
-            HoursToNextFavorableTariff = tariff.HoursToNextFavorable,
-            AvgSolarForecastWm2       = tariff.AvgSolarForecastWm2,
-            TariffMaxSavingsPerKwh    = tariff.MaxSavingsPerKwh,
-        };
-
-        session.BatterySnapshots = result.Allocations.Select(alloc =>
-        {
-            var o = orig.FirstOrDefault(b => b.Id == alloc.BatteryId);
-            return new BatterySnapshot
-            {
-                BatteryId            = alloc.BatteryId,
-                CapacityWh           = o?.CapacityWh       ?? 0,
-                MaxChargeRateW       = o?.MaxChargeRateW   ?? 0,
-                MinPercent           = o?.MinPercent       ?? 0,
-                SoftMaxPercent       = o?.SoftMaxPercent   ?? 80,
-                CurrentPercentBefore = alloc.PreviousPercent,
-                CurrentPercentAfter  = alloc.NewPercent,
-                Priority             = o?.Priority         ?? 0,
-                WasUrgent            = alloc.WasUrgent,
-                AllocatedW           = alloc.AllocatedW,
-                IsGridCharge         = alloc.IsGridCharge,
-                Reason               = alloc.Reason
-            };
-        }).ToList();
-
-        if (wx is not null)
-        {
-            session.Weather = new WeatherSnapshot
-            {
-                FetchedAt                = wx.FetchedAt,
-                Latitude                 = wx.Latitude,
-                Longitude                = wx.Longitude,
-                TemperatureC             = wx.TemperatureC,
-                CloudCoverPercent        = wx.CloudCoverPercent,
-                PrecipitationMmH         = wx.PrecipitationMmH,
-                DirectRadiationWm2       = wx.DirectRadiationWm2,
-                DiffuseRadiationWm2      = wx.DiffuseRadiationWm2,
-                DaylightHours            = wx.DaylightHours,
-                HoursUntilSunset         = wx.HoursUntilSunset,
-                RadiationForecast12hJson = JsonSerializer.Serialize(wx.RadiationForecast12h),
-                CloudForecast12hJson     = JsonSerializer.Serialize(wx.CloudForecast12h)
-            };
-        }
-
-        if (mlReco is not null)
-        {
-            session.MlPrediction = new MLPredictionLog
-            {
-                ModelVersion                 = mlReco.ModelVersion,
-                ConfidenceScore              = mlReco.ConfidenceScore,
-                PredictedSoftMaxJson         = JsonSerializer.Serialize(mlReco.RecommendedSoftMaxPercent),
-                PredictedPreventiveThreshold = mlReco.RecommendedPreventiveThreshold,
-                WasApplied                   = engine != "Deterministic",
-                PredictedAt                  = DateTime.UtcNow
-            };
-        }
-
-        return session;
-    }
-
-    /// <summary>ML-4 : écart-type population (σ) des SOC batteries.</summary>
     private static float StdDev(IEnumerable<double> values)
     {
         var list = values.ToList();

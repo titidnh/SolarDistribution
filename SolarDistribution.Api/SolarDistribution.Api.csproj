@@ -10,8 +10,24 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.OpenApi"       Version="1.6.22" />
-    <PackageReference Include="Swashbuckle.AspNetCore"  Version="6.9.0"  />
+    <PackageReference Include="Microsoft.OpenApi"           Version="1.6.22" />
+    <PackageReference Include="Swashbuckle.AspNetCore"      Version="6.9.0"  />
+
+    <!--
+      Fix MSB3277 : épingler EF Core à la même version patch que celle résolue
+      par Pomelo (9.0.13) pour éviter le conflit entre 9.0.0 (Swashbuckle/HealthChecks)
+      et 9.0.13 (Infrastructure via Pomelo).
+      Sans cet épinglage, MSBuild sélectionne 9.0.0 en prioritaire et génère MSB3277.
+    -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore"          Version="9.0.13" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.13" />
+
+    <!--
+      Fix #7 + CS1061 : version explicite alignée sur l'épinglage EF 9.0.13.
+      Le wildcard 9.0.* résolvait vers 9.0.0 depuis le cache local, incompatible
+      avec 9.0.13 tiré transitively par Infrastructure → CS1061 sur AddDbContextCheck.
+    -->
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="9.0.13" />
   </ItemGroup>
 
   <ItemGroup>

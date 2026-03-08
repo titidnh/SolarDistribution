@@ -1,5 +1,6 @@
 using System.Reflection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Diagnostics.HealthChecks;  // Fix CS1061 : AddDbContextCheck
 using Microsoft.OpenApi.Models;
 using SolarDistribution.Core.Services;
 using SolarDistribution.Core.Services.ML;
@@ -7,6 +8,7 @@ using SolarDistribution.Infrastructure.Data;
 using SolarDistribution.Infrastructure.Repositories;
 using SolarDistribution.Core.Repositories;
 using SolarDistribution.Infrastructure.Services;
+using SolarDistribution.Infrastructure.Mapping;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -27,6 +29,8 @@ builder.Services.AddScoped<IDistributionRepository, DistributionRepository>();
 // ── Core services ─────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<IBatteryDistributionService, BatteryDistributionService>();
 builder.Services.AddScoped<SmartDistributionService>();
+// Fix #6 : factory de sessions (mapping métier → entités EF)
+builder.Services.AddScoped<IDistributionSessionFactory, DistributionSessionFactory>();
 // TariffEngine depends on a TariffConfig; provide a default config so DI can
 // resolve SmartDistributionService without depending on the Worker project.
 builder.Services.AddSingleton<TariffEngine>(sp => new TariffEngine(new TariffEngine.TariffConfig()));
@@ -35,8 +39,8 @@ builder.Services.AddSingleton<TariffEngine>(sp => new TariffEngine(new TariffEng
 // Register ML service as scoped because it depends on a scoped repository.
 builder.Services.AddScoped<IDistributionMLService>(sp =>
 {
-    var repo   = sp.GetRequiredService<IDistributionRepository>();
-    var logger = sp.GetRequiredService<ILogger<DistributionMLService>>();
+    var repo     = sp.GetRequiredService<IDistributionRepository>();
+    var logger   = sp.GetRequiredService<ILogger<DistributionMLService>>();
     var modelDir = builder.Configuration["ML:ModelDirectory"] ?? "ml_models";
     return new DistributionMLService(repo, logger, modelDir);
 });
@@ -77,15 +81,39 @@ builder.Services.AddSwaggerGen(options =>
         options.IncludeXmlComments(xmlPath);
 });
 
-// ── CORS ──────────────────────────────────────────────────────────────────────
+// ── CORS — Fix #3 : configurable via appsettings.json ────────────────────────
+// Dev  : Cors:AllowAnyOrigin = true  → tous les origines autorisés (pratique local)
+// Prod : Cors:AllowAnyOrigin = false → uniquement les origines listées dans Cors:AllowedOrigins
 builder.Services.AddCors(options =>
     options.AddDefaultPolicy(policy =>
-        policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+    {
+        bool allowAny = builder.Configuration.GetValue<bool>("Cors:AllowAnyOrigin");
+
+        if (allowAny)
+        {
+            policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
+        }
+        else
+        {
+            var origins = builder.Configuration
+                .GetSection("Cors:AllowedOrigins")
+                .Get<string[]>() ?? Array.Empty<string>();
+
+            policy.WithOrigins(origins)
+                  .AllowAnyHeader()
+                  .AllowAnyMethod();
+        }
+    }));
+
+// ── Health Checks — Fix #7 ────────────────────────────────────────────────────
+// Expose /health (liveness) et /health/ready (readiness + DB check)
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<SolarDbContext>("mariadb");
 
 // ── Build ─────────────────────────────────────────────────────────────────────
 var app = builder.Build();
 
-// Migration automatique au démarrage (dev uniquement — utiliser dotnet ef en prod)
+// Migration automatique au démarrage (dev uniquement — utiliser le script SQL en prod)
 if (app.Environment.IsDevelopment())
 {
     using var scope = app.Services.CreateScope();
@@ -107,6 +135,9 @@ app.UseCors();
 app.UseHttpsRedirection();
 app.UseAuthorization();
 app.MapControllers();
+
+// Fix #7 : endpoints health check
+app.MapHealthChecks("/health");
 
 app.Run();
 

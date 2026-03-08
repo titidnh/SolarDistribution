@@ -6,8 +6,13 @@
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.ML" Version="2.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
+    <!--
+      ML.NET est requis ici UNIQUEMENT pour les attributs de données ([LoadColumn], [ColumnName])
+      utilisés dans DistributionFeatures et les classes de prédiction.
+      La logique d'entraînement et d'inférence reste dans SolarDistribution.Infrastructure.
+      Version alignée sur Infrastructure (3.0.*) pour éviter toute incohérence de binding.
+    -->
+    <PackageReference Include="Microsoft.ML" Version="3.0.*" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.*" />
   </ItemGroup>
-  
 </Project>

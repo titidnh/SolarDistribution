@@ -8,6 +8,7 @@ using SolarDistribution.Core.Services.ML;
 using SolarDistribution.Infrastructure.Data;
 using SolarDistribution.Infrastructure.Repositories;
 using SolarDistribution.Infrastructure.Services;
+using SolarDistribution.Infrastructure.Mapping;
 using SolarDistribution.Core.Repositories;
 using SolarDistribution.Worker.Configuration;
 using SolarDistribution.Worker.HA;
@@ -121,6 +122,9 @@ var host = Host.CreateDefaultBuilder(args)
             client.Timeout = TimeSpan.FromSeconds(10);
             client.DefaultRequestHeaders.Add("User-Agent", "SolarDistribution-Worker/1.0");
         });
+
+        // ── Session factory (Fix #6) ─────────────────────────────────────────
+        services.AddSingleton<IDistributionSessionFactory, DistributionSessionFactory>();
 
         // ── SmartDistributionService ──────────────────────────────────────────
         services.AddSingleton<SmartDistributionService>();

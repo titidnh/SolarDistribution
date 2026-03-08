@@ -60,7 +60,7 @@ public class DistributionController : ControllerBase
     [HttpPost("calculate")]
     [ProducesResponseType(typeof(DistributionResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
-    public ActionResult<DistributionResponseDto> Calculate(
+    public async Task<ActionResult<DistributionResponseDto>> Calculate(
         [FromBody] DistributionRequestDto request)
     {
         // Validation métier
@@ -94,7 +94,8 @@ public class DistributionController : ControllerBase
             return Ok(smartWrapper.ToDto());
         }
 
-        var result = _smartService.DistributeAsync(request.SurplusW, batteries, lat, lon).GetAwaiter().GetResult();
+        // Fix #2 : méthode async — plus de GetAwaiter().GetResult() qui risquait un deadlock
+        var result = await _smartService.DistributeAsync(request.SurplusW, batteries, lat, lon);
 
         return Ok(result.ToDto());
     }

@@ -10,6 +10,15 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!--
+      Fix MSB3277 : épingler EF Core Relational à 9.0.13 pour aligner sur Infrastructure/Pomelo.
+      Sans cet épinglage, Microsoft.Extensions.Hosting 9.* tire transitivement
+      EntityFrameworkCore.Relational 9.0.0 en conflit avec le 9.0.13 de Pomelo.
+    -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.13" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Configuration YAML -->
     <PackageReference Include="YamlDotNet"                              Version="16.*" />
     <!-- Scheduling -->

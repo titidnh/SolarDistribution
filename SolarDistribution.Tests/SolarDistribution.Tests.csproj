@@ -28,5 +28,6 @@
     <ProjectReference Include="..\SolarDistribution.Core\SolarDistribution.Core.csproj" />
     <ProjectReference Include="..\SolarDistribution.Infrastructure\SolarDistribution.Infrastructure.csproj" />
     <ProjectReference Include="..\SolarDistribution.Api\SolarDistribution.Api.csproj" />
+    <ProjectReference Include="..\SolarDistribution.Worker\SolarDistribution.Worker.csproj" />
   </ItemGroup>
 </Project>
