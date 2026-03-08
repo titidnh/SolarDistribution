@@ -7,9 +7,9 @@ using SolarDistribution.Core.Services;
 namespace SolarDistribution.Api.Controllers;
 
 /// <summary>
-/// Distribution intelligente du surplus solaire.
-/// Utilise ML.NET si disponible, sinon l'algorithme déterministe en fallback.
-/// Chaque appel est persisté en base MariaDB avec les données météo associées.
+/// Intelligent distribution of solar surplus.
+/// Uses ML.NET if available, otherwise falls back to the deterministic algorithm.
+/// Each call is persisted to MariaDB with associated weather data.
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
@@ -20,7 +20,7 @@ public class DistributionController : ControllerBase
     private readonly IBatteryDistributionService     _deterministicService;
     private readonly ILogger<DistributionController> _logger;
 
-    // Coordonnées par défaut (Bruxelles) — utilisées si non fournies dans la requête
+    // Default coordinates (Brussels) — used if not provided in the request
     private const double DefaultLatitude  = 50.85;
     private const double DefaultLongitude = 4.35;
 
@@ -44,19 +44,19 @@ public class DistributionController : ControllerBase
     }
 
     /// <summary>
-    /// Distribue le surplus solaire entre les batteries avec assistance ML + météo.
+    /// Distributes solar surplus among batteries with ML + weather assistance.
     /// </summary>
     /// <remarks>
-    /// **Moteur de décision :**
-    /// - `Deterministic` — algo priorité/proportionnel (fallback ou ML pas encore disponible)
-    /// - `ML` — modèle ML avec confiance >= 75%
-    /// - `ML-Fallback` — ML disponible mais confiance 65-75%, paramètres ajustés
+    /// **Decision engine:**
+    /// - `Deterministic` — priority/proportional algorithm (fallback or ML not available yet)
+    /// - `ML` — ML model when confidence >= 75%
+    /// - `ML-Fallback` — ML available but confidence 65-75%, adjusted parameters
     ///
-    /// **Météo :** si latitude/longitude fournis, les données Open-Meteo sont récupérées
-    /// et stockées. Sinon, Bruxelles par défaut.
+    /// **Weather:** if latitude/longitude provided, Open-Meteo data is fetched
+    /// and stored. Otherwise, Brussels is used by default.
     /// </remarks>
-    /// <response code="200">Distribution calculée, session persistée</response>
-    /// <response code="400">Paramètres invalides</response>
+    /// <response code="200">Distribution computed, session persisted</response>
+    /// <response code="400">Invalid parameters</response>
     [HttpPost("calculate")]
     [ProducesResponseType(typeof(DistributionResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
@@ -94,7 +94,7 @@ public class DistributionController : ControllerBase
             return Ok(smartWrapper.ToDto());
         }
 
-        // Fix #2 : méthode async — plus de GetAwaiter().GetResult() qui risquait un deadlock
+        // Fix #2: async method — removes GetAwaiter().GetResult() which risked a deadlock
         var result = await _smartService.DistributeAsync(request.SurplusW, batteries, lat, lon);
 
         return Ok(result.ToDto());

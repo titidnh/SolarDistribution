@@ -11,7 +11,7 @@ public class DistributionSession
     public string   DecisionEngine  { get; set; } = "Deterministic";
     public double?  MlConfidenceScore { get; set; }
 
-    // Contexte tarifaire — persisté pour l'entraînement ML
+    // Tariff context — persisted for ML training
     public string? TariffSlotName            { get; set; }
     public double? TariffPricePerKwh         { get; set; }
     public bool    WasGridChargeFavorable     { get; set; }
@@ -31,7 +31,7 @@ public class SessionFeedback
     public long     Id          { get; set; }
     public long     SessionId   { get; set; }
     public DateTime CollectedAt { get; set; } = DateTime.UtcNow;
-    // Délai écoulé (heures) entre la session et la collecte du feedback
+    // Elapsed delay (hours) between the session and feedback collection
     public double   FeedbackDelayHours { get; set; }
     public string   ObservedSocJson       { get; set; } = "{}";
     public double   AvgSocAtFeedback      { get; set; }
@@ -92,7 +92,7 @@ public class MLPredictionLog
     public long     SessionId   { get; set; }
     public string   ModelVersion                 { get; set; } = string.Empty;
     public double   ConfidenceScore              { get; set; }
-    // Score d'efficacité mesuré pour cette prédiction (0→1). Mis à jour après feedback.
+    // Measured efficiency score for this prediction (0→1). Updated after feedback.
     public double   EfficiencyScore              { get; set; }
     public string   PredictedSoftMaxJson         { get; set; } = string.Empty;
     public double   PredictedPreventiveThreshold { get; set; }

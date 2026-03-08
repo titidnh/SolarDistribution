@@ -61,17 +61,17 @@ builder.Services.AddSwaggerGen(options =>
         Title       = "Solar Distribution API",
         Version     = "v1",
         Description = """
-            Distribue intelligemment le surplus solaire vers les batteries.
+            Intelligently distributes solar surplus to batteries.
 
-            **Moteurs de décision :**
-            - `Deterministic` — algorithme priorité/proportionnel (toujours disponible)
-            - `ML` — modèle ML.NET (actif après 50 sessions, R² ≥ 0.65)
-            - `ML-Fallback` — ML actif mais confiance partielle
+            **Decision engines:**
+            - `Deterministic` — priority/proportional algorithm (always available)
+            - `ML` — ML.NET model (active after 50 sessions, R² ≥ 0.65)
+            - `ML-Fallback` — ML active but partial confidence
 
-            **Données persistées** (MariaDB) : chaque appel `/calculate` stocke
-            la session, les états batteries, la météo Open-Meteo et le log ML.
+            **Persisted data** (MariaDB): each `/calculate` call stores
+            the session, battery states, Open-Meteo weather and the ML log.
 
-            **Ré-entraînement** : `POST /api/ml/retrain` — manuel, sur demande.
+            **Retraining:** `POST /api/ml/retrain` — manual, on demand.
             """
     });
 

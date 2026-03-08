@@ -16,17 +16,17 @@ public class BatteryInputDto
 
 public class DistributionRequestDto
 {
-    /// <summary>Surplus solaire disponible en W</summary>
+    /// <summary>Available solar surplus in W</summary>
     /// <example>1200</example>
     [Required, Range(0, double.MaxValue)] public double SurplusW { get; set; }
 
     [Required, MinLength(1)] public List<BatteryInputDto> Batteries { get; set; } = [];
 
-    /// <summary>Latitude pour la météo Open-Meteo (ex: 50.85 pour Bruxelles)</summary>
+    /// <summary>Latitude for Open-Meteo weather (e.g. 50.85 for Brussels)</summary>
     /// <example>50.85</example>
     [Range(-90, 90)] public double? Latitude { get; set; }
 
-    /// <summary>Longitude pour la météo Open-Meteo (ex: 4.35 pour Bruxelles)</summary>
+    /// <summary>Longitude for Open-Meteo weather (e.g. 4.35 for Brussels)</summary>
     /// <example>4.35</example>
     [Range(-180, 180)] public double? Longitude { get; set; }
 }

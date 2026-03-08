@@ -9,22 +9,22 @@ using SolarDistribution.Worker.HA;
 namespace SolarDistribution.Worker.Services;
 
 /// <summary>
-/// Worker autonome principal — tourne indéfiniment dans le container Docker.
+/// Main autonomous worker — runs indefinitely inside the Docker container.
 ///
-/// Cycle complet à chaque tick :
-///   1. Vérifie la connectivité HA
-///   2. Lit le surplus solaire + SOC batteries via HA REST API
-///   3. Construit les objets Battery avec les valeurs live
-///   4. Calcule la distribution optimale (ML si disponible, sinon déterministe)
-///   5. Envoie les commandes de puissance à HA via number.set_value
-///   6. Persiste la session en MariaDB (avec météo Open-Meteo)
-///   7. Attend l'intervalle configuré avant le prochain cycle
+/// Full cycle on each tick:
+///   1. Check HA connectivity
+///   2. Read solar surplus + battery SOC via HA REST API
+///   3. Build Battery objects with live values
+///   4. Compute optimal distribution (ML if available, otherwise deterministic)
+///   5. Send power commands to HA via number.set_value
+///   6. Persist the session to MariaDB (with Open-Meteo weather)
+///   7. Wait the configured interval before next cycle
 ///
-/// Résilience :
-///   - Erreur de lecture HA → skip cycle, log warning, pas de commande envoyée
-///   - Erreur d'écriture HA → log error, continue (pas de crash)
-///   - Erreur DB → log error, continue (le cycle suivant retente)
-///   - 3 échecs HA consécutifs → backoff exponentiel (max 5 minutes)
+/// Resilience:
+///   - HA read error → skip cycle, log warning, no commands sent
+///   - HA write error → log error, continue (no crash)
+///   - DB error → log error, continue (next cycle will retry)
+///   - 3 consecutive HA failures → exponential backoff (max 5 minutes)
 /// </summary>
 public class SolarWorker : BackgroundService
 {

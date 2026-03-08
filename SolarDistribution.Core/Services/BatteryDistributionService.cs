@@ -3,26 +3,26 @@ using SolarDistribution.Core.Models;
 namespace SolarDistribution.Core.Services;
 
 /// <summary>
-/// Distribue la puissance disponible (surplus solaire + éventuelle charge réseau)
-/// entre les batteries selon un algorithme 3 passes + groupes de priorité.
+/// Distributes available power (solar surplus + optional grid charging)
+/// among batteries using a 3-pass algorithm with priority groups.
 ///
 /// ┌───────────────────────────────────────────────────────────────────────────┐
-/// │  ALGORITHME                                                               │
+/// │  ALGORITHM                                                                │
 /// │                                                                           │
-/// │  Groupes : batteries triées par EffectivePriority ASC                    │
-/// │    · SOC < MinPercent → EffectivePriority = 0 (URGENT, toujours premier) │
+/// │  Groups: batteries sorted by EffectivePriority ASC                       │
+/// │    · SOC < MinPercent → EffectivePriority = 0 (URGENT, always first)     │
 /// │                                                                           │
-/// │  PASS 1 — Surplus solaire → SoftMaxPercent                               │
-/// │    Distribution PROPORTIONNELLE par espace disponible dans chaque groupe  │
-/// │    Batteries cappées par MaxChargeRateW → surplus redirigé aux autres     │
+/// │  PASS 1 — Solar surplus → SoftMaxPercent                                  │
+/// │    PROPORTIONAL distribution by available space in each group            │
+/// │    Batteries capped by MaxChargeRateW → surplus redistributed to others  │
 /// │                                                                           │
-/// │  PASS 2 — Surplus restant → HardMaxPercent (100%)                        │
-/// │    Même logique, même ordre, cible = HardMax                             │
+/// │  PASS 2 — Remaining surplus → HardMaxPercent (100%)                      │
+/// │    Same logic and order, target = HardMax                                │
 /// │                                                                           │
-/// │  PASS 3 — Charge réseau → SoftMaxPercent (heures creuses uniquement)     │
-/// │    Uniquement si GridChargeAllowedW > 0 (décidé par SmartDistribution)   │
-/// │    Limité à SoftMax — on garde de la place pour le prochain surplus       │
-/// │    Limité par GridChargeAllowedW par batterie                             │
+/// │  PASS 3 — Grid charging → SoftMaxPercent (off-peak only)                 │
+/// │    Only if GridChargeAllowedW > 0 (decided by SmartDistribution)         │
+/// │    Limited to SoftMax — preserves room for the next solar surplus        │
+/// │    Limited by GridChargeAllowedW per battery                            │
 /// └───────────────────────────────────────────────────────────────────────────┘
 /// </summary>
 public class BatteryDistributionService : IBatteryDistributionService

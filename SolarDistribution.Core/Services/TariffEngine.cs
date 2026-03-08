@@ -83,26 +83,26 @@ public class TariffSlot
             var names = string.Join(", ", matching.Select(s => $"\"{s.Name}\""));
             double priceDiff = matching.Max(s => s.PricePerKwh) - matching.Min(s => s.PricePerKwh);
 
-            if (priceDiff > 0.01)
-            {
-                // Fix #8 : log Warning visible en production au lieu d'une propriété silencieuse
-                _logger.LogWarning(
-                    "TariffEngine: slot overlap at {Time} — active slots: {Slots} " +
-                    "(price diff={Diff:F3}€/kWh). Using cheapest slot as fallback. " +
-                    "Check your tariff configuration.",
-                    localTime.ToString("HH:mm"), names, priceDiff);
+                if (priceDiff > 0.01)
+                {
+                    // Fix #8: log a Warning visible in production instead of storing a silent property
+                    _logger.LogWarning(
+                        "TariffEngine: slot overlap at {Time} — active slots: {Slots} " +
+                        "(price diff={Diff:F3}€/kWh). Using cheapest slot as fallback. " +
+                        "Check your tariff configuration.",
+                        localTime.ToString("HH:mm"), names, priceDiff);
 
-                LastSlotConflict = $"{localTime:HH:mm} — slots actifs simultanément : {names}";
-            }
+                    LastSlotConflict = $"{localTime:HH:mm} — simultaneous active slots: {names}";
+                }
         }
 
         return matching.MinBy(s => s.PricePerKwh);
     }
 
     /// <summary>
-    /// Dernier conflit de slots détecté (null si aucun).
-    /// Conservé pour la compatibilité des tests existants.
-    /// En production, préférer les logs (Fix #8).
+    /// Last detected slot conflict (null if none).
+    /// Kept for compatibility with existing tests.
+    /// In production, prefer logs (Fix #8).
     /// </summary>
     public string? LastSlotConflict { get; private set; }
 

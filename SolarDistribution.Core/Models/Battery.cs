@@ -15,16 +15,16 @@ public class Battery
     public int    Priority       { get; set; }
 
     /// <summary>
-    /// Puissance max autorisée depuis le réseau pour cette batterie (W).
-    ///   0  → charge réseau interdite (mode normal, surplus solaire uniquement).
-    ///   >0 → charge réseau permise (heures creuses à tarif favorable).
-    /// Calculé par SmartDistributionService en fonction du contexte tarifaire.
+    /// Maximum allowed power from the grid for this battery (W).
+    ///   0  → grid charging forbidden (normal mode, solar surplus only).
+    ///   >0 → grid charging permitted (off-peak favorable tariff periods).
+    /// Calculated by SmartDistributionService according to tariff context.
     /// </summary>
     public double GridChargeAllowedW { get; set; } = 0;
 
     // ── Computed ──────────────────────────────────────────────────────────────
 
-    /// <summary>Si SOC < MinPercent → URGENT → priorité 0, passe avant tout.</summary>
+    /// <summary>If SOC < MinPercent → URGENT → priority 0, goes first.</summary>
     public int  EffectivePriority => CurrentPercent < MinPercent ? 0 : Priority;
     public bool IsUrgent          => CurrentPercent < MinPercent;
 
