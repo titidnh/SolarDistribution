@@ -117,6 +117,29 @@ public class BatteryConfig
     public double HardMaxPercent { get; set; } = 100;
 
     public BatteryEntitiesConfig Entities { get; set; } = new();
+
+    /// <summary>
+    /// Seuil d'urgence réseau : si SOC descend SOUS cette valeur,
+    /// la batterie est rechargée depuis le réseau même hors heure creuse,
+    /// SAUF si le soleil est attendu dans les prochaines heures (autoconsommation suffisante).
+    ///
+    /// null = fonctionnement normal (pas de recharge réseau forcée en urgence).
+    /// Doit être > 0 et <= min_percent pour avoir du sens (typiquement = min_percent ou légèrement au-dessus).
+    ///
+    /// Exemple EcoFlow : emergency_grid_charge_below_percent: 20
+    /// → si SOC < 20% et pas de soleil prévu → recharge forcée depuis le réseau
+    /// </summary>
+    public double? EmergencyGridChargeBelowPercent { get; set; }
+
+    /// <summary>
+    /// Cible de recharge en urgence réseau (en %).
+    /// La batterie est rechargée jusqu'à ce seuil — pas plus (on garde de la place pour le solaire).
+    ///
+    /// null = utilise soft_max_percent comme cible.
+    /// Exemple : emergency_grid_charge_target_percent: 50
+    /// → recharge jusqu'à 50% depuis le réseau, puis attend le surplus solaire pour la suite.
+    /// </summary>
+    public double? EmergencyGridChargeTargetPercent { get; set; }
 }
 
 /// <summary>

@@ -7,7 +7,8 @@ public record BatteryChargeResult(
     double PreviousPercent,
     double NewPercent,
     bool   WasUrgent,
-    bool   IsGridCharge = false,   // true = puissance venant du réseau (Pass 3)
+    bool   IsGridCharge          = false,   // true = puissance venant du réseau (Pass 3)
+    bool   IsEmergencyGridCharge = false,   // true = recharge réseau forcée par urgence SOC
     string Reason = ""
 );
 

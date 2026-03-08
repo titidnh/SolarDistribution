@@ -227,7 +227,11 @@ public class SolarWorker : BackgroundService
                     SoftMaxPercent = bc.SoftMaxPercent,
                     HardMaxPercent = bc.HardMaxPercent,
                     CurrentPercent = reading.SocPercent, // ← valeur live HA
-                    Priority       = bc.Priority
+                    Priority       = bc.Priority,
+                    // Recharge réseau d'urgence — configurée par batterie
+                    EmergencyGridChargeBelowPercent  = bc.EmergencyGridChargeBelowPercent,
+                    EmergencyGridChargeTargetPercent = bc.EmergencyGridChargeTargetPercent,
+                    // IsEmergencyGridCharge calculé par SmartDistributionService.Apply()
                 };
             })
             .ToList();

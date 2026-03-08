@@ -185,6 +185,27 @@ batteries:
       value_multiplier: 1.0
       value_unit: "W"
 
+      # ── Recharge réseau d'urgence (OPTIONNEL) ──────────────────────────────
+      #
+      # emergency_grid_charge_below_percent : si SOC descend SOUS ce seuil,
+      #   la batterie est rechargée depuis le réseau même hors heure creuse,
+      #   SAUF si le soleil est attendu (solar_forecast_horizon_hours).
+      #
+      # emergency_grid_charge_target_percent : jusqu'à quel % recharger en urgence.
+      #   null ou absent → utilise soft_max_percent comme cible.
+      #   Recommandé : valeur modeste (ex: 50%) pour garder de la place pour le solaire.
+      #
+      # Comportement :
+      #   SOC < below_percent ET pas de soleil prévu
+      #     → charge réseau forcée jusqu'à target_percent
+      #     → NonZeroWActions déclenchées (ex: désactivation self-powered EcoFlow)
+      #   SOC < below_percent MAIS soleil attendu
+      #     → pas de charge réseau (l'autoconsommation va couvrir)
+      #     → log informatif uniquement
+      #
+      # emergency_grid_charge_below_percent: 20
+      # emergency_grid_charge_target_percent: 50
+
       # Exemple EcoFlow Delta 3 — self-powered mode
       # Décommenter et adapter les entity_id selon votre installation.
       #

@@ -93,13 +93,14 @@ public class BatteryDistributionService : IBatteryDistributionService
                 0.0, b.HardMaxPercent);
 
             return new BatteryChargeResult(
-                BatteryId:      b.Id,
-                AllocatedW:     Math.Round(total, 2),
-                PreviousPercent: Math.Round(b.CurrentPercent, 2),
-                NewPercent:     Math.Round(newPct, 2),
-                WasUrgent:      b.IsUrgent,
-                IsGridCharge:   grid > 0.01,
-                Reason:         BuildReason(b, solar, grid, newPct)
+                BatteryId:            b.Id,
+                AllocatedW:           Math.Round(total, 2),
+                PreviousPercent:      Math.Round(b.CurrentPercent, 2),
+                NewPercent:           Math.Round(newPct, 2),
+                WasUrgent:            b.IsUrgent,
+                IsGridCharge:         grid > 0.01,
+                IsEmergencyGridCharge: b.IsEmergencyGridCharge && grid > 0.01,
+                Reason:               BuildReason(b, solar, grid, newPct)
             );
         }).ToList();
 
@@ -178,7 +179,10 @@ public class BatteryDistributionService : IBatteryDistributionService
     /// <summary>
     /// Distribue la puissance réseau à un groupe de batteries (Pass 3).
     /// Chaque batterie est limitée par son GridChargeAllowedW ET par l'espace
-    /// restant jusqu'à SoftMaxPercent (jamais HardMax depuis le réseau).
+    /// restant jusqu'à la cible réseau :
+    ///   - urgence → EmergencyGridChargeTargetPercent (ou SoftMaxPercent si null)
+    ///   - normal  → SoftMaxPercent
+    /// On ne dépasse jamais HardMaxPercent depuis le réseau.
     /// Retourne l'énergie totale effectivement allouée depuis le réseau.
     /// </summary>
     private static double DistributeGridToGroup(
@@ -192,14 +196,17 @@ public class BatteryDistributionService : IBatteryDistributionService
 
         while (active.Count > 0)
         {
-            // Capacité réseau restante de chaque batterie = min(espace → SoftMax, GridAllowed restant)
+            // Cible réseau : urgence → EmergencyGridChargeTargetPercent, sinon SoftMaxPercent
             var budgets = active.ToDictionary(b => b.Id, b =>
             {
-                double spaceToSoft = Math.Max(0,
-                    (b.SoftMaxPercent - currentPct[b.Id]) / 100.0 * b.CapacityWh);
+                double gridTarget  = b.IsEmergencyGridCharge && b.EmergencyGridChargeTargetPercent.HasValue
+                    ? b.EmergencyGridChargeTargetPercent.Value
+                    : b.SoftMaxPercent;
+                double spaceToTarget = Math.Max(0,
+                    (gridTarget - currentPct[b.Id]) / 100.0 * b.CapacityWh);
                 double rateUsed    = solarAllocated[b.Id] + gridAllocated[b.Id];
                 double gridLeft    = Math.Max(0, b.GridChargeAllowedW - rateUsed);
-                return Math.Min(spaceToSoft, gridLeft);
+                return Math.Min(spaceToTarget, gridLeft);
             });
 
             double totalBudget = budgets.Values.Sum();
@@ -240,7 +247,14 @@ public class BatteryDistributionService : IBatteryDistributionService
             return $"{prefix}Reached soft max {b.SoftMaxPercent:F0}%";
 
         if (grid > 0.01)
+        {
+            if (b.IsEmergencyGridCharge)
+            {
+                double target = b.EmergencyGridChargeTargetPercent ?? b.SoftMaxPercent;
+                return $"{prefix}[EMERGENCY] Grid charge: SOC < {b.EmergencyGridChargeBelowPercent:F0}% — charging to {target:F0}% ({grid:F0}W)";
+            }
             return $"{prefix}Grid charge off-peak: {grid:F0}W ({b.GridChargeAllowedW:F0}W allowed)";
+        }
 
         if (total >= b.MaxChargeRateW - 0.1)
             return $"{prefix}Capped by MaxChargeRate ({b.MaxChargeRateW:F0}W)";

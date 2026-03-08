@@ -26,6 +26,11 @@ public class HomeAssistantCommandSender
     // Dernières valeurs envoyées par batterie — pour le delta check
     private readonly Dictionary<int, double> _lastSentValues = new();
 
+    // Dernier état "0W ou non" par batterie — les actions conditionnelles ne
+    // se déclenchent QUE lors d'un changement de zone (0W → >0W ou >0W → 0W).
+    // Absent = premier cycle → on déclenche systématiquement.
+    private readonly Dictionary<int, bool> _lastWasZero = new();
+
     public HomeAssistantCommandSender(
         IHomeAssistantClient client,
         SolarConfig config,
@@ -84,6 +89,12 @@ public class HomeAssistantCommandSender
             }
         }
 
+        // ── Détection de changement de zone 0W ↔ charge active ──────────────
+        // "charge active" = surplus solaire alloué OU recharge réseau d'urgence
+        bool currentIsZero = alloc.AllocatedW == 0;
+        bool zoneChanged   = !_lastWasZero.TryGetValue(battConfig.Id, out bool prevWasZero)
+                             || prevWasZero != currentIsZero;
+
         if (_config.Polling.DryRun)
         {
             _logger.LogInformation(
@@ -92,18 +103,20 @@ public class HomeAssistantCommandSender
                 battConfig.Entities.ChargePower, rawValue, battConfig.Entities.ValueUnit,
                 alloc.AllocatedW);
 
-            // Log également les actions conditionnelles en dry-run
-            LogConditionalActions(alloc.AllocatedW, battConfig);
+            // Log les actions conditionnelles uniquement si la zone change
+            if (zoneChanged)
+                LogConditionalActions(alloc.AllocatedW, battConfig);
 
             _lastSentValues[battConfig.Id] = rawValue;
+            _lastWasZero[battConfig.Id]    = currentIsZero;
             return true;
         }
 
         // ── 1. NonZeroWActions : avant d'activer la charge ────────────────────
-        //    Ex: désactiver le self-powered mode EcoFlow pour laisser l'onduleur charger
-        if (alloc.AllocatedW > 0 && battConfig.Entities.NonZeroWActions.Count > 0)
+        //    Déclenchées UNIQUEMENT si on passe de 0W → >0W (changement de zone)
+        if (!currentIsZero && zoneChanged && battConfig.Entities.NonZeroWActions.Count > 0)
         {
-            _logger.LogDebug("Battery {Id} ({Name}): executing {Count} NonZeroW action(s)",
+            _logger.LogDebug("Battery {Id} ({Name}): zone 0W→>0W — executing {Count} NonZeroW action(s)",
                 battConfig.Id, battConfig.Name, battConfig.Entities.NonZeroWActions.Count);
             await ExecuteConditionalActionsAsync(battConfig.Entities.NonZeroWActions, battConfig, ct);
         }
@@ -132,6 +145,7 @@ public class HomeAssistantCommandSender
         if (success)
         {
             _lastSentValues[battConfig.Id] = rawValue;
+            _lastWasZero[battConfig.Id]    = currentIsZero;
 
             _logger.LogInformation(
                 "Battery {Id} ({Name}): set charge power {Value}{Unit} " +
@@ -149,10 +163,10 @@ public class HomeAssistantCommandSender
         }
 
         // ── 4. ZeroWActions : après avoir envoyé 0W ───────────────────────────
-        //    Ex: activer le self-powered mode EcoFlow pour qu'il alimente la maison
-        if (alloc.AllocatedW == 0 && battConfig.Entities.ZeroWActions.Count > 0)
+        //    Déclenchées UNIQUEMENT si on passe de >0W → 0W (changement de zone)
+        if (currentIsZero && zoneChanged && battConfig.Entities.ZeroWActions.Count > 0)
         {
-            _logger.LogDebug("Battery {Id} ({Name}): executing {Count} ZeroW action(s)",
+            _logger.LogDebug("Battery {Id} ({Name}): zone >0W→0W — executing {Count} ZeroW action(s)",
                 battConfig.Id, battConfig.Name, battConfig.Entities.ZeroWActions.Count);
             await ExecuteConditionalActionsAsync(battConfig.Entities.ZeroWActions, battConfig, ct);
         }

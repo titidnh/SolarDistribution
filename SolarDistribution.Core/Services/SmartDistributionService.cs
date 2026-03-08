@@ -96,7 +96,18 @@ public class SmartDistributionService
             effective = Apply(batteries, null, tariffCtx);
         }
 
-        // ── 5. Distribution ───────────────────────────────────────────────────
+        // ── 5. Log urgences ──────────────────────────────────────────────────
+        foreach (var b in effective.Where(b => b.IsEmergencyGridCharge))
+        {
+            double target = b.EmergencyGridChargeTargetPercent ?? b.SoftMaxPercent;
+            _logger.LogWarning(
+                "⚡ EMERGENCY grid charge — Battery {Id}: SOC {Soc:F1}% < threshold {Thr:F0}% " +
+                "— will charge to {Target:F0}% from grid (solar expected: {Solar})",
+                b.Id, b.CurrentPercent, b.EmergencyGridChargeBelowPercent, target,
+                tariffCtx.SolarExpectedSoon ? "yes (skipped)" : "no");
+        }
+
+        // ── 6. Distribution ───────────────────────────────────────────────────
         var result = _algo.Distribute(surplusW, effective);
 
         if (result.GridChargedW > 0)
@@ -117,24 +128,57 @@ public class SmartDistributionService
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Calcule GridChargeAllowedW pour chaque batterie selon 2 règles indépendantes :
+    ///
+    ///   1. URGENCE SOC : si SOC < EmergencyGridChargeBelowPercent
+    ///      → recharge forcée réseau, SAUF si soleil attendu (SolarExpectedSoon)
+    ///      → GridChargeAllowedW = MaxChargeRateW, cible = EmergencyGridChargeTargetPercent
+    ///
+    ///   2. TARIF FAVORABLE (logique normale) : tariff.GridChargeAllowed
+    ///      → toutes les batteries éligibles chargent jusqu'à SoftMaxPercent
+    ///
+    /// Les deux peuvent se cumuler — l'urgence prend toujours le dessus sur le tarif.
+    /// </summary>
     private static IList<Battery> Apply(
         IList<Battery>    src,
         MLRecommendation? reco,
         TariffContext      tariff)
     {
-        return src.Select(b => new Battery
+        return src.Select(b =>
         {
-            Id             = b.Id,
-            CapacityWh     = b.CapacityWh,
-            MaxChargeRateW = b.MaxChargeRateW,
-            MinPercent     = reco is null
-                ? b.MinPercent
-                : Math.Max(b.MinPercent, reco.RecommendedPreventiveThreshold),
-            SoftMaxPercent = reco?.RecommendedSoftMaxPercent ?? b.SoftMaxPercent,
-            HardMaxPercent = b.HardMaxPercent,
-            CurrentPercent = b.CurrentPercent,
-            Priority       = b.Priority,
-            GridChargeAllowedW = tariff.GridChargeAllowed ? b.MaxChargeRateW : 0
+            // ── Urgence SOC : recharge forcée réseau ─────────────────────────
+            // Déclenchée si SOC < seuil d'urgence ET pas de soleil attendu.
+            // Si le soleil est attendu → l'autoconsommation va résoudre le problème,
+            // pas besoin de payer le réseau.
+            bool isEmergency = b.EmergencyGridChargeBelowPercent.HasValue
+                && b.CurrentPercent < b.EmergencyGridChargeBelowPercent.Value
+                && !tariff.SolarExpectedSoon;
+
+            // ── Charge réseau autorisée ───────────────────────────────────────
+            // Urgence → toujours autorisée (indépendant du tarif)
+            // Sinon → seulement si le tarif est favorable (heures creuses)
+            double gridAllowedW = (isEmergency || tariff.GridChargeAllowed)
+                ? b.MaxChargeRateW
+                : 0;
+
+            return new Battery
+            {
+                Id             = b.Id,
+                CapacityWh     = b.CapacityWh,
+                MaxChargeRateW = b.MaxChargeRateW,
+                MinPercent     = reco is null
+                    ? b.MinPercent
+                    : Math.Max(b.MinPercent, reco.RecommendedPreventiveThreshold),
+                SoftMaxPercent = reco?.RecommendedSoftMaxPercent ?? b.SoftMaxPercent,
+                HardMaxPercent = b.HardMaxPercent,
+                CurrentPercent = b.CurrentPercent,
+                Priority       = b.Priority,
+                GridChargeAllowedW             = gridAllowedW,
+                EmergencyGridChargeBelowPercent  = b.EmergencyGridChargeBelowPercent,
+                EmergencyGridChargeTargetPercent = isEmergency ? b.EmergencyGridChargeTargetPercent : null,
+                IsEmergencyGridCharge            = isEmergency,
+            };
         }).ToList();
     }
 
