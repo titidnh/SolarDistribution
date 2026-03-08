@@ -96,6 +96,7 @@ var host = Host.CreateDefaultBuilder(args)
         // ── Services HA ───────────────────────────────────────────────────────
         services.AddSingleton<HomeAssistantDataReader>();
         services.AddSingleton<HomeAssistantCommandSender>();
+        services.AddSingleton<CommandStateCache>();
 
         // ── Core : algo déterministe ──────────────────────────────────────────
         services.AddSingleton<IBatteryDistributionService, BatteryDistributionService>();

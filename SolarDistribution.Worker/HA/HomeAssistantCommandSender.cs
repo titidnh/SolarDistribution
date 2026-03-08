@@ -16,28 +16,26 @@ namespace SolarDistribution.Worker.HA;
 ///
 /// DryRun : log les commandes sans les envoyer.
 /// MinChangeTriggerW : ignore les changements inférieurs au seuil (évite le flooding HA).
+///
+/// État persistant : last sent values + zones sont sauvegardés sur disque via CommandStateCache
+/// pour survivre aux redémarrages Docker / reboot host.
 /// </summary>
 public class HomeAssistantCommandSender
 {
     private readonly IHomeAssistantClient _client;
-    private readonly SolarConfig          _config;
+    private readonly SolarConfig _config;
+    private readonly CommandStateCache _cache;
     private readonly ILogger<HomeAssistantCommandSender> _logger;
-
-    // Dernières valeurs envoyées par batterie — pour le delta check
-    private readonly Dictionary<int, double> _lastSentValues = new();
-
-    // Dernier état "0W ou non" par batterie — les actions conditionnelles ne
-    // se déclenchent QUE lors d'un changement de zone (0W → >0W ou >0W → 0W).
-    // Absent = premier cycle → on déclenche systématiquement.
-    private readonly Dictionary<int, bool> _lastWasZero = new();
 
     public HomeAssistantCommandSender(
         IHomeAssistantClient client,
         SolarConfig config,
+        CommandStateCache cache,
         ILogger<HomeAssistantCommandSender> logger)
     {
         _client = client;
         _config = config;
+        _cache = cache;
         _logger = logger;
     }
 
@@ -76,9 +74,10 @@ public class HomeAssistantCommandSender
         rawValue = Math.Round(rawValue, 2);
 
         // ── Delta check : évite d'envoyer si la valeur n'a pas assez changé ──
-        if (_lastSentValues.TryGetValue(battConfig.Id, out double lastValue))
+        double? lastValue = _cache.GetLastSentValue(battConfig.Id);
+        if (lastValue.HasValue)
         {
-            double delta = Math.Abs(rawValue - lastValue);
+            double delta = Math.Abs(rawValue - lastValue.Value);
             if (delta < _config.Polling.MinChangeTriggerW * battConfig.Entities.ValueMultiplier)
             {
                 _logger.LogDebug(
@@ -92,8 +91,8 @@ public class HomeAssistantCommandSender
         // ── Détection de changement de zone 0W ↔ charge active ──────────────
         // "charge active" = surplus solaire alloué OU recharge réseau d'urgence
         bool currentIsZero = alloc.AllocatedW == 0;
-        bool zoneChanged   = !_lastWasZero.TryGetValue(battConfig.Id, out bool prevWasZero)
-                             || prevWasZero != currentIsZero;
+        bool? prevWasZero = _cache.GetLastWasZero(battConfig.Id);
+        bool zoneChanged = prevWasZero is null || prevWasZero.Value != currentIsZero;
 
         if (_config.Polling.DryRun)
         {
@@ -107,8 +106,7 @@ public class HomeAssistantCommandSender
             if (zoneChanged)
                 LogConditionalActions(alloc.AllocatedW, battConfig);
 
-            _lastSentValues[battConfig.Id] = rawValue;
-            _lastWasZero[battConfig.Id]    = currentIsZero;
+            _cache.Update(battConfig.Id, rawValue, currentIsZero);
             return true;
         }
 
@@ -144,8 +142,7 @@ public class HomeAssistantCommandSender
 
         if (success)
         {
-            _lastSentValues[battConfig.Id] = rawValue;
-            _lastWasZero[battConfig.Id]    = currentIsZero;
+            _cache.Update(battConfig.Id, rawValue, currentIsZero);
 
             _logger.LogInformation(
                 "Battery {Id} ({Name}): set charge power {Value}{Unit} " +
