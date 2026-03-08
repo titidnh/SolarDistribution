@@ -143,13 +143,24 @@ public class SolarDbContext : DbContext
         var sb = new StringBuilder();
         for (int i = 0; i < name.Length; i++)
         {
-            var c = name[i];
+            char c = name[i];
+            char prev = i > 0 ? name[i - 1] : '\0';
+
             if (char.IsUpper(c))
             {
-                if (i > 0) sb.Append('_');
+                if (i > 0 && (char.IsLower(prev) || char.IsDigit(prev))) sb.Append('_');
                 sb.Append(char.ToLowerInvariant(c));
             }
-            else sb.Append(c);
+            else if (char.IsDigit(c))
+            {
+                if (i > 0 && !char.IsDigit(prev) && prev != '_') sb.Append('_');
+                sb.Append(c);
+            }
+            else // lower-case letter or other
+            {
+                if (i > 0 && char.IsDigit(prev)) sb.Append('_');
+                sb.Append(char.ToLowerInvariant(c));
+            }
         }
         return sb.ToString();
     }
