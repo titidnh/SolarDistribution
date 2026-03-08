@@ -11,7 +11,7 @@ public class DistributionSession
     public string   DecisionEngine  { get; set; } = "Deterministic";
     public double?  MlConfidenceScore { get; set; }
 
-    // ── Tariff context persisted for ML ───────────────────────────────────
+    // ── Contexte tarifaire persisté pour le ML ────────────────────────────────
     public string? TariffSlotName             { get; set; }
     public double? TariffPricePerKwh          { get; set; }
     public bool    WasGridChargeFavorable      { get; set; }
@@ -27,9 +27,9 @@ public class DistributionSession
 }
 
 /// <summary>
-/// Feedback observed N hours after a session.
-/// Contains the REAL labels for ML training.
-/// Collected automatically by FeedbackEvaluator.
+/// Feedback observé N heures après une session.
+/// Contient les labels RÉELS pour l'entraînement ML.
+/// Collecté automatiquement par FeedbackEvaluator.
 /// </summary>
 public class SessionFeedback
 {
@@ -39,25 +39,25 @@ public class SessionFeedback
     // Delay in hours between session and feedback collection
     public double   FeedbackDelayHours { get; set; }
 
-    /// <summary>Actual SOC of each battery N hours after the session (JSON)</summary>
+    /// <summary>SOC réel de chaque batterie N heures après la session (JSON)</summary>
     public string ObservedSocJson { get; set; } = "{}";
 
     public double AvgSocAtFeedback { get; set; }
     public double MinSocAtFeedback { get; set; }
 
-    /// <summary>Ratio of stored energy / available energy (0→1)</summary>
+    /// <summary>Ratio énergie stockée / disponible (0→1)</summary>
     public double EnergyEfficiencyScore { get; set; }
 
-    /// <summary>Batteries that remained above MinPercent (0→1)</summary>
+    /// <summary>Batteries restées au-dessus de MinPercent (0→1)</summary>
     public double AvailabilityScore { get; set; }
 
-    /// <summary>True label for SoftMax model — SoftMax that would have been optimal</summary>
+    /// <summary>Vrai label pour modèle SoftMax — SoftMax qui aurait été optimal</summary>
     public double ObservedOptimalSoftMax      { get; set; }
 
-    /// <summary>True label for preventive model — threshold that would have avoided empty batteries</summary>
+    /// <summary>Vrai label pour modèle préventif — seuil qui aurait évité les batteries vides</summary>
     public double ObservedOptimalPreventive   { get; set; }
 
-    /// <summary>Global composite score (0→1) — quality filter before training</summary>
+    /// <summary>Score composite global (0→1) — filtre qualité avant entraînement</summary>
     public double CompositeScore { get; set; }
 
     public FeedbackStatus Status        { get; set; } = FeedbackStatus.Pending;

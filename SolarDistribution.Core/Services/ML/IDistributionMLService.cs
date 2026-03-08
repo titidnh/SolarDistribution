@@ -2,21 +2,21 @@ using Microsoft.ML.Data;
 
 namespace SolarDistribution.Core.Services.ML;
 
-// ── ML Features ───────────────────────────────────────────────────────────────
+// ── Features ML ───────────────────────────────────────────────────────────────
 
 /// <summary>
-/// Input features for the ML model.
-/// Each row represents a historical distribution session with valid feedback.
+/// Features d'entrée du modèle ML.
+/// Chaque ligne = une session de distribution historique avec feedback valide.
 ///
-/// CYCLIC ENCODING for hour + month:
-///   Raw values (1-12, 0-23) are misleading for tree models because
-///   December (12) and January (1) appear far apart.
-///   Solution: use sin/cos — December and January are adjacent on the circle.
-///   Raw values are still kept for direct thresholds used by FastTree.
+/// ENCODAGE CYCLIQUE heure + mois :
+///   Les valeurs brutes (1-12, 0-23) sont mal perçues par les arbres car
+///   décembre (12) et janvier (1) semblent très distants.
+///   Solution : sin/cos — décembre et janvier sont adjacents sur le cercle.
+///   On garde aussi les valeurs brutes pour les seuils directs de FastTree.
 ///
-/// TARIFF FEATURES:
-///   Allow the ML model to learn WHEN to charge from the grid.
-///   E.g. if tariff is low and no sun expected → SoftMax can increase to 90%.
+/// FEATURES TARIFAIRES :
+///   Permettent au ML d'apprendre QUAND charger depuis le réseau.
+///   Ex : si tarif bas + pas de soleil prévu → SoftMax peut monter à 90%.
 /// </summary>
 public class DistributionFeatures
 {
@@ -54,25 +54,25 @@ public class DistributionFeatures
     [LoadColumn(19)] public float UrgentBatteryCount  { get; set; }
     [LoadColumn(20)] public float TotalMaxChargeRateW { get; set; }
 
-    // ML-4: dispersion features — enable the model to distinguish
-    // heterogeneous installations (batteries with very different capacities)
-    // from homogeneous ones, without access to individual features.
+    // ML-4 : features de dispersion — permettent au modèle de distinguer les
+    // installations hétérogènes (batteries de capacités très différentes)
+    // des installations homogènes, sans avoir accès aux features individuelles.
 
-    /// <summary>Standard deviation of SOC between batteries (0 if single battery).</summary>
+    /// <summary>Écart-type du SOC entre les batteries (0 si une seule batterie).</summary>
     [LoadColumn(21)] public float SocStdDev           { get; set; }
 
-    /// <summary>Max/min ratio of installed capacities (1.0 if batteries are identical).</summary>
+    /// <summary>Ratio max/min des capacités installées (1.0 si batteries identiques).</summary>
     [LoadColumn(22)] public float CapacityRatio        { get; set; }
 
-    /// <summary>Number of batteries with Priority > 0 (non-urgent batteries).</summary>
+    /// <summary>Nombre de batteries avec Priority > 0 (batteries non-urgentes).</summary>
     [LoadColumn(23)] public float NonUrgentBatteryCount { get; set; }
 
-// ── Solar surplus ───────────────────────────────────────────────────────
+    // ── Surplus solaire ───────────────────────────────────────────────────────
     [LoadColumn(24)] public float SurplusW { get; set; }
 
-// ── Tariff context ────────────────────────────────────────────────────
-    // These features let the ML model learn to adapt the SoftMax and the
-    // preventive threshold according to electricity cost and production forecast.
+    // ── Contexte tarifaire ────────────────────────────────────────────────────
+    // Ces features permettent au ML d'apprendre à adapter le SoftMax et le seuil
+    // préventif selon le coût de l'électricité et la prévision de production.
 
     /// <summary>Prix actuel normalisé 0→1 (0.4 €/kWh = 1.0). 0.5 si inconnu.</summary>
     [LoadColumn(25)] public float NormalizedTariff      { get; set; }
@@ -92,7 +92,7 @@ public class DistributionFeatures
     /// <summary>Économie potentielle en €/kWh si on charge réseau maintenant vs plus tard</summary>
     [LoadColumn(30)] public float MaxSavingsPerKwh      { get; set; }
 
-// ── Labels (regression targets — from real SessionFeedback) ─────────
+    // ── Labels (cibles de régression — issus de SessionFeedback réel) ─────────
     [LoadColumn(31)] public float OptimalSoftMaxPercent      { get; set; }
     [LoadColumn(32)] public float OptimalPreventiveThreshold { get; set; }
 }
@@ -107,7 +107,7 @@ public class PreventivePrediction
     [ColumnName("Score")] public float PredictedPreventiveThreshold { get; set; }
 }
 
-// ── Prediction result ────────────────────────────────────────────────────
+// ── Résultat de prédiction ────────────────────────────────────────────────────
 
 public record MLRecommendation(
     double RecommendedSoftMaxPercent,
@@ -124,13 +124,13 @@ public interface IDistributionMLService
     Task<MLRecommendation?> PredictAsync(DistributionFeatures features, CancellationToken ct = default);
     Task<MLTrainingResult>  RetrainAsync(CancellationToken ct = default);
     /// <summary>
-    /// ML-6: GetStatus is async to avoid GetAwaiter().GetResult()
-    /// which can cause a deadlock in certain .NET scheduling contexts.
+    /// ML-6 : GetStatus est désormais async pour éviter GetAwaiter().GetResult()
+    /// qui peut provoquer un deadlock dans certains contextes de scheduling .NET.
     /// </summary>
     Task<MLModelStatus>     GetStatusAsync(CancellationToken ct = default);
     /// <summary>
-    /// ML-5: Checks whether the active model has undergone significant drift
-    /// over the last N sessions. Returns true if a forced retrain is advised.
+    /// ML-5 : Vérifie si le modèle actif a subi une dérive significative
+    /// sur les N dernières sessions. Retourne true si un retrain forcé est conseillé.
     /// </summary>
     Task<bool>              CheckForDriftAsync(int windowSize, double threshold, CancellationToken ct = default);
 }

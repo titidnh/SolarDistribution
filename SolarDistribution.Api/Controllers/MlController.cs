@@ -4,7 +4,7 @@ using SolarDistribution.Core.Services.ML;
 namespace SolarDistribution.Api.Controllers;
 
 /// <summary>
-/// ML model management — manual retraining and status inspection.
+/// Gestion du modèle ML — ré-entraînement manuel et consultation du statut.
 /// </summary>
 [ApiController]
 [Route("api/[controller]")]
@@ -21,9 +21,9 @@ public class MlController : ControllerBase
     }
 
     /// <summary>
-    /// Current ML model status: availability, version, metrics, number of sessions.
+    /// Statut actuel du modèle ML : disponibilité, version, métriques, nombre de sessions.
     /// </summary>
-    /// <response code="200">Status returned</response>
+    /// <response code="200">Statut retourné</response>
     [HttpGet("status")]
     [ProducesResponseType(typeof(MLModelStatusDto), StatusCodes.Status200OK)]
     public async Task<ActionResult<MLModelStatusDto>> GetStatus(CancellationToken ct)
@@ -44,15 +44,15 @@ public class MlController : ControllerBase
     }
 
     /// <summary>
-    /// Starts retraining the ML model on all available sessions in the database.
-    /// Synchronous operation — may take several seconds depending on data volume.
+    /// Lance le ré-entraînement du modèle ML sur toutes les sessions disponibles en base.
+    /// Opération synchrone — peut prendre quelques secondes selon le volume de données.
     /// </summary>
     /// <remarks>
-    /// Minimum 50 sessions required to start training.
-    /// The model is automatically considered active if R² >= 0.65 for both predictions.
+    /// Minimum 50 sessions requises pour démarrer l'entraînement.
+    /// Le modèle est automatiquement activé si R² >= 0.65 sur les deux prédictions.
     /// </remarks>
-    /// <response code="200">Training succeeded — metrics returned</response>
-    /// <response code="400">Not enough training data</response>
+    /// <response code="200">Entraînement réussi — métriques retournées</response>
+    /// <response code="400">Pas assez de données d'entraînement</response>
     [HttpPost("retrain")]
     [ProducesResponseType(typeof(MLTrainingResultDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
@@ -88,18 +88,18 @@ public class MlController : ControllerBase
 
 public class MLModelStatusDto
 {
-    /// <summary>Is the model available and confident enough to be used?</summary>
+    /// <summary>Le modèle est-il disponible et suffisamment confiant pour être utilisé ?</summary>
     public bool IsAvailable { get; set; }
     public string? ModelVersion { get; set; }
     public int TrainingSamples { get; set; }
-    /// <summary>R² of the SoftMax model (0.0 to 1.0 — closer to 1 = better)</summary>
+    /// <summary>R² du modèle SoftMax (0.0 à 1.0 — plus proche de 1 = meilleur)</summary>
     public double? SoftMaxRSquared { get; set; }
-    /// <summary>R² of the preventive threshold model</summary>
+    /// <summary>R² du modèle seuil préventif</summary>
     public double? PreventiveRSquared { get; set; }
     public DateTime? TrainedAt { get; set; }
     public int SessionsInDb { get; set; }
     public int MinSessionsRequired { get; set; }
-    /// <summary>Progress towards the minimum threshold (0-100%)</summary>
+    /// <summary>Progression vers le seuil minimum (0-100%)</summary>
     public int ProgressPercent { get; set; }
 }
 
@@ -110,6 +110,6 @@ public class MLTrainingResultDto
     public double SoftMaxRSquared { get; set; }
     public double PreventiveRSquared { get; set; }
     public string ModelVersion { get; set; } = string.Empty;
-    /// <summary>The model will be used for upcoming distributions (R² >= 0.65)</summary>
+    /// <summary>Le modèle sera utilisé pour les prochaines distributions (R² >= 0.65)</summary>
     public bool IsModelActive { get; set; }
 }

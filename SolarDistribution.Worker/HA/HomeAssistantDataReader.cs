@@ -46,9 +46,9 @@ public class HomeAssistantDataReader
     public async Task<HaSnapshot?> ReadAllAsync(CancellationToken ct = default)
     {
         // ── Surplus solaire ───────────────────────────────────────────────────
-        double? surplus = await _client.GetNumericStateAsync(_config.Solar.SurplusEntity, ct);
+        double? rawSurplus = await _client.GetNumericStateAsync(_config.Solar.SurplusEntity, ct);
 
-        if (surplus is null)
+        if (rawSurplus is null)
         {
             _logger.LogError(
                 "Cannot read surplus entity '{Entity}' — skipping this cycle",
@@ -56,7 +56,11 @@ public class HomeAssistantDataReader
             return null;
         }
 
-        double surplusW = Math.Max(0, surplus.Value);
+        double surplusW = ComputeSurplus(rawSurplus.Value, _config.Solar.SurplusMode);
+
+        _logger.LogDebug(
+            "Surplus: raw={Raw:F0}W, mode={Mode}, effective={Surplus:F0}W",
+            rawSurplus.Value, _config.Solar.SurplusMode, surplusW);
 
         // ── Optionnels (production + conso) ──────────────────────────────────
         double? productionW  = null;
@@ -96,7 +100,6 @@ public class HomeAssistantDataReader
 
                 if (rawRate is not null)
                 {
-                    // Convertir en W si l'entité expose des Ampères (MaxRateReadMultiplier)
                     maxChargeRateW = rawRate.Value * b.Entities.MaxRateReadMultiplier;
 
                     _logger.LogDebug(
@@ -128,4 +131,24 @@ public class HomeAssistantDataReader
 
         return new HaSnapshot(surplusW, productionW, consumptionW, readings, DateTime.UtcNow);
     }
+
+    // ── Calcul du surplus selon le mode configuré ─────────────────────────────
+
+    /// <summary>
+    /// Convertit la valeur brute lue depuis HA en surplus effectif (W, toujours ≥ 0).
+    ///
+    ///   direct    : la valeur est déjà un surplus positif → clamp à 0 minimum.
+    ///
+    ///   p1_invert : la valeur est la puissance réseau du compteur P1 (DSMR).
+    ///               Négatif = export = surplus disponible → on inverse le signe.
+    ///               Positif = import depuis réseau = pas de surplus → 0.
+    ///               Exemple : -1360 W  ⟹  1360 W de surplus
+    ///                          +800 W  ⟹  0 W (on consomme du réseau)
+    /// </summary>
+    private static double ComputeSurplus(double rawValue, string mode) =>
+        mode.ToLowerInvariant() switch
+        {
+            "p1_invert" => Math.Max(0, -rawValue),
+            _           => Math.Max(0,  rawValue),   // "direct" et tout autre valeur
+        };
 }

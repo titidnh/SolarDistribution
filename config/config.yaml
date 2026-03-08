@@ -22,10 +22,55 @@ location:
   longitude:  4.35
 
 # ── Production solaire ─────────────────────────────────────────────────────────
+#
+# surplus_mode : comment lire le surplus disponible pour charger les batteries.
+#
+#   direct    (défaut) : l'entité expose directement le surplus en W (>= 0).
+#                        ex: un sensor dédié de votre onduleur ou template HA.
+#
+#   p1_invert          : l'entité est la puissance réseau de votre compteur P1/DSMR.
+#                        La valeur est NÉGATIVE quand vous exportez (surplus disponible)
+#                        et POSITIVE quand vous importez depuis le réseau.
+#                        Le Worker inverse automatiquement le signe.
+#
+#                        Exemple avec compteur P1 (Linky, DSMR, P1 Dongle...) :
+#                          sensor.p1_power = -1360 W  =>  surplus = 1360 W
+#                          sensor.p1_power =  +800 W  =>  surplus = 0 W (import)
+#
+#   +---------------------------------------------------------------------------+
+#   |  Entités HA selon votre installation                                      |
+#   |                                                                           |
+#   |  Compteur P1 / DSMR (mode p1_invert) :                                  |
+#   |    P1 Dongle, ISKRA, Sagemcom, Linky via Enedis...                       |
+#   |    Dans HA chercher : "Puissance" / "Power" / "Active power"             |
+#   |    La valeur négative = export = surplus => parfait pour p1_invert       |
+#   |                                                                           |
+#   |  Onduleur solaire avec sensor dédié (mode direct) :                      |
+#   |    Fronius, SMA, SolarEdge, SolaX, GivEnergy...                         |
+#   |    Chercher : "Export power" / "Grid feed-in" / "Surplus"               |
+#   +---------------------------------------------------------------------------+
+#
 solar:
-  surplus_entity:     "sensor.solar_surplus_power"
-  production_entity:  "sensor.solar_production_power"
-  consumption_entity: "sensor.home_consumption_power"
+  # Mode p1_invert : utilise la puissance réseau du compteur P1.
+  # Remplacer par "direct" si vous avez un sensor de surplus dédié.
+  surplus_mode: "p1_invert"
+
+  # Entité HA de la puissance réseau (compteur P1).
+  # Trouver le bon entity_id : HA -> Outils de développement -> États -> chercher "Puissance"
+  # Exemples selon intégration :
+  #   P1 Dongle (DSMR)      : sensor.p1_power
+  #   Shelly EM             : sensor.shelly_em_channel_1_power
+  #   Fronius Smart Meter   : sensor.fronius_grid_power
+  #   Intégration générique : sensor.power_phase_1
+  surplus_entity: "sensor.YOUR_P1_POWER_ENTITY"
+
+  # Entité de production PV brute (optionnel — pour le logging et le ML).
+  # ex: sensor.onduleur_puissance_active, sensor.solar_active_power
+  production_entity: "sensor.YOUR_PV_ACTIVE_POWER_ENTITY"
+
+  # Entité de consommation maison (optionnel).
+  # Pas nécessaire en mode p1_invert : la consommation est implicite dans P1.
+  # consumption_entity: "sensor.home_consumption_power"
 
 # ── Batteries ──────────────────────────────────────────────────────────────────
 batteries:

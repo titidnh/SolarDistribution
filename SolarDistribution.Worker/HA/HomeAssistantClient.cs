@@ -6,7 +6,7 @@ using SolarDistribution.Worker.Configuration;
 
 namespace SolarDistribution.Worker.HA;
 
-// ── HA response DTOs ─────────────────────────────────────────────────────────
+// ── DTO réponse HA ────────────────────────────────────────────────────────────
 
 public record HaState(
     [property: JsonPropertyName("entity_id")]  string EntityId,
@@ -27,18 +27,18 @@ public interface IHomeAssistantClient
     Task<bool>     PingAsync(CancellationToken ct = default);
 }
 
-// ── Implementation ───────────────────────────────────────────────────────────
+// ── Implémentation ────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// HTTP client for the Home Assistant REST API.
-    ///
-    /// Read  : GET  /api/states/{entity_id}
-    /// Write : POST /api/services/number/set_value   → sets charging power in W
-    ///         POST /api/services/homeassistant/turn_on|turn_off → switch enable
-    ///
-    /// Resilience: retry + circuit breaker configured via Microsoft.Extensions.Http.Resilience
-    /// in Program.cs (AddResilienceHandler).
-    /// </summary>
+/// <summary>
+/// Client HTTP vers l'API REST de Home Assistant.
+///
+/// Lecture  : GET  /api/states/{entity_id}
+/// Écriture : POST /api/services/number/set_value   → contrôle la puissance W
+///            POST /api/services/homeassistant/turn_on|turn_off → switch enable
+///
+/// Resilience : retry + circuit breaker configurés via Microsoft.Extensions.Http.Resilience
+/// dans Program.cs (AddResilienceHandler).
+/// </summary>
 public class HomeAssistantClient : IHomeAssistantClient
 {
     private readonly HttpClient _http;
@@ -55,7 +55,7 @@ public class HomeAssistantClient : IHomeAssistantClient
         _logger = logger;
     }
 
-    // ── Read operations ──────────────────────────────────────────────────────
+    // ── Lecture ───────────────────────────────────────────────────────────────
 
     public async Task<HaState?> GetStateAsync(string entityId, CancellationToken ct = default)
     {
@@ -92,7 +92,7 @@ public class HomeAssistantClient : IHomeAssistantClient
         return null;
     }
 
-    // ── Write operations ─────────────────────────────────────────────────────
+    // ── Écriture ──────────────────────────────────────────────────────────────
 
     /// <summary>
     /// Définit la valeur d'une entité 'number' dans HA.

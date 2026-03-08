@@ -5,18 +5,18 @@ using SolarDistribution.Core.Services;
 namespace SolarDistribution.Infrastructure.Services;
 
 /// <summary>
-/// Calls the Open-Meteo API (free, no API key) to fetch:
-///   - Current conditions: temperature, clouds, precipitation, radiation
-///   - Hourly forecast for 12h: direct radiation + cloud cover
+/// Appelle l'API Open-Meteo (gratuite, sans clé) pour récupérer :
+///   - Conditions actuelles : température, nuages, précipitations, rayonnement
+///   - Prévisions horaires sur 12h : rayonnement direct + couverture nuageuse
 ///
-/// Endpoint used: https://api.open-meteo.com/v1/forecast
+/// Endpoint utilisé : https://api.open-meteo.com/v1/forecast
 /// </summary>
 public class OpenMeteoWeatherService : IWeatherService
 {
     private readonly HttpClient _http;
     private readonly ILogger<OpenMeteoWeatherService> _logger;
 
-    // Approximate sunset calculation (±20min) — avoids an external dependency
+    // Calcul approximatif du coucher de soleil (±20min) — évite une dépendance externe
     private static readonly TimeSpan DefaultSunsetOffset = TimeSpan.FromHours(19);
 
     public OpenMeteoWeatherService(HttpClient http, ILogger<OpenMeteoWeatherService> logger)
@@ -109,7 +109,7 @@ public class OpenMeteoWeatherService : IWeatherService
     // ── Helpers astronomiques simples ─────────────────────────────────────────
 
     /// <summary>
-    /// Estimates daylight duration in hours (Cooper's formula, accuracy ~±15min).
+    /// Estimation de la durée du jour en heures (formule de Cooper, précision ~±15min).
     /// </summary>
     private static double EstimateDaylightHours(double latitude, DateTime date)
     {
@@ -124,12 +124,12 @@ public class OpenMeteoWeatherService : IWeatherService
     }
 
     /// <summary>
-    /// Estimates the hours remaining until sunset.
-    /// Returns 0 if already past sunset.
-    /// Note: solar noon is adjusted by longitude to avoid a systematic error
-    /// that can reach ±2h depending on the installation time zone.
-    /// Formula: solar noon UTC ≈ 12h − (longitude / 15)
-    /// Example: Paris (longitude ≈ 2.35°) → solar noon ≈ 11:51 UTC
+    /// Estimation des heures restantes avant le coucher du soleil.
+    /// Retourne 0 si on est déjà après le coucher.
+    /// Fix 3 : le midi solaire est corrigé par la longitude pour éviter une erreur
+    /// systématique pouvant atteindre ±2h selon le fuseau horaire de l'installation.
+    /// Formule : midi solaire UTC ≈ 12h − (longitude / 15)
+    /// Exemple : Paris (longitude ≈ 2.35°) → midi solaire ≈ 11h51 UTC
     /// </summary>
     private static double EstimateHoursUntilSunset(double latitude, double longitude, DateTime utcNow)
     {

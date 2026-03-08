@@ -8,34 +8,34 @@ using SolarDistribution.Worker.HA;
 namespace SolarDistribution.Worker.Services;
 
 /// <summary>
-/// Collects real feedback for past sessions by re-reading battery SOCs from HA.
+/// Collecte le feedback réel sur les sessions passées en relisant le SOC des batteries dans HA.
 ///
-/// WHY IT MATTERS:
-///   Without this, the ML would learn to reproduce a hard-coded rule (heuristic).
-///   With this feedback, ML learns from WHAT REALLY HAPPENED.
+/// POURQUOI C'EST IMPORTANT :
+///   Sans cela, le ML apprenait à reproduire une règle codée en dur (heuristique).
+///   Avec ce feedback, le ML apprend depuis CE QUI S'EST VRAIMENT PASSÉ.
 ///
-/// WHEN:
-///   Triggered by MlRetrainScheduler according to config ml.feedback_delay_hours (default: 4h).
-///   We wait N hours after a session to observe the real effect of the decision.
+/// QUAND :
+///   Déclenché par MlRetrainScheduler selon config ml.feedback_delay_hours (défaut: 4h).
+///   On attend N heures après une session pour voir l'effet réel de la décision.
 ///
-/// WHAT WE MEASURE:
-///   We re-read the current SOC of each battery in HA.
-///   We compute two real labels:
+/// CE QU'ON MESURE :
+///   On relit le SOC actuel de chaque batterie dans HA.
+///   On calcule deux labels réels :
 ///
-///   1. ObservedOptimalSoftMax:
-///      - If batteries fell too low after the session → SoftMax was too low,
-///        we should have charged more → label = SoftMax + correction
-///      - If batteries remained unnecessarily high → label = SoftMax slightly reduced
+///   1. ObservedOptimalSoftMax :
+///      - Si les batteries sont tombées trop bas après la session → le SoftMax était trop bas,
+///        on aurait dû charger davantage → label = SoftMax + correction
+///      - Si les batteries sont restées inutilement hautes → label = SoftMax légèrement réduit
 ///
-///   2. ObservedOptimalPreventive:
-///      - If a battery fell below MinPercent → preventive threshold was too low
-///      - Otherwise → preventive threshold was correct or slightly conservative
+///   2. ObservedOptimalPreventive :
+///      - Si une batterie est passée sous MinPercent → le seuil préventif était trop bas
+///      - Sinon → seuil préventif était correct ou légèrement trop conservateur
 ///
-///   3. EnergyEfficiencyScore (0→1):
-///      - Ratio of energy stored / energy available
+///   3. EnergyEfficiencyScore (0→1) :
+///      - Ratio énergie stockée / énergie disponible
 ///
-///   4. AvailabilityScore (0→1):
-///      - Penalizes batteries that are too low at feedback time
+///   4. AvailabilityScore (0→1) :
+///      - Pénalise les batteries trop basses au moment du feedback
 /// </summary>
 public class FeedbackEvaluator
 {

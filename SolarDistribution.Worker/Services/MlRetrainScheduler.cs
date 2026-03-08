@@ -6,23 +6,23 @@ using SolarDistribution.Worker.Configuration;
 namespace SolarDistribution.Worker.Services;
 
 /// <summary>
-/// Second autonomous BackgroundService that manages two scheduled tasks:
+/// Second BackgroundService autonome gérant deux tâches planifiées :
 ///
-///   1. FEEDBACK COLLECTION (frequent, e.g. hourly)
-///      Re-reads actual battery SOCs from HA for past sessions
-///      and computes the true ML labels (ObservedOptimalSoftMax, ObservedOptimalPreventive).
-///      → Feeds the database with real training data
+///   1. COLLECTE DE FEEDBACK (fréquent, ex: toutes les heures)
+///      Relit le SOC réel des batteries dans HA pour les sessions passées
+///      et calcule les vrais labels ML (ObservedOptimalSoftMax, ObservedOptimalPreventive).
+///      → Alimente la base avec des données d'entraînement réelles
 ///
-///   2. ML RETRAIN (infrequent, e.g. Sunday 03:00)
-///      Trains the two FastTree models on sessions with valid feedback.
-///      → Activates ML once MIN_SESSIONS have valid feedback
+///   2. RÉENTRAÎNEMENT ML (peu fréquent, ex: dimanche 3h du matin)
+///      Entraîne les deux modèles FastTree sur les sessions avec feedback valide.
+///      → Active le ML dès que MIN_SESSIONS sessions ont un feedback valide
 ///
-/// Configuration in config.yaml:
+/// Configuration dans config.yaml :
 ///   ml:
-///     feedback_delay_hours: 4        # wait 4h before reading actual SOC
-///     feedback_check_interval_hours: 1  # check pending feedbacks hourly
-///     retrain_cron: "0 3 * * 0"      # Sunday 03:00 (cron syntax)
-///     min_feedback_for_retrain: 50   # minimum valid feedbacks to trigger retrain
+///     feedback_delay_hours: 4        # attendre 4h avant de lire le SOC réel
+///     feedback_check_interval_hours: 1  # vérifier les feedbacks en attente toutes les heures
+///     retrain_cron: "0 3 * * 0"      # dimanche à 3h du matin (syntaxe cron)
+///     min_feedback_for_retrain: 50   # minimum de feedbacks valides pour déclencher le retrain
 /// </summary>
 public class MlRetrainScheduler : BackgroundService
 {

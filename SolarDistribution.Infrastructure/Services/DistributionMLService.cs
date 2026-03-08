@@ -11,11 +11,11 @@ using SolarDistribution.Core.Services.ML;
 namespace SolarDistribution.Infrastructure.Services;
 
 /// <summary>
-/// Two FastTree regression models trained on historical sessions with valid feedback:
-///   Model 1: predicts OptimalSoftMaxPercent (when to stop charging towards SoftMax)
-///   Model 2: predicts OptimalPreventiveThreshold (low threshold to force recharge)
+/// Deux modèles FastTree regression entraînés sur les sessions historiques avec feedback valide :
+///   Modèle 1 : prédit OptimalSoftMaxPercent    (quand s'arrêter de charger vers SoftMax)
+///   Modèle 2 : prédit OptimalPreventiveThreshold (seuil bas pour forcer la recharge)
 ///
-/// REAL LABELS: derived from SessionFeedback.ObservedOptimal* — never hard-coded heuristics.
+/// LABELS RÉELS : issus de SessionFeedback.ObservedOptimal* — jamais d'heuristiques codées en dur.
 /// </summary>
 public class DistributionMLService : IDistributionMLService
 {
@@ -55,7 +55,7 @@ public class DistributionMLService : IDistributionMLService
         TryLoadFromDisk();
     }
 
-    // ── Prediction ────────────────────────────────────────────────────────────
+    // ── Prédiction ────────────────────────────────────────────────────────────
 
     public Task<MLRecommendation?> PredictAsync(DistributionFeatures f, CancellationToken ct = default)
     {
@@ -135,7 +135,7 @@ public class DistributionMLService : IDistributionMLService
         }
     }
 
-    // ── Training ─────────────────────────────────────────────────────────────
+    // ── Entraînement ──────────────────────────────────────────────────────────
 
     public async Task<MLTrainingResult> RetrainAsync(CancellationToken ct = default)
     {
@@ -189,7 +189,7 @@ public class DistributionMLService : IDistributionMLService
         }
     }
 
-    /// <summary>ML-6: async to avoid GetAwaiter().GetResult() — risk of deadlock.</summary>
+    /// <summary>ML-6 : async pour éviter GetAwaiter().GetResult() — risque deadlock.</summary>
     public async Task<MLModelStatus> GetStatusAsync(CancellationToken ct = default)
     {
         int sessions  = await _repo.CountSessionsAsync(ct);
@@ -201,10 +201,10 @@ public class DistributionMLService : IDistributionMLService
     }
 
     /// <summary>
-    /// ML-5: Concept drift detection.
-    /// Computes the R² of the active model on the <paramref name="windowSize"/> most recent
-    /// sessions with valid feedback, and compares it with the reference R².
-    /// Returns true if the degradation exceeds <paramref name="threshold"/> (e.g. 0.15).
+    /// ML-5 : Détection de dérive (concept drift).
+    /// Calcule le R² du modèle actif sur les <paramref name="windowSize"/> sessions les plus récentes
+    /// avec feedback valide, et compare avec le R² de référence.
+    /// Retourne true si la dégradation dépasse <paramref name="threshold"/> (ex: 0.15).
     /// </summary>
     public async Task<bool> CheckForDriftAsync(int windowSize, double threshold, CancellationToken ct = default)
     {
@@ -258,7 +258,7 @@ public class DistributionMLService : IDistributionMLService
         return false;
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────────
+    // ── Helpers privés ────────────────────────────────────────────────────────
 
     private (ITransformer Model, double R2) Train(IDataView train, IDataView test, string label)
     {
@@ -350,16 +350,16 @@ public class DistributionMLService : IDistributionMLService
     }
 
     /// <summary>
-    /// ML-1: (Re)builds PredictionEngine pools after training or model load from disk.
-    /// Pre-warms 2 engines per model for the initial concurrent cycles.
+    /// ML-1 : (Re)construit les pools de PredictionEngine après entraînement ou chargement disque.
+    /// Pré-chauffe 2 moteurs par modèle pour les premiers cycles concurrents.
     /// </summary>
     private void RebuildPredictionPools(DataViewSchema _)
     {
-        // Clear old pools before rebuilding (model replaced)
+        // Vider les anciens pools avant de reconstruire (modèle remplacé)
         _smEngines = new ConcurrentBag<PredictionEngine<DistributionFeatures, SoftMaxPrediction>>();
         _pvEngines = new ConcurrentBag<PredictionEngine<DistributionFeatures, PreventivePrediction>>();
 
-        // Pre-warm: 2 engines are enough for a single-cycle worker
+        // Pré-chauffe : 2 moteurs suffisent pour un worker à cycle unique
         for (int i = 0; i < 2; i++)
         {
             _smEngines.Add(_ctx.Model.CreatePredictionEngine<DistributionFeatures, SoftMaxPrediction>(_softMaxModel!));
@@ -455,14 +455,14 @@ public class DistributionMLService : IDistributionMLService
     private static string BuildRationale(DistributionFeatures f, double softMax, double preventive)
     {
         var reasons = new List<string>();
-        if (f.HoursUntilSunset < 3)  reasons.Add($"sunset in {f.HoursUntilSunset:F1}h");
-        if (f.CloudCoverPercent > 60) reasons.Add($"clouds {f.CloudCoverPercent:F0}%");
-        if (f.AvgForecastRadiation6h < 100) reasons.Add($"low forecast radiation ({f.AvgForecastRadiation6h:F0}W/m²)");
-        if (f.UrgentBatteryCount > 0) reasons.Add($"{f.UrgentBatteryCount} urgent battery(ies)");
-        if (f.IsOffPeakHour > 0.5)    reasons.Add($"off-peak hour {f.NormalizedTariff * 0.40:F2}€/kWh");
-        if (f.DaylightHours < 10)     reasons.Add($"short day ({f.DaylightHours:F1}h) — winter season");
+        if (f.HoursUntilSunset < 3)  reasons.Add($"coucher soleil dans {f.HoursUntilSunset:F1}h");
+        if (f.CloudCoverPercent > 60) reasons.Add($"nuages {f.CloudCoverPercent:F0}%");
+        if (f.AvgForecastRadiation6h < 100) reasons.Add($"faible rayonnement prévu ({f.AvgForecastRadiation6h:F0}W/m²)");
+        if (f.UrgentBatteryCount > 0) reasons.Add($"{f.UrgentBatteryCount} batterie(s) urgente(s)");
+        if (f.IsOffPeakHour > 0.5)    reasons.Add($"heure creuse {f.NormalizedTariff * 0.40:F2}€/kWh");
+        if (f.DaylightHours < 10)     reasons.Add($"jour court ({f.DaylightHours:F1}h) — saison hivernale");
 
-        string ctx = reasons.Any() ? string.Join(", ", reasons) : "favorable solar conditions";
-        return $"SoftMax={softMax:F0}%, preventive={preventive:F0}% — {ctx}";
+        string ctx = reasons.Any() ? string.Join(", ", reasons) : "conditions solaires favorables";
+        return $"SoftMax={softMax:F0}%, préventif={preventive:F0}% — {ctx}";
     }
 }
