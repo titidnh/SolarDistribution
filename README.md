@@ -6,31 +6,31 @@ Autonomous agent that reads solar surplus from Home Assistant and intelligently 
 
 ```
 Docker Container
-├── SolarWorker (BackgroundService)     ← boucle autonome
-│   ├── HomeAssistantDataReader         ← GET /api/states/* (lecture SOC + surplus)
-│   ├── SmartDistributionService        ← calcul ML ou déterministe
+├── SolarWorker (BackgroundService)     ← autonomous loop
+│   ├── HomeAssistantDataReader         ← GET /api/states/* (reads SOC + surplus)
+│   ├── SmartDistributionService        ← ML or deterministic calculation
 │   └── HomeAssistantCommandSender      ← POST /api/services/number/set_value
 │
-├── /config/config.yaml                 ← VOTRE configuration (volume monté)
+├── /config/config.yaml                 ← YOUR configuration (mounted volume)
 └── /data/
-    ├── ml_models/                      ← modèles ML persistés
-    └── logs/                           ← logs rotatifs
+    ├── ml_models/                      ← persisted ML models
+    └── logs/                           ← rotating logs
 
-Projects .NET 10 :
-├── SolarDistribution.Core              # Algo déterministe, modèles, interfaces
+.NET 10 Projects:
+├── SolarDistribution.Core              # Deterministic algo, models, interfaces
 ├── SolarDistribution.Infrastructure    # EF Core + MariaDB, ML.NET, Open-Meteo
-├── SolarDistribution.Worker            # Worker Docker autonome ← POINT D'ENTRÉE
-├── SolarDistribution.Api               # API REST (optionnel, pour debug/integration)
+├── SolarDistribution.Worker            # Autonomous Docker worker ← ENTRY POINT
+├── SolarDistribution.Api               # REST API (optional, for debug/integration)
 └── SolarDistribution.Tests             # NUnit + NSubstitute
 ```
 
-## Quick start
+## Quick Start
 
 ### 1. Configure
 
 ```bash
-# Copier et éditer le fichier de config
-cp config/config.yaml config/config.yaml  # déjà présent
+# Copy and edit the config file
+cp config/config.yaml config/config.yaml  # already present
 nano config/config.yaml
 ```
 
@@ -39,21 +39,21 @@ Required configuration items:
 - `home_assistant.token` → Long-Lived Access Token (HA → Profile → Security)
 - `solar.surplus_mode` → `p1_invert` if using a P1/DSMR meter (recommended), `direct` if you have a dedicated surplus sensor
 - `solar.surplus_entity` → entity_id of your P1 meter (e.g. `sensor.p1_power`) or your surplus sensor
-- `batteries[].entities.soc` → entity_id for each battery's charge %
+- `batteries[].entities.soc` → entity_id for each battery's state of charge (%)
 - `batteries[].entities.charge_power` → `number.*` entity id to control charge power
 
-### 2. Variables d'environnement
+### 2. Environment Variables
 
 ```bash
 cp .env.example .env
-nano .env    # adapter DB_ROOT_PASSWORD et DB_PASSWORD
+nano .env    # set DB_ROOT_PASSWORD and DB_PASSWORD
 ```
 
-### 3. Lancer
+### 3. Run
 
 ```bash
-# Mode simulation (DRY RUN — aucune commande envoyée à HA)
-# Éditer config.yaml : polling.dry_run: true
+# Simulation mode (DRY RUN — no commands sent to HA)
+# Edit config.yaml: polling.dry_run: true
 
 docker compose up --build
 ```
@@ -64,84 +64,84 @@ docker compose up -d --build
 docker compose logs -f solar_worker
 ```
 
-## Cycle de fonctionnement
+## How It Works
 
-Toutes les N secondes (configurable) :
-1. **Lit** depuis HA : surplus solaire (W) + SOC de chaque batterie (%)
-2. **Calcule** la distribution optimale (ML si ≥50 sessions, sinon algo déterministe)
-3. **Envoie** `number.set_value` à HA pour chaque batterie
-4. **Persiste** la session en MariaDB avec données météo Open-Meteo
+Every N seconds (configurable):
+1. **Reads** from HA: solar surplus (W) + each battery's SOC (%)
+2. **Calculates** the optimal distribution (ML if ≥50 sessions, otherwise deterministic algo)
+3. **Sends** `number.set_value` to HA for each battery
+4. **Persists** the session to MariaDB with Open-Meteo weather data
 
-## Configuration des entités HA
+## HA Entity Configuration
 
-### Trouver vos entity_ids
+### Finding Your entity_ids
 
-Dans Home Assistant : **Outils de développement → États** → chercher :
-- `sensor.*battery*soc` ou `sensor.*battery*charge`
-- `number.*battery*power` ou `number.*charge*power`
-- Compteur P1 (mode `p1_invert`) : `sensor.*power*` ou `sensor.*puissance*` → valeur **négative** quand vous exportez
-- Sensor dédié (mode `direct`) : `sensor.*surplus*` ou `sensor.*export*power`
+In Home Assistant: **Developer Tools → States** → search for:
+- `sensor.*battery*soc` or `sensor.*battery*charge`
+- `number.*battery*power` or `number.*charge*power`
+- P1 meter (mode `p1_invert`): `sensor.*power*` or `sensor.*puissance*` → **negative** value when exporting
+- Dedicated sensor (mode `direct`): `sensor.*surplus*` or `sensor.*export*power`
 
-### Exemples d'entités surplus selon votre installation
+### Surplus Entity Examples by Installation Type
 
 | Installation | surplus_mode | surplus_entity |
 |---|---|---|
-| Compteur P1 / DSMR (P1 Dongle, ISKRA…) | `p1_invert` | `sensor.p1_power` |
-| Shelly EM sur câble réseau | `p1_invert` | `sensor.shelly_em_channel_1_power` |
-| Fronius avec Smart Meter | `p1_invert` | `sensor.fronius_grid_power` |
-| SolaX — export dédié | `direct` | `sensor.solax_export_power` |
+| P1 / DSMR meter (P1 Dongle, ISKRA…) | `p1_invert` | `sensor.p1_power` |
+| Shelly EM on grid cable | `p1_invert` | `sensor.shelly_em_channel_1_power` |
+| Fronius with Smart Meter | `p1_invert` | `sensor.fronius_grid_power` |
+| SolaX — dedicated export | `direct` | `sensor.solax_export_power` |
 | SolarEdge | `direct` | `sensor.solaredge_grid_exported_power` |
-| Template HA personnalisé | `direct` | `sensor.solar_surplus_power` |
+| Custom HA template | `direct` | `sensor.solar_surplus_power` |
 
-### Exemples par onduleur/batterie
+### Examples by Inverter/Battery Brand
 
-| Matériel | SOC | Charge Power |
+| Hardware | SOC | Charge Power |
 |----------|-----|--------------|
 | SolaX | `sensor.solax_battery_capacity` | `number.solax_battery_charge_max_current` |
 | GivEnergy | `sensor.givtcp_soc` | `number.givtcp_charge_target_soc` |
 | Huawei SUN2000 | `sensor.battery_state_of_capacity` | `number.battery_maximum_charging_power` |
-| Générique MQTT | `sensor.battery_1_soc` | `number.battery_1_charge_power` |
+| Generic MQTT | `sensor.battery_1_soc` | `number.battery_1_charge_power` |
 
-> **Note sur les Ampères :** Si votre entité HA attend des Ampères (A) plutôt que des Watts (W),
-> utilisez `value_multiplier: 0.02083` pour une batterie 48V (= 1/48).
+> **Note on Amperes:** If your HA entity expects Amperes (A) instead of Watts (W),
+> use `value_multiplier: 0.02083` for a 48V battery (= 1/48).
 
-## ML.NET — Apprentissage progressif
+## ML.NET — Progressive Learning
 
-| Phase | Sessions | Comportement |
-|-------|----------|--------------|
-| Démarrage | < 50 | Algo déterministe uniquement |
-| Apprentissage | 50-200 | ML actif, confiance croissante |
-| Maturité | > 200 | ML piloté par météo + historique |
+| Phase | Sessions | Behaviour |
+|-------|----------|-----------|
+| Startup | < 50 | Deterministic algo only |
+| Learning | 50–200 | ML active, growing confidence |
+| Maturity | > 200 | ML driven by weather + history |
 
-Le modèle ajuste automatiquement :
-- Le **SoftMax%** (cible de charge) selon les prévisions météo
-- Le **seuil préventif** (MinPercent) selon les heures restantes de soleil
+The model automatically adjusts:
+- The **SoftMax%** (charge target) based on weather forecasts
+- The **preventive threshold** (MinPercent) based on remaining sunlight hours
 
 ## Logs
 
 ```bash
-# Console en temps réel
+# Live console output
 docker compose logs -f solar_worker
 
-# Fichier rotatif dans le volume
+# Rotating log file in the volume
 docker compose exec solar_worker tail -f /data/logs/solar-worker.log
 ```
 
-Exemple de sortie normale :
+Normal output example:
 ```
-[10:32:01 INF] HA snapshot: surplus=1200W, production=2800W | batteries=[Principale:52.3%, Secondaire:48.1%]
+[10:32:01 INF] HA snapshot: surplus=1200W, production=2800W | batteries=[Main:52.3%, Secondary:48.1%]
 [10:32:01 INF] Distribution: engine=Deterministic, allocated=1200W/1200W, unused=0W | session#42
 [10:32:02 INF] 2/2 charge commands sent to HA
-[10:32:02 INF]   [Principale]  52.3% → 80.0% | 800.0W | Reached soft max 80%
-[10:32:02 INF]   [Secondaire]  48.1% → 80.0% | 400.0W | Reached soft max 80%
+[10:32:02 INF]   [Main]       52.3% → 80.0% | 800.0W | Reached soft max 80%
+[10:32:02 INF]   [Secondary]  48.1% → 80.0% | 400.0W | Reached soft max 80%
 ```
 
-## Structure des fichiers montés
+## Mounted File Structure
 
 ```
-./config/config.yaml    → /config/config.yaml  (lecture seule)
+./config/config.yaml    → /config/config.yaml  (read-only)
 volume solar_data       → /data/
-  ├── ml_models/        → modèles ML.NET (.zip)
-  └── logs/             → logs rotatifs (14 jours)
-volume mariadb_data     → données MariaDB
+  ├── ml_models/        → ML.NET models (.zip)
+  └── logs/             → rotating logs (14 days)
+volume mariadb_data     → MariaDB data
 ```
