@@ -33,7 +33,9 @@ public class SolarDbContext : DbContext
             e.Property(x => x.TariffSlotName).HasMaxLength(80);
             e.Property(x => x.TariffPricePerKwh).HasPrecision(6, 4);
             e.Property(x => x.HoursToNextFavorableTariff).HasPrecision(5, 2);
-            e.Property(x => x.AvgSolarForecastWm2).HasPrecision(7, 2);
+            e.Property(x => x.AvgSolarForecastWm2)
+             .HasColumnName("avg_solar_forecast_wm2")
+             .HasPrecision(7, 2);
             e.Property(x => x.TariffMaxSavingsPerKwh).HasPrecision(6, 4);
 
             e.HasIndex(x => x.RequestedAt).HasDatabaseName("idx_session_requested_at");
