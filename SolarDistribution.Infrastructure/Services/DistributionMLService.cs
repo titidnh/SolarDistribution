@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Microsoft.ML;
 using Microsoft.ML.Data;
@@ -31,6 +32,12 @@ public class DistributionMLService : IDistributionMLService
     private ITransformer? _softMaxModel;
     private ITransformer? _preventiveModel;
     private MLModelMeta?  _meta;
+
+    // ML-1 : Pool maison thread-safe — évite de recréer PredictionEngine à chaque cycle.
+    // ConcurrentBag : chaque thread prend un moteur, l'utilise, le repose.
+    // Sans pool : CreatePredictionEngine() coûte ~5-20ms (allocation + JIT) à chaque appel.
+    private ConcurrentBag<PredictionEngine<DistributionFeatures, SoftMaxPrediction>>?    _smEngines;
+    private ConcurrentBag<PredictionEngine<DistributionFeatures, PreventivePrediction>>? _pvEngines;
 
     private record MLModelMeta(string Version, int Samples,
         double SoftMaxR2, double PreventiveR2, DateTime TrainedAt);
@@ -67,12 +74,51 @@ public class DistributionMLService : IDistributionMLService
 
         try
         {
-            var smEng = _ctx.Model.CreatePredictionEngine<DistributionFeatures, SoftMaxPrediction>(_softMaxModel);
-            var pvEng = _ctx.Model.CreatePredictionEngine<DistributionFeatures, PreventivePrediction>(_preventiveModel);
+            // ML-1 : emprunte un moteur du pool (ou en crée un si le pool est vide)
+            if (_smEngines is null || _pvEngines is null)
+            {
+                _log.LogDebug("ML prediction engines not ready — fallback");
+                return Task.FromResult<MLRecommendation?>(null);
+            }
 
-            double softMax    = Math.Clamp(smEng.Predict(f).PredictedSoftMaxPercent, 50, 100);
-            double preventive = Math.Clamp(pvEng.Predict(f).PredictedPreventiveThreshold, 15, 60);
-            double conf       = (Math.Max(0, _meta.SoftMaxR2) + Math.Max(0, _meta.PreventiveR2)) / 2.0;
+            if (!_smEngines.TryTake(out var smEng))
+                smEng = _ctx.Model.CreatePredictionEngine<DistributionFeatures, SoftMaxPrediction>(_softMaxModel!);
+            if (!_pvEngines.TryTake(out var pvEng))
+                pvEng = _ctx.Model.CreatePredictionEngine<DistributionFeatures, PreventivePrediction>(_preventiveModel!);
+
+            double rawSoftMax, rawPreventive;
+            try
+            {
+                rawSoftMax    = smEng.Predict(f).PredictedSoftMaxPercent;
+                rawPreventive = pvEng.Predict(f).PredictedPreventiveThreshold;
+            }
+            finally
+            {
+                // Repose les moteurs dans le pool pour la prochaine prédiction
+                _smEngines.Add(smEng);
+                _pvEngines.Add(pvEng);
+            }
+
+            double softMax    = Math.Clamp(rawSoftMax,    50, 100);
+            double preventive = Math.Clamp(rawPreventive, 15,  60);
+
+            // ML-2 : contrainte de cohérence — garantit une marge minimale entre
+            // PreventiveThreshold et SoftMax pour éviter des états impossibles.
+            const double MinMarginPercent = 10.0;
+            if (softMax - preventive < MinMarginPercent)
+            {
+                // On préfère ajuster le moins coûteux des deux
+                if (softMax < 80)
+                    softMax    = Math.Clamp(preventive + MinMarginPercent, 50, 100);
+                else
+                    preventive = Math.Clamp(softMax    - MinMarginPercent, 15,  60);
+
+                _log.LogDebug(
+                    "ML-2 coherence correction applied: softMax={SM:F1}%, preventive={PV:F1}%",
+                    softMax, preventive);
+            }
+
+            double conf = (Math.Max(0, _meta.SoftMaxR2) + Math.Max(0, _meta.PreventiveR2)) / 2.0;
 
             _log.LogInformation(
                 "ML prediction: softMax={SM:F1}%, prev={PV:F1}%, conf={C:F2}",
@@ -127,6 +173,9 @@ public class DistributionMLService : IDistributionMLService
             _preventiveModel = pvModel;
             _meta = new MLModelMeta(ver, features.Count, smR2, pvR2, DateTime.UtcNow);
 
+            // ML-1 : (re)construire les pools après chaque entraînement
+            RebuildPredictionPools(data.Schema);
+
             _log.LogInformation(
                 "ML trained: v={V}, N={N}, SoftMaxR²={R1:F3}, PreventiveR²={R2:F3}",
                 ver, features.Count, smR2, pvR2);
@@ -140,14 +189,73 @@ public class DistributionMLService : IDistributionMLService
         }
     }
 
-    public MLModelStatus GetStatus()
+    /// <summary>ML-6 : async pour éviter GetAwaiter().GetResult() — risque deadlock.</summary>
+    public async Task<MLModelStatus> GetStatusAsync(CancellationToken ct = default)
     {
-        int sessions  = _repo.CountSessionsAsync().GetAwaiter().GetResult();
-        int feedbacks = _repo.CountValidFeedbacksAsync().GetAwaiter().GetResult();
+        int sessions  = await _repo.CountSessionsAsync(ct);
+        int feedbacks = await _repo.CountValidFeedbacksAsync(ct);
         return new MLModelStatus(
             _meta is not null, _meta?.Version, _meta?.Samples ?? 0,
             _meta?.SoftMaxR2, _meta?.PreventiveR2, _meta?.TrainedAt,
             sessions, feedbacks, MIN_FEEDBACKS_REQUIRED);
+    }
+
+    /// <summary>
+    /// ML-5 : Détection de dérive (concept drift).
+    /// Calcule le R² du modèle actif sur les <paramref name="windowSize"/> sessions les plus récentes
+    /// avec feedback valide, et compare avec le R² de référence.
+    /// Retourne true si la dégradation dépasse <paramref name="threshold"/> (ex: 0.15).
+    /// </summary>
+    public async Task<bool> CheckForDriftAsync(int windowSize, double threshold, CancellationToken ct = default)
+    {
+        if (_softMaxModel is null || _preventiveModel is null || _meta is null)
+            return false;
+
+        try
+        {
+            var sessions = await _repo.GetSessionsForTrainingAsync(windowSize, ct);
+            var recent = sessions
+                .Where(s => s.Feedback?.Status == FeedbackStatus.Valid)
+                .TakeLast(windowSize)
+                .Select(BuildFeatures)
+                .OfType<DistributionFeatures>()
+                .ToList();
+
+            if (recent.Count < 20)
+            {
+                _log.LogDebug("Drift check skipped: only {N} recent samples (min 20)", recent.Count);
+                return false;
+            }
+
+            var data = _ctx.Data.LoadFromEnumerable(recent);
+
+            var smMetrics = _ctx.Regression.Evaluate(_softMaxModel.Transform(data),
+                labelColumnName: nameof(DistributionFeatures.OptimalSoftMaxPercent));
+            var pvMetrics = _ctx.Regression.Evaluate(_preventiveModel.Transform(data),
+                labelColumnName: nameof(DistributionFeatures.OptimalPreventiveThreshold));
+
+            double recentR2  = (smMetrics.RSquared + pvMetrics.RSquared) / 2.0;
+            double baselineR2 = (_meta.SoftMaxR2 + _meta.PreventiveR2) / 2.0;
+            double degradation = baselineR2 - recentR2;
+
+            _log.LogInformation(
+                "Drift check: baseline R²={B:F3}, recent R²={R:F3}, degradation={D:F3} (threshold={T:F3})",
+                baselineR2, recentR2, degradation, threshold);
+
+            if (degradation > threshold)
+            {
+                _log.LogWarning(
+                    "Concept drift detected! R² degraded by {D:F3} over last {N} sessions — retrain advised",
+                    degradation, recent.Count);
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Drift check failed");
+        }
+
+        return false;
     }
 
     // ── Helpers privés ────────────────────────────────────────────────────────
@@ -182,6 +290,10 @@ public class DistributionMLService : IDistributionMLService
             nameof(DistributionFeatures.TotalCapacityWh),
             nameof(DistributionFeatures.UrgentBatteryCount),
             nameof(DistributionFeatures.TotalMaxChargeRateW),
+            // ML-4 : dispersion batteries
+            nameof(DistributionFeatures.SocStdDev),
+            nameof(DistributionFeatures.CapacityRatio),
+            nameof(DistributionFeatures.NonUrgentBatteryCount),
             // Surplus
             nameof(DistributionFeatures.SurplusW),
             // Tarif
@@ -226,13 +338,35 @@ public class DistributionMLService : IDistributionMLService
         if (!File.Exists(sm) || !File.Exists(pv)) return;
         try
         {
-            _softMaxModel    = _ctx.Model.Load(sm, out _);
+            _softMaxModel    = _ctx.Model.Load(sm, out var smSchema);
             _preventiveModel = _ctx.Model.Load(pv, out _);
             var ts = File.GetLastWriteTimeUtc(sm);
             _meta  = new MLModelMeta($"v{ts:yyyyMMdd-HHmmss}", 0, 0.7, 0.7, ts);
+            // ML-1 : construire les pools dès le chargement depuis le disque
+            RebuildPredictionPools(smSchema);
             _log.LogInformation("ML models loaded from disk (version {V})", _meta.Version);
         }
         catch (Exception ex) { _log.LogError(ex, "Failed to load ML models from disk"); }
+    }
+
+    /// <summary>
+    /// ML-1 : (Re)construit les pools de PredictionEngine après entraînement ou chargement disque.
+    /// Pré-chauffe 2 moteurs par modèle pour les premiers cycles concurrents.
+    /// </summary>
+    private void RebuildPredictionPools(DataViewSchema _)
+    {
+        // Vider les anciens pools avant de reconstruire (modèle remplacé)
+        _smEngines = new ConcurrentBag<PredictionEngine<DistributionFeatures, SoftMaxPrediction>>();
+        _pvEngines = new ConcurrentBag<PredictionEngine<DistributionFeatures, PreventivePrediction>>();
+
+        // Pré-chauffe : 2 moteurs suffisent pour un worker à cycle unique
+        for (int i = 0; i < 2; i++)
+        {
+            _smEngines.Add(_ctx.Model.CreatePredictionEngine<DistributionFeatures, SoftMaxPrediction>(_softMaxModel!));
+            _pvEngines.Add(_ctx.Model.CreatePredictionEngine<DistributionFeatures, PreventivePrediction>(_preventiveModel!));
+        }
+
+        _log.LogDebug("ML-1: PredictionEngine pool rebuilt (2 engines pre-warmed per model)");
     }
 
     private static DistributionFeatures? BuildFeatures(DistributionSession session)
@@ -279,6 +413,13 @@ public class DistributionMLService : IDistributionMLService
             UrgentBatteryCount  = bs.Count(b => b.WasUrgent),
             TotalMaxChargeRateW = (float)bs.Sum(b => b.MaxChargeRateW),
 
+            // ML-4 : features de dispersion calculées depuis les snapshots
+            SocStdDev            = (float)StdDev(bs.Select(b => b.CurrentPercentBefore)),
+            CapacityRatio        = bs.Min(b => b.CapacityWh) > 0
+                ? (float)(bs.Max(b => b.CapacityWh) / bs.Min(b => b.CapacityWh))
+                : 1.0f,
+            NonUrgentBatteryCount = bs.Count(b => !b.WasUrgent),
+
             SurplusW = (float)session.SurplusW,
 
             // Tarif — depuis les champs persistés en session
@@ -300,6 +441,15 @@ public class DistributionMLService : IDistributionMLService
     {
         try { return JsonSerializer.Deserialize<double[]>(json) ?? Array.Empty<double>(); }
         catch { return Array.Empty<double>(); }
+    }
+
+    /// <summary>ML-4 : écart-type population (σ) — retourne 0 si collection vide ou singleton.</summary>
+    private static double StdDev(IEnumerable<double> values)
+    {
+        var list = values.ToList();
+        if (list.Count < 2) return 0.0;
+        double avg = list.Average();
+        return Math.Sqrt(list.Average(v => (v - avg) * (v - avg)));
     }
 
     private static string BuildRationale(DistributionFeatures f, double softMax, double preventive)

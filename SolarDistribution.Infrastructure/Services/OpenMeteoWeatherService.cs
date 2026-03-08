@@ -77,7 +77,7 @@ public class OpenMeteoWeatherService : IWeatherService
 
             // ── Daylight & sunset estimate ────────────────────────────────────
             double daylightHours    = EstimateDaylightHours(latitude, now);
-            double hoursUntilSunset = EstimateHoursUntilSunset(latitude, now);
+            double hoursUntilSunset = EstimateHoursUntilSunset(latitude, longitude, now);
 
             _logger.LogDebug(
                 "Open-Meteo fetched for ({Lat},{Lon}): {Temp}°C, clouds={Clouds}%, radiation={Rad}W/m²",
@@ -126,13 +126,17 @@ public class OpenMeteoWeatherService : IWeatherService
     /// <summary>
     /// Estimation des heures restantes avant le coucher du soleil.
     /// Retourne 0 si on est déjà après le coucher.
+    /// Fix 3 : le midi solaire est corrigé par la longitude pour éviter une erreur
+    /// systématique pouvant atteindre ±2h selon le fuseau horaire de l'installation.
+    /// Formule : midi solaire UTC ≈ 12h − (longitude / 15)
+    /// Exemple : Paris (longitude ≈ 2.35°) → midi solaire ≈ 11h51 UTC
     /// </summary>
-    private static double EstimateHoursUntilSunset(double latitude, DateTime utcNow)
+    private static double EstimateHoursUntilSunset(double latitude, double longitude, DateTime utcNow)
     {
         double daylightHours = EstimateDaylightHours(latitude, utcNow);
-        // Midi solaire ≈ 12h UTC (approximation sans longitude)
-        double solarNoon  = 12.0;
-        double sunset     = solarNoon + daylightHours / 2.0;
+        // Midi solaire UTC corrigé par la longitude (15° = 1 heure)
+        double solarNoon   = 12.0 - longitude / 15.0;
+        double sunset      = solarNoon + daylightHours / 2.0;
         double currentHour = utcNow.Hour + utcNow.Minute / 60.0;
         return Math.Max(0, sunset - currentHour);
     }

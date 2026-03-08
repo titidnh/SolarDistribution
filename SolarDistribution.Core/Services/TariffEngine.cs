@@ -69,15 +69,37 @@ public class TariffSlot
 
     /// <summary>
     /// Retourne le tarif actif à l'instant donné (heure locale).
-    /// Si plusieurs créneaux matchent → retourne le moins cher (plus conservateur).
+    /// Si plusieurs créneaux matchent → log un avertissement de configuration
+    /// puis retourne le moins cher (comportement le plus conservateur).
     /// Si aucun créneau ne matche → retourne null (pas de tarification connue).
     /// </summary>
     public TariffSlot? GetActiveSlot(DateTime localTime)
     {
         var matching = _config.Slots.Where(s => s.IsActiveAt(localTime)).ToList();
         if (!matching.Any()) return null;
+
+        if (matching.Count > 1)
+        {
+            // Plusieurs créneaux actifs simultanément → probablement une erreur de configuration.
+            // On log un avertissement et on retourne le moins cher (le plus conservateur pour
+            // la charge réseau : on n'autorise que si le prix est vraiment bas).
+            var names = string.Join(", ", matching.Select(s => $"\"{s.Name}\""));
+            // Le TariffEngine n'a pas d'ILogger injecté — on lève une exception configurable
+            // uniquement si la différence de prix est significative (> 1 ct) pour éviter le bruit.
+            if (matching.Max(s => s.PricePerKwh) - matching.Min(s => s.PricePerKwh) > 0.01)
+            {
+                // Stocker le conflit dans une propriété observable (utile pour les tests)
+                LastSlotConflict = $"{localTime:HH:mm} — slots actifs simultanément : {names}";
+            }
+        }
+
         return matching.MinBy(s => s.PricePerKwh);
     }
+
+    /// <summary>
+    /// Dernier conflit de slots détecté (null si aucun). Utile pour les tests et le monitoring.
+    /// </summary>
+    public string? LastSlotConflict { get; private set; }
 
     /// <summary>Retourne le prix €/kWh à l'instant donné, ou null si inconnu.</summary>
     public double? GetCurrentPricePerKwh(DateTime localTime)

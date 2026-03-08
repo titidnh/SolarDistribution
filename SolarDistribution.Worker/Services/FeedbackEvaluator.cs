@@ -260,9 +260,9 @@ public class FeedbackEvaluator
         // Cas 1 : batteries trop basses → on aurait dû viser plus haut
         if (availabilityScore < 0.7)
         {
-            // Correction proportionnelle à la sévérité de la pénurie
+            // ML-3 : correction proportionnelle à la sévérité, facteur configurable
             double penalty = (0.7 - availabilityScore) / 0.7; // 0→1
-            double correction = penalty * 15.0; // jusqu'à +15%
+            double correction = penalty * _config.Ml.FeedbackSoftmaxCorrectionFactor;
             return Math.Clamp(appliedSoftMax + correction, 60, 95);
         }
 
@@ -270,8 +270,8 @@ public class FeedbackEvaluator
         // (le surplus n'a pas pu être absorbé → batteries déjà trop pleines)
         if (avgSocNow > appliedSoftMax + 5 && session.UnusedSurplusW > 0)
         {
-            // Légère réduction du SoftMax (les batteries étaient trop pleines, surplus gâché)
-            return Math.Clamp(appliedSoftMax - 5.0, 60, 95);
+            // ML-3 : réduction configurable
+            return Math.Clamp(appliedSoftMax - _config.Ml.FeedbackSoftmaxReduction, 60, 95);
         }
 
         // Cas 3 : équilibre → le SoftMax appliqué était bon
@@ -304,14 +304,18 @@ public class FeedbackEvaluator
         if (minObservedSoc < appliedMinPercent)
         {
             double shortfall = appliedMinPercent - minObservedSoc;
-            double correction = Math.Min(shortfall * 1.5, 20.0); // max +20%
+            // ML-3 : facteur et plafond de correction configurables
+            double correction = Math.Min(
+                shortfall * _config.Ml.FeedbackPreventiveFactor,
+                _config.Ml.FeedbackMaxPreventiveCorrection);
             return Math.Clamp(appliedMinPercent + correction, 15, 50);
         }
 
         // Batterie restée très au-dessus → on était peut-être trop conservateur
         if (minObservedSoc > appliedMinPercent + 20)
         {
-            return Math.Clamp(appliedMinPercent - 3.0, 15, 50);
+            // ML-3 : réduction configurable
+            return Math.Clamp(appliedMinPercent - _config.Ml.FeedbackPreventiveReduction, 15, 50);
         }
 
         // Équilibre → seuil correct

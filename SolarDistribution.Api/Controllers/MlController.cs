@@ -26,9 +26,9 @@ public class MlController : ControllerBase
     /// <response code="200">Statut retourné</response>
     [HttpGet("status")]
     [ProducesResponseType(typeof(MLModelStatusDto), StatusCodes.Status200OK)]
-    public ActionResult<MLModelStatusDto> GetStatus()
+    public async Task<ActionResult<MLModelStatusDto>> GetStatus(CancellationToken ct)
     {
-        var status = _mlService.GetStatus();
+        var status = await _mlService.GetStatusAsync(ct);
         return Ok(new MLModelStatusDto
         {
             IsAvailable          = status.IsAvailable,

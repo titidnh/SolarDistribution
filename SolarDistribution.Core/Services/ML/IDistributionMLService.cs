@@ -54,34 +54,47 @@ public class DistributionFeatures
     [LoadColumn(19)] public float UrgentBatteryCount  { get; set; }
     [LoadColumn(20)] public float TotalMaxChargeRateW { get; set; }
 
+    // ML-4 : features de dispersion — permettent au modèle de distinguer les
+    // installations hétérogènes (batteries de capacités très différentes)
+    // des installations homogènes, sans avoir accès aux features individuelles.
+
+    /// <summary>Écart-type du SOC entre les batteries (0 si une seule batterie).</summary>
+    [LoadColumn(21)] public float SocStdDev           { get; set; }
+
+    /// <summary>Ratio max/min des capacités installées (1.0 si batteries identiques).</summary>
+    [LoadColumn(22)] public float CapacityRatio        { get; set; }
+
+    /// <summary>Nombre de batteries avec Priority > 0 (batteries non-urgentes).</summary>
+    [LoadColumn(23)] public float NonUrgentBatteryCount { get; set; }
+
     // ── Surplus solaire ───────────────────────────────────────────────────────
-    [LoadColumn(21)] public float SurplusW { get; set; }
+    [LoadColumn(24)] public float SurplusW { get; set; }
 
     // ── Contexte tarifaire ────────────────────────────────────────────────────
     // Ces features permettent au ML d'apprendre à adapter le SoftMax et le seuil
     // préventif selon le coût de l'électricité et la prévision de production.
 
     /// <summary>Prix actuel normalisé 0→1 (0.4 €/kWh = 1.0). 0.5 si inconnu.</summary>
-    [LoadColumn(22)] public float NormalizedTariff      { get; set; }
+    [LoadColumn(25)] public float NormalizedTariff      { get; set; }
 
     /// <summary>1.0 si on est en créneau à tarif favorable, sinon 0.0</summary>
-    [LoadColumn(23)] public float IsOffPeakHour         { get; set; }
+    [LoadColumn(26)] public float IsOffPeakHour         { get; set; }
 
     /// <summary>Heures avant le prochain créneau favorable (0 = déjà favorable)</summary>
-    [LoadColumn(24)] public float HoursToNextFavorable  { get; set; }
+    [LoadColumn(27)] public float HoursToNextFavorable  { get; set; }
 
     /// <summary>Rayonnement moyen prévu sur l'horizon de décision (W/m²)</summary>
-    [LoadColumn(25)] public float AvgSolarForecastGrid  { get; set; }
+    [LoadColumn(28)] public float AvgSolarForecastGrid  { get; set; }
 
     /// <summary>1.0 si production solaire significative attendue prochainement</summary>
-    [LoadColumn(26)] public float SolarExpectedSoon     { get; set; }
+    [LoadColumn(29)] public float SolarExpectedSoon     { get; set; }
 
     /// <summary>Économie potentielle en €/kWh si on charge réseau maintenant vs plus tard</summary>
-    [LoadColumn(27)] public float MaxSavingsPerKwh      { get; set; }
+    [LoadColumn(30)] public float MaxSavingsPerKwh      { get; set; }
 
     // ── Labels (cibles de régression — issus de SessionFeedback réel) ─────────
-    [LoadColumn(28)] public float OptimalSoftMaxPercent      { get; set; }
-    [LoadColumn(29)] public float OptimalPreventiveThreshold { get; set; }
+    [LoadColumn(31)] public float OptimalSoftMaxPercent      { get; set; }
+    [LoadColumn(32)] public float OptimalPreventiveThreshold { get; set; }
 }
 
 public class SoftMaxPrediction
@@ -110,7 +123,16 @@ public interface IDistributionMLService
 {
     Task<MLRecommendation?> PredictAsync(DistributionFeatures features, CancellationToken ct = default);
     Task<MLTrainingResult>  RetrainAsync(CancellationToken ct = default);
-    MLModelStatus           GetStatus();
+    /// <summary>
+    /// ML-6 : GetStatus est désormais async pour éviter GetAwaiter().GetResult()
+    /// qui peut provoquer un deadlock dans certains contextes de scheduling .NET.
+    /// </summary>
+    Task<MLModelStatus>     GetStatusAsync(CancellationToken ct = default);
+    /// <summary>
+    /// ML-5 : Vérifie si le modèle actif a subi une dérive significative
+    /// sur les N dernières sessions. Retourne true si un retrain forcé est conseillé.
+    /// </summary>
+    Task<bool>              CheckForDriftAsync(int windowSize, double threshold, CancellationToken ct = default);
 }
 
 public record MLTrainingResult(

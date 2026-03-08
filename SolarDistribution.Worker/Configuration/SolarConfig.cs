@@ -300,6 +300,60 @@ public class MlConfig
     /// Recommandé : 50 minimum, idéalement 100+.
     /// </summary>
     public int MinFeedbackForRetrain { get; set; } = 50;
+
+    // ── Calibration des labels de feedback (ML-3) ─────────────────────────────
+    // Ces paramètres remplacent les constantes magiques codées en dur dans
+    // FeedbackEvaluator. Ils doivent être ajustés selon l'installation :
+    // batteries à fort cycle → correctionFactor élevé ; installation stable → faible.
+
+    /// <summary>
+    /// Correction max (+%) appliquée à SoftMax quand les batteries sont trop basses.
+    /// penalty (0→1) × SoftmaxCorrectionFactor = correction en points de %.
+    /// Défaut : 15.0 — signifie qu'en cas de pénurie sévère on remonte SoftMax de jusqu'à 15%.
+    /// </summary>
+    public double FeedbackSoftmaxCorrectionFactor { get; set; } = 15.0;
+
+    /// <summary>
+    /// Réduction (%) appliquée à SoftMax quand les batteries sont restées inutilement hautes.
+    /// Défaut : 5.0 — légère réduction pour éviter de sur-charger si le surplus était gâché.
+    /// </summary>
+    public double FeedbackSoftmaxReduction { get; set; } = 5.0;
+
+    /// <summary>
+    /// Facteur d'amplification appliqué au shortfall pour calculer la correction
+    /// du seuil préventif. correction = min(shortfall × factor, MaxPreventiveCorrection).
+    /// Défaut : 1.5
+    /// </summary>
+    public double FeedbackPreventiveFactor { get; set; } = 1.5;
+
+    /// <summary>
+    /// Correction max (+%) appliquée au seuil préventif quand une batterie est tombée trop bas.
+    /// Défaut : 20.0
+    /// </summary>
+    public double FeedbackMaxPreventiveCorrection { get; set; } = 20.0;
+
+    /// <summary>
+    /// Réduction (%) appliquée au seuil préventif quand les batteries sont restées
+    /// très au-dessus du minimum (marge > 20%).
+    /// Défaut : 3.0
+    /// </summary>
+    public double FeedbackPreventiveReduction { get; set; } = 3.0;
+
+    // ── Détection de dérive (ML-5) ────────────────────────────────────────────
+
+    /// <summary>
+    /// Dégradation du R² sur les N dernières sessions déclenchant un retrain forcé.
+    /// Ex : 0.15 → si R² récent &lt; R² référence - 0.15 → retrain immédiat.
+    /// Mettre à 1.0 pour désactiver la détection de dérive.
+    /// Défaut : 0.15
+    /// </summary>
+    public double DriftDetectionR2Threshold { get; set; } = 0.15;
+
+    /// <summary>
+    /// Nombre de sessions récentes utilisées pour calculer le R² de dérive.
+    /// Défaut : 100
+    /// </summary>
+    public int DriftDetectionWindowSize { get; set; } = 100;
 }
 
 public class LoggingConfig

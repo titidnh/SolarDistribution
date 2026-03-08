@@ -185,6 +185,13 @@ public class SmartDistributionService
             UrgentBatteryCount  = batteries.Count(b => b.IsUrgent),
             TotalMaxChargeRateW = (float)batteries.Sum(b => b.MaxChargeRateW),
 
+            // ML-4 : features de dispersion des batteries
+            SocStdDev             = (float)StdDev(batteries.Select(b => b.CurrentPercent)),
+            CapacityRatio         = batteries.Min(b => b.CapacityWh) > 0
+                ? (float)(batteries.Max(b => b.CapacityWh) / batteries.Min(b => b.CapacityWh))
+                : 1.0f,
+            NonUrgentBatteryCount = batteries.Count(b => !b.IsUrgent),
+
             // Surplus
             SurplusW = (float)surplusW,
 
@@ -278,6 +285,15 @@ public class SmartDistributionService
         }
 
         return session;
+    }
+
+    /// <summary>ML-4 : écart-type population (σ) des SOC batteries.</summary>
+    private static float StdDev(IEnumerable<double> values)
+    {
+        var list = values.ToList();
+        if (list.Count < 2) return 0f;
+        double avg = list.Average();
+        return (float)Math.Sqrt(list.Average(v => (v - avg) * (v - avg)));
     }
 
     private void LogTariffContext(TariffContext ctx, double surplusW)

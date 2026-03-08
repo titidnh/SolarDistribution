@@ -67,7 +67,8 @@ public class SolarWorker : BackgroundService
         _logger.LogInformation("  HA URL    : {Url}",       _config.HomeAssistant.Url);
         _logger.LogInformation("  Batteries : {Count}",    _config.Batteries.Count);
         _logger.LogInformation("  DryRun    : {DryRun}",   _config.Polling.DryRun);
-        _logger.LogInformation("  ML Status : {Status}",   _mlService.GetStatus().IsAvailable ? "available" : "training...");
+        _logger.LogInformation("  ML Status : {Status}",
+            (await _mlService.GetStatusAsync(stoppingToken)).IsAvailable ? "available" : "training...");
 
         if (_config.Polling.DryRun)
             _logger.LogWarning("⚠️  DRY-RUN MODE — no commands will be sent to HA");

@@ -49,7 +49,7 @@ public class BatteryDistributionService : IBatteryDistributionService
         {
             if (remaining <= 0.01) break;
             remaining = DistributeSurplusToGroup(
-                group.ToList(), remaining, allocated, currentPct, useSoftMax: true);
+                group.ToList(), remaining, allocated, gridAlloc, currentPct, useSoftMax: true);
         }
 
         // ── PASS 2 : surplus restant → HardMax ───────────────────────────────
@@ -59,7 +59,7 @@ public class BatteryDistributionService : IBatteryDistributionService
             {
                 if (remaining <= 0.01) break;
                 remaining = DistributeSurplusToGroup(
-                    group.ToList(), remaining, allocated, currentPct, useSoftMax: false);
+                    group.ToList(), remaining, allocated, gridAlloc, currentPct, useSoftMax: false);
             }
         }
 
@@ -87,7 +87,10 @@ public class BatteryDistributionService : IBatteryDistributionService
             double solar    = allocated[b.Id];
             double grid     = gridAlloc[b.Id];
             double total    = solar + grid;
-            double newPct   = b.CurrentPercent + (total / b.CapacityWh * 100.0);
+            // Fix 1 : clamp pour éviter un léger dépassement de HardMaxPercent dû aux erreurs d'arrondi flottant
+            double newPct   = Math.Clamp(
+                b.CurrentPercent + (total / b.CapacityWh * 100.0),
+                0.0, b.HardMaxPercent);
 
             return new BatteryChargeResult(
                 BatteryId:      b.Id,
@@ -123,6 +126,7 @@ public class BatteryDistributionService : IBatteryDistributionService
         List<Battery> group,
         double surplusW,
         Dictionary<int, double> allocated,
+        Dictionary<int, double> gridAlloc,
         Dictionary<int, double> currentPct,
         bool useSoftMax)
     {
@@ -148,7 +152,9 @@ public class BatteryDistributionService : IBatteryDistributionService
             {
                 double weight   = spaces[b.Id] / totalSpace;
                 double share    = remaining * weight;
-                double rateLeft = b.MaxChargeRateW - allocated[b.Id];  // reste de capacité de charge
+                // Fix 2 : rateLeft inclut la charge réseau déjà allouée (gridAlloc)
+                // pour garantir que solar + grid ne dépasse jamais MaxChargeRateW
+                double rateLeft = b.MaxChargeRateW - allocated[b.Id] - gridAlloc[b.Id];
                 double cap      = spaces[b.Id];
                 double give     = Math.Min(share, Math.Max(0, rateLeft));
                 give            = Math.Min(give, cap);

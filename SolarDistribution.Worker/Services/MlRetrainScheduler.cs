@@ -70,8 +70,8 @@ public class MlRetrainScheduler : BackgroundService
                     _logger.LogInformation(
                         "Feedback: {Count} new valid feedbacks collected", collected);
 
-                    // Log du statut ML après collecte
-                    var status = _mlService.GetStatus();
+                    // ML-6 : GetStatusAsync remplace GetStatus() synchrone (deadlock)
+                    var status = await _mlService.GetStatusAsync(stoppingToken);
                     _logger.LogInformation(
                         "ML training readiness: {Valid}/{Min} valid feedbacks " +
                         "(need {Remaining} more before retrain)",
@@ -84,10 +84,30 @@ public class MlRetrainScheduler : BackgroundService
                 _logger.LogError(ex, "Feedback collection failed");
             }
 
-            // ── 2. Vérification du retrain planifié ───────────────────────────
+            // ── 2. Détection de dérive (ML-5) ─────────────────────────────────
             try
             {
-                if (ShouldRetrain(now))
+                bool driftDetected = await _mlService.CheckForDriftAsync(
+                    _mlConfig.DriftDetectionWindowSize,
+                    _mlConfig.DriftDetectionR2Threshold,
+                    stoppingToken);
+
+                if (driftDetected)
+                {
+                    _logger.LogWarning("Concept drift detected — forcing immediate ML retrain");
+                    await RunRetrainAsync(stoppingToken);
+                    _lastRetrainAt = now;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Drift detection failed");
+            }
+
+            // ── 3. Vérification du retrain planifié ───────────────────────────
+            try
+            {
+                if (await ShouldRetrainAsync(now, stoppingToken))
                 {
                     await RunRetrainAsync(stoppingToken);
                     _lastRetrainAt = now;
@@ -109,13 +129,12 @@ public class MlRetrainScheduler : BackgroundService
     // ── Logique de décision retrain ───────────────────────────────────────────
 
     /// <summary>
-    /// Détermine si on doit lancer un retrain maintenant.
-    /// Combine la vérification cron ET le minimum de feedbacks requis.
+    /// ML-6 : Async pour éviter GetAwaiter().GetResult() dans le scheduler.
     /// </summary>
-    private bool ShouldRetrain(DateTime now)
+    private async Task<bool> ShouldRetrainAsync(DateTime now, CancellationToken ct)
     {
         // Vérifier le minimum de feedbacks valides en base
-        var status = _mlService.GetStatus();
+        var status = await _mlService.GetStatusAsync(ct);
         if (status.SessionsInDb < _mlConfig.MinFeedbackForRetrain)
         {
             _logger.LogDebug(
