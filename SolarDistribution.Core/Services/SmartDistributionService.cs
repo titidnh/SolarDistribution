@@ -45,9 +45,9 @@ public class SmartDistributionService
             _logger.LogWarning("Weather unavailable — proceeding without weather context");
 
         // ── 2. Contexte tarifaire ─────────────────────────────────────────────
-        var localNow     = DateTime.Now;
-        var radForecast  = wx?.RadiationForecast12h ?? Array.Empty<double>();
-        var tariffCtx    = _tariff.EvaluateContext(
+        var localNow = DateTime.Now;
+        var radForecast = wx?.RadiationForecast12h ?? Array.Empty<double>();
+        var tariffCtx = _tariff.EvaluateContext(
             localNow, radForecast, forecastTodayWh, forecastTomorrowWh);
 
         LogTariffContext(tariffCtx, surplusW);
@@ -138,9 +138,23 @@ public class SmartDistributionService
         double minGridChargeW = 100.0,
         double urgencyThresholdHours = 1.0)
     {
+        var localNow = DateTime.Now;
+
         return src.Select(b =>
         {
             double softMax = reco?.RecommendedSoftMaxPercent ?? b.SoftMaxPercent;
+
+            // ── Boost J+1 : demain mauvais + tarif favorable → charger plus fort maintenant ──
+            // Logique : si ForecastTomorrow < seuil ET on est dans un créneau pas cher (HC ou
+            // tout slot IsFavorableForGrid), on monte le SoftMax pour maximiser la réserve.
+            // S'applique à n'importe quelle heure tant que le tarif est avantageux
+            // (nuit HC à 2h, soirée creuse, week-end, etc.).
+            // Le boost est plafonné à HardMaxPercent pour ne jamais dépasser la limite batterie.
+            if (tariff.HasLowForecastTomorrow && tariff.IsFavorableForGrid)
+            {
+                double boosted = softMax + tariff.EveningBoostPercent;
+                softMax = Math.Min(b.HardMaxPercent, boosted);
+            }
 
             bool solarWillArrive = tariff.HoursUntilSolar.HasValue
                 && tariff.HoursUntilSolar.Value < double.MaxValue;
@@ -238,23 +252,31 @@ public class SmartDistributionService
 
         if (tariff.HasHaForecast && tariff.ForecastTodayWh.HasValue)
         {
-            // Prévision HA disponible : on suppose une distribution sinusoïdale sur la journée.
-            // On prend la fraction de la journée correspondant aux heures restantes dans le slot.
-            // Approche conservative : le slot HC est souvent nocturne → peu de soleil dans ce créneau.
-            // La valeur ForecastTodayWh couvre les 24h → on prend la fraction correspondant
-            // aux heures restantes APRÈS HoursUntilSolar.
+            // Prévision HA disponible : distribution sinusoïdale sur la journée (pic à midi solaire).
+            // On intègre sin(π × t/durée) sur la fenêtre [solarStart, solarStart + solarHoursInSlot]
+            // pour obtenir une fraction énergétique réaliste (pas linéaire).
             double solarStartH = tariff.HoursUntilSolar.HasValue
                                  && tariff.HoursUntilSolar.Value < double.MaxValue
                 ? tariff.HoursUntilSolar.Value : 24.0;
 
             double solarHoursInSlot = Math.Max(0, hoursRemaining - solarStartH);
-            // Fraction de la journée solaire disponible pendant le créneau restant
-            double daylightFraction = solarHoursInSlot / 24.0;
-            solarExpectedWh = tariff.ForecastTodayWh.Value * daylightFraction;
 
-            // Si le soleil arrive demain (slot traverse minuit), on ajoute la part de demain
-            if (tariff.ForecastTomorrowWh.HasValue && solarStartH >= hoursRemaining)
-                solarExpectedWh += tariff.ForecastTomorrowWh.Value * (solarHoursInSlot / 24.0);
+            // Sunrise/sunset en heures absolues depuis maintenant
+            // On utilise le forecast 12h pour estimer l'heure de lever résiduelle
+            double sunriseH = solarStartH;  // heure relative depuis maintenant
+            double sunsetH = sunriseH + 12.0; // estimation conservative (journée ~12h de prod)
+
+            double solarFraction = SolarFractionBetweenHours(
+                sunriseH, sunriseH + solarHoursInSlot, sunriseH, sunsetH);
+
+            solarExpectedWh = tariff.ForecastTodayWh.Value * solarFraction;
+
+            // Si le slot traverse minuit et que demain est configuré, ajouter la part de J+1
+            if (tariff.ForecastTomorrowWh.HasValue && solarStartH >= hoursRemaining && hoursRemaining > 0)
+            {
+                double tomorrowFraction = SolarFractionBetweenHours(0, solarHoursInSlot, 0, 12.0);
+                solarExpectedWh += tariff.ForecastTomorrowWh.Value * tomorrowFraction;
+            }
         }
         else
         {
@@ -293,37 +315,37 @@ public class SmartDistributionService
         double[] rad = wx.RadiationForecast12h.ToArray();
         double avg6h = rad.Take(6).DefaultIfEmpty(0).Average();
 
-        double hourRad  = 2.0 * Math.PI * now.Hour / 24.0;
+        double hourRad = 2.0 * Math.PI * now.Hour / 24.0;
         double monthRad = 2.0 * Math.PI * (now.Month - 1) / 12.0;
 
         double totalCap = batteries.Sum(b => b.CapacityWh);
 
         return new DistributionFeatures
         {
-            HourOfDay   = now.Hour,
-            DayOfWeek   = (float)now.DayOfWeek,
+            HourOfDay = now.Hour,
+            DayOfWeek = (float)now.DayOfWeek,
             MonthOfYear = now.Month,
-            DayOfYear   = now.DayOfYear,
+            DayOfYear = now.DayOfYear,
 
-            SinHour   = (float)Math.Sin(hourRad),
-            CosHour   = (float)Math.Cos(hourRad),
-            SinMonth  = (float)Math.Sin(monthRad),
-            CosMonth  = (float)Math.Cos(monthRad),
+            SinHour = (float)Math.Sin(hourRad),
+            CosHour = (float)Math.Cos(hourRad),
+            SinMonth = (float)Math.Sin(monthRad),
+            CosMonth = (float)Math.Cos(monthRad),
 
-            DaylightHours    = (float)wx.DaylightHours,
+            DaylightHours = (float)wx.DaylightHours,
             HoursUntilSunset = (float)wx.HoursUntilSunset,
 
-            CloudCoverPercent      = (float)wx.CloudCoverPercent,
-            DirectRadiationWm2     = (float)wx.DirectRadiationWm2,
-            DiffuseRadiationWm2    = (float)wx.DiffuseRadiationWm2,
-            PrecipitationMmH       = (float)wx.PrecipitationMmH,
+            CloudCoverPercent = (float)wx.CloudCoverPercent,
+            DirectRadiationWm2 = (float)wx.DirectRadiationWm2,
+            DiffuseRadiationWm2 = (float)wx.DiffuseRadiationWm2,
+            PrecipitationMmH = (float)wx.PrecipitationMmH,
             AvgForecastRadiation6h = (float)avg6h,
 
-            AvgBatteryPercent   = (float)batteries.Average(b => b.CurrentPercent),
-            MinBatteryPercent   = (float)batteries.Min(b => b.CurrentPercent),
-            MaxBatteryPercent   = (float)batteries.Max(b => b.CurrentPercent),
-            TotalCapacityWh     = (float)totalCap,
-            UrgentBatteryCount  = batteries.Count(b => b.IsUrgent),
+            AvgBatteryPercent = (float)batteries.Average(b => b.CurrentPercent),
+            MinBatteryPercent = (float)batteries.Min(b => b.CurrentPercent),
+            MaxBatteryPercent = (float)batteries.Max(b => b.CurrentPercent),
+            TotalCapacityWh = (float)totalCap,
+            UrgentBatteryCount = batteries.Count(b => b.IsUrgent),
             TotalMaxChargeRateW = (float)batteries.Sum(b => b.MaxChargeRateW),
 
             SocStdDev = (float)StdDev(batteries.Select(b => b.CurrentPercent)),
@@ -334,17 +356,17 @@ public class SmartDistributionService
 
             SurplusW = (float)surplusW,
 
-            NormalizedTariff     = (float)tariff.NormalizedPrice,
-            IsOffPeakHour        = tariff.IsFavorableForGrid ? 1f : 0f,
+            NormalizedTariff = (float)tariff.NormalizedPrice,
+            IsOffPeakHour = tariff.IsFavorableForGrid ? 1f : 0f,
             HoursToNextFavorable = (float)(tariff.HoursToNextFavorable ?? 12.0),
             AvgSolarForecastGrid = (float)tariff.AvgSolarForecastWm2,
-            SolarExpectedSoon    = tariff.SolarExpectedSoon ? 1f : 0f,
-            MaxSavingsPerKwh     = (float)tariff.MaxSavingsPerKwh,
+            SolarExpectedSoon = tariff.SolarExpectedSoon ? 1f : 0f,
+            MaxSavingsPerKwh = (float)tariff.MaxSavingsPerKwh,
 
             // ML-7
-            HoursRemainingInSlot  = (float)(tariff.HoursRemainingInSlot ?? 0.0),
+            HoursRemainingInSlot = (float)(tariff.HoursRemainingInSlot ?? 0.0),
             HoursUntilSolarCapped = (float)Math.Min(tariff.HoursUntilSolar ?? 24.0, 24.0),
-            WasEmergencySession   = batteries.Any(b => b.IsEmergencyGridCharge) ? 1f : 0f,
+            WasEmergencySession = batteries.Any(b => b.IsEmergencyGridCharge) ? 1f : 0f,
             NormalizedGridChargeW = batteries.Any(b => b.GridChargeAllowedW > 0)
                 ? (float)Math.Clamp(
                     batteries.Where(b => b.GridChargeAllowedW > 0).Average(b => b.GridChargeAllowedW)
@@ -352,13 +374,27 @@ public class SmartDistributionService
                 : 0f,
 
             // ML-8: HA forecasts — normalisés par capacité totale pour être sans dimension
-            ForecastTodayNormalized    = totalCap > 0 && tariff.ForecastTodayWh.HasValue
+            ForecastTodayNormalized = totalCap > 0 && tariff.ForecastTodayWh.HasValue
                 ? (float)Math.Clamp(tariff.ForecastTodayWh.Value / totalCap, 0, 5) : 0f,
             ForecastTomorrowNormalized = totalCap > 0 && tariff.ForecastTomorrowWh.HasValue
                 ? (float)Math.Clamp(tariff.ForecastTomorrowWh.Value / totalCap, 0, 5) : 0f,
             HasHaForecast = tariff.HasHaForecast ? 1f : 0f,
 
-            OptimalSoftMaxPercent      = 80,
+            // ML-9: ratio J+1 / J — encode la tendance solaire
+            // > 1 : demain meilleur → moins urgent de charger maintenant
+            // < 1 : demain pire    → préserver / charger plus fort ce soir
+            // = 0 : données absentes (HasHaForecast = 0 dans ce cas)
+            ForecastRatioTomorrowVsToday = tariff.ForecastTodayWh.HasValue
+                && tariff.ForecastTodayWh.Value > 0
+                && tariff.ForecastTomorrowWh.HasValue
+                ? (float)Math.Clamp(tariff.ForecastTomorrowWh.Value / tariff.ForecastTodayWh.Value, 0, 3)
+                : 1f,
+
+            // ML-9: signal explicite "le blocage de la charge réseau vient du forecast HA"
+            // Permet au ML de différencier "soleil Open-Meteo" vs "soleil Solcast précis"
+            SolarBlockedByHaForecast = tariff.SolarExpectedFromHa ? 1f : 0f,
+
+            OptimalSoftMaxPercent = 80,
             OptimalPreventiveThreshold = 20,
         };
     }
@@ -371,28 +407,62 @@ public class SmartDistributionService
         return (float)Math.Sqrt(list.Average(v => (v - avg) * (v - avg)));
     }
 
+    /// <summary>
+    /// Calcule la fraction d'énergie solaire produite entre [startH, endH]
+    /// en supposant un profil sinusoïdal normalisé sur [sunriseH, sunsetH].
+    ///
+    /// Production solaire ≈ sin(π × (t - sunrise) / daylightDuration)
+    /// → L'intégrale sur [a, b] normalisée vaut (cos(πa/D) - cos(πb/D)) / 2
+    ///   avec D = daylightDuration, a/b = décalages par rapport au lever.
+    ///
+    /// Avantage vs fraction linéaire : correctement pondère le pic de midi
+    /// (les 4h centrales représentent ~60% de l'énergie journalière).
+    /// </summary>
+    private static double SolarFractionBetweenHours(
+        double startH, double endH, double sunriseH, double sunsetH)
+    {
+        double duration = sunsetH - sunriseH;
+        if (duration <= 0 || endH <= startH) return 0;
+
+        // Clamp dans la fenêtre solaire
+        double a = Math.Max(0, startH - sunriseH);
+        double b = Math.Min(duration, endH - sunriseH);
+        if (b <= a) return 0;
+
+        // Intégrale de sin(π×t/D) entre a et b, normalisée sur [0, D] (intégrale totale = 2D/π)
+        double integralTotal = 2.0 * duration / Math.PI;
+        double integralSlice = (duration / Math.PI)
+            * (Math.Cos(Math.PI * a / duration) - Math.Cos(Math.PI * b / duration));
+
+        return integralTotal > 0 ? Math.Max(0, integralSlice / integralTotal) : 0;
+    }
+
     private void LogTariffContext(TariffContext ctx, double surplusW)
     {
         if (!ctx.CurrentPricePerKwh.HasValue) return;
 
-        string slotInfo  = ctx.HoursRemainingInSlot.HasValue
+        string slotInfo = ctx.HoursRemainingInSlot.HasValue
             ? $" | slot ends in {ctx.HoursRemainingInSlot.Value:F1}h" : string.Empty;
         string solarInfo = ctx.HoursUntilSolar.HasValue && ctx.HoursUntilSolar.Value < double.MaxValue
             ? $" | solar in {ctx.HoursUntilSolar.Value:F1}h" : " | no solar forecast";
-        string fcInfo    = ctx.HasHaForecast
+        string fcInfo = ctx.HasHaForecast
             ? $" | HA fc today={ctx.ForecastTodayWh:F0}Wh tmrw={ctx.ForecastTomorrowWh:F0}Wh"
             : " | Open-Meteo only";
+        string haBlockInfo = ctx.SolarExpectedFromHa ? " [blocked by HA forecast]" : string.Empty;
+        string eveningBoostInfo = ctx.HasLowForecastTomorrow && ctx.IsFavorableForGrid
+            ? $" | ⚡ softmax boost +{ctx.EveningBoostPercent:F0}% (low tmrw forecast + favorable tariff)"
+            : string.Empty;
 
         if (ctx.GridChargeAllowed)
             _logger.LogInformation(
-                "Tariff [{Slot}] {Price:F3}€/kWh — GRID CHARGE ALLOWED{SlotInfo}{SolarInfo}{FcInfo} " +
+                "Tariff [{Slot}] {Price:F3}€/kWh — GRID CHARGE ALLOWED{SlotInfo}{SolarInfo}{FcInfo}{EveningBoost} " +
                 "(surplus={S:F0}W, savings={Sav:F3}€/kWh)",
-                ctx.ActiveSlotName, ctx.CurrentPricePerKwh, slotInfo, solarInfo, fcInfo,
+                ctx.ActiveSlotName, ctx.CurrentPricePerKwh, slotInfo, solarInfo, fcInfo, eveningBoostInfo,
                 surplusW, ctx.MaxSavingsPerKwh);
         else if (ctx.IsFavorableForGrid)
             _logger.LogInformation(
-                "Tariff [{Slot}] {Price:F3}€/kWh — favorable but skipped (autoconsumption covers){SolarInfo}{SlotInfo}",
-                ctx.ActiveSlotName, ctx.CurrentPricePerKwh, solarInfo, slotInfo);
+                "Tariff [{Slot}] {Price:F3}€/kWh — favorable but skipped (autoconsumption covers){SolarInfo}{SlotInfo}{HaBlock}",
+                ctx.ActiveSlotName, ctx.CurrentPricePerKwh, solarInfo, slotInfo, haBlockInfo);
         else
             _logger.LogDebug(
                 "Tariff [{Slot}] {Price:F3}€/kWh — grid charge blocked ({Reason}){SlotInfo}",

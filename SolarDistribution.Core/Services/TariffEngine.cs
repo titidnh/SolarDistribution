@@ -10,6 +10,30 @@ public class TariffConfig
     public double GridChargeThresholdPerKwh { get; set; } = 0.15;
     public double MinSolarForecastForGridBlock { get; set; } = 100.0;
     public int SolarForecastHorizonHours { get; set; } = 4;
+
+    /// <summary>
+    /// [HA Forecast] Seuil en Wh en dessous duquel la journée est considérée « peu solaire ».
+    /// Si ForecastTodayWh >= cette valeur → bloque la charge réseau (le soleil couvrira la demande).
+    /// Défaut 500 Wh : en dessous, on ne compte pas sur le solaire pour remplir les batteries.
+    /// Exemple : installation 2 kWc → mettre ~800 Wh ; 4 kWc → ~1500 Wh.
+    /// </summary>
+    public double MinHaForecastWhForGridBlock { get; set; } = 500.0;
+
+    /// <summary>
+    /// [HA Forecast J+1] En dessous de ce seuil (Wh), demain est considéré « mauvais ».
+    /// Quand on est dans un créneau tarifaire favorable (IsFavorableForGrid), le SoftMax
+    /// des batteries est augmenté de EveningBoostPercent pour maximiser la réserve.
+    /// Défaut 1000 Wh.
+    /// </summary>
+    public double LowForecastTomorrowWh { get; set; } = 1000.0;
+
+    /// <summary>
+    /// Bonus SoftMax (points de %) ajouté quand demain est prévu mauvais
+    /// ET qu'on est dans un créneau tarifaire favorable (HC, week-end, etc.).
+    /// Défaut 10% → si SoftMax = 80%, passe à 90% pendant les heures creuses.
+    /// </summary>
+    public double EveningBoostPercent { get; set; } = 10.0;
+
     public List<TariffSlot> Slots { get; set; } = new List<TariffSlot>();
 }
 
@@ -22,7 +46,7 @@ public class TariffSlot
     public List<int>? DaysOfWeek { get; set; }
 
     public TimeSpan ParsedStart => TimeSpan.Parse(StartTime);
-    public TimeSpan ParsedEnd   => TimeSpan.Parse(EndTime);
+    public TimeSpan ParsedEnd => TimeSpan.Parse(EndTime);
 
     public bool IsActiveAt(DateTime localTime)
     {
@@ -34,19 +58,19 @@ public class TariffSlot
             if (!DaysOfWeek.Contains(isoDow)) return false;
         }
 
-        var tod   = localTime.TimeOfDay;
+        var tod = localTime.TimeOfDay;
         var start = ParsedStart;
-        var end   = ParsedEnd;
+        var end = ParsedEnd;
 
         if (start == end) return true;
-        if (start < end)  return tod >= start && tod < end;
+        if (start < end) return tod >= start && tod < end;
         return tod >= start || tod < end;
     }
 }
 
 public class TariffEngine
 {
-    private readonly TariffConfig          _config;
+    private readonly TariffConfig _config;
     private readonly ILogger<TariffEngine> _logger;
 
     public TariffEngine(TariffConfig config, ILogger<TariffEngine>? logger = null)
@@ -106,18 +130,28 @@ public class TariffEngine
         double? forecastTodayWh = null,
         double? forecastTomorrowWh = null)
     {
-        var activeSlot    = GetActiveSlot(localTime);
-        double? price     = activeSlot?.PricePerKwh;
-        bool isFavorable  = IsGridChargeFavorable(localTime);
+        var activeSlot = GetActiveSlot(localTime);
+        double? price = activeSlot?.PricePerKwh;
+        bool isFavorable = IsGridChargeFavorable(localTime);
 
-        int horizon       = _config.SolarForecastHorizonHours;
-        double avgSolar   = solarForecastWm2.Take(horizon).DefaultIfEmpty(0).Average();
-        bool solarExpected = avgSolar >= _config.MinSolarForecastForGridBlock;
+        int horizon = _config.SolarForecastHorizonHours;
+        double avgSolar = solarForecastWm2.Take(horizon).DefaultIfEmpty(0).Average();
+
+        // Open-Meteo W/m² : signal générique
+        bool solarExpectedFromMeteo = avgSolar >= _config.MinSolarForecastForGridBlock;
+
+        // HA Forecast Wh : signal installation-spécifique, plus précis
+        // Si le forecast HA prédit assez d'énergie aujourd'hui → le solaire couvrira la demande
+        bool solarExpectedFromHa = forecastTodayWh.HasValue
+            && forecastTodayWh.Value >= _config.MinHaForecastWhForGridBlock;
+
+        // OR logique : si l'un ou l'autre signal prédit du solaire → bloquer la charge réseau
+        bool solarExpected = solarExpectedFromMeteo || solarExpectedFromHa;
 
         bool gridChargeAllowed = isFavorable && !solarExpected && _config.Slots.Any();
 
         double? maxFuture = GetMaxPriceNextHours(localTime, 24);
-        double savings    = (maxFuture ?? 0) - (price ?? 0);
+        double savings = (maxFuture ?? 0) - (price ?? 0);
 
         double? hoursRemainingInSlot = null;
         if (isFavorable && activeSlot is not null)
@@ -126,20 +160,24 @@ public class TariffEngine
         double? hoursUntilSolar = ComputeHoursUntilSolar(localTime, solarForecastWm2);
 
         return new TariffContext(
-            ActiveSlotName:          activeSlot?.Name,
-            CurrentPricePerKwh:      price,
-            IsFavorableForGrid:      isFavorable,
-            GridChargeAllowed:       gridChargeAllowed,
-            AvgSolarForecastWm2:     avgSolar,
-            SolarExpectedSoon:       solarExpected,
-            HoursToNextFavorable:    HoursUntilNextFavorableTariff(localTime),
-            MaxSavingsPerKwh:        Math.Max(0, savings),
-            ExportPricePerKwh:       _config.ExportPricePerKwh,
-            HoursRemainingInSlot:    hoursRemainingInSlot,
-            HoursUntilSolar:         hoursUntilSolar,
-            SolarForecastWm2:        solarForecastWm2,
-            ForecastTodayWh:         forecastTodayWh,
-            ForecastTomorrowWh:      forecastTomorrowWh
+            ActiveSlotName: activeSlot?.Name,
+            CurrentPricePerKwh: price,
+            IsFavorableForGrid: isFavorable,
+            GridChargeAllowed: gridChargeAllowed,
+            AvgSolarForecastWm2: avgSolar,
+            SolarExpectedSoon: solarExpected,
+            SolarExpectedFromHa: solarExpectedFromHa,
+            HoursToNextFavorable: HoursUntilNextFavorableTariff(localTime),
+            MaxSavingsPerKwh: Math.Max(0, savings),
+            ExportPricePerKwh: _config.ExportPricePerKwh,
+            HoursRemainingInSlot: hoursRemainingInSlot,
+            HoursUntilSolar: hoursUntilSolar,
+            SolarForecastWm2: solarForecastWm2,
+            ForecastTodayWh: forecastTodayWh,
+            ForecastTomorrowWh: forecastTomorrowWh,
+            HasLowForecastTomorrow: forecastTomorrowWh.HasValue
+                                     && forecastTomorrowWh.Value < _config.LowForecastTomorrowWh,
+            EveningBoostPercent: _config.EveningBoostPercent
         );
     }
 
@@ -194,6 +232,8 @@ public record TariffContext(
     bool GridChargeAllowed,
     double AvgSolarForecastWm2,
     bool SolarExpectedSoon,
+    /// <summary>True si le blocage vient spécifiquement du forecast HA (plus précis qu'Open-Meteo).</summary>
+    bool SolarExpectedFromHa,
     double? HoursToNextFavorable,
     double MaxSavingsPerKwh,
     double ExportPricePerKwh,
@@ -206,7 +246,11 @@ public record TariffContext(
     /// <summary>HA solar forecast today (Wh) — installation-specific. Null if not configured.</summary>
     double? ForecastTodayWh,
     /// <summary>HA solar forecast tomorrow (Wh) — installation-specific. Null if not configured.</summary>
-    double? ForecastTomorrowWh
+    double? ForecastTomorrowWh,
+    /// <summary>True si demain est prévu sous le seuil LowForecastTomorrowWh → boost SoftMax en HC.</summary>
+    bool HasLowForecastTomorrow,
+    /// <summary>Bonus SoftMax (%) quand demain est mauvais et qu'on est dans un créneau favorable.</summary>
+    double EveningBoostPercent
 )
 {
     public double NormalizedPrice => CurrentPricePerKwh.HasValue

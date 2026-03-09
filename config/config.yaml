@@ -357,6 +357,37 @@ tariff:
   # Valeur basse (50) = très prudent. Valeur haute (200) = autorise charge même nuageux.
   min_solar_forecast_for_grid_block: 100.0
 
+  # ── Seuil HA Forecast pour blocage charge réseau ──────────────────────────
+  # Si ForecastTodayWh >= cette valeur → le solaire couvrira la demande → pas
+  # de charge réseau même si Open-Meteo ne prédit rien (signal plus précis).
+  # Ajuster selon votre puissance crête installée :
+  #   Installation ~2 kWc → 400-600 Wh
+  #   Installation ~4 kWc → 800-1200 Wh
+  #   Installation ~6 kWc → 1500-2000 Wh
+  # Ignoré si forecast_today_entity n'est pas configuré.
+  min_ha_forecast_wh_for_grid_block: 500.0
+
+  # ── Boost SoftMax quand demain est mauvais ────────────────────────────────
+  # Si ForecastTomorrow < low_forecast_tomorrow_wh ET qu'on est dans un créneau
+  # tarifaire favorable (HC, week-end...) → SoftMax augmenté de evening_boost_percent.
+  # Objectif : maximiser la réserve des batteries PENDANT les heures bon marché
+  # avant une journée peu ensoleillée (fonctionne à toute heure, pas seulement le soir).
+  #
+  # Exemples :
+  #   Demain prévu 600 Wh (mauvais) + on est en HC à 2h du matin
+  #     → SoftMax 80% + 10% = 90% jusqu'à la fin du créneau
+  #   Demain prévu 600 Wh + on est en HP (tarif cher)
+  #     → Pas de boost (on ne charge pas depuis le réseau de toute façon)
+  #
+  # low_forecast_tomorrow_wh : seuil Wh en dessous duquel "demain est mauvais"
+  #   Ajuster selon votre installation (même ordre de grandeur que min_ha_forecast_wh_for_grid_block)
+  low_forecast_tomorrow_wh: 1000.0
+
+  # evening_boost_percent : bonus SoftMax en points de %
+  #   Plafonné à hard_max_percent de chaque batterie.
+  #   Défaut 10% → SoftMax 80% devient 90% pendant le créneau favorable.
+  evening_boost_percent: 10.0
+
   # Horizon en heures pour évaluer la prévision solaire avant de décider.
   # 4h = "est-ce qu'il y aura du soleil dans les 4 prochaines heures ?"
   solar_forecast_horizon_hours: 4

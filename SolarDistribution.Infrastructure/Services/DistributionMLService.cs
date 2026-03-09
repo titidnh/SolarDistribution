@@ -19,24 +19,24 @@ namespace SolarDistribution.Infrastructure.Services;
 /// </summary>
 public class DistributionMLService : IDistributionMLService
 {
-    private const int    MIN_FEEDBACKS_REQUIRED   = 50;
-    private const double MIN_CONFIDENCE_TO_APPLY  = 0.65;
-    private const string SOFTMAX_MODEL_FILE        = "ml_softmax_model.zip";
-    private const string PREVENTIVE_MODEL_FILE     = "ml_preventive_model.zip";
+    private const int MIN_FEEDBACKS_REQUIRED = 50;
+    private const double MIN_CONFIDENCE_TO_APPLY = 0.65;
+    private const string SOFTMAX_MODEL_FILE = "ml_softmax_model.zip";
+    private const string PREVENTIVE_MODEL_FILE = "ml_preventive_model.zip";
 
-    private readonly MLContext               _ctx;
+    private readonly MLContext _ctx;
     private readonly IDistributionRepository _repo;
     private readonly ILogger<DistributionMLService> _log;
     private readonly string _modelDir;
 
     private ITransformer? _softMaxModel;
     private ITransformer? _preventiveModel;
-    private MLModelMeta?  _meta;
+    private MLModelMeta? _meta;
 
     // ML-1: Local thread-safe pool — avoids recreating PredictionEngine each cycle.
     // ConcurrentBag: each thread takes an engine, uses it, then returns it.
     // Without a pool: CreatePredictionEngine() costs ~5-20ms (allocation + JIT) per call.
-    private ConcurrentBag<PredictionEngine<DistributionFeatures, SoftMaxPrediction>>?    _smEngines;
+    private ConcurrentBag<PredictionEngine<DistributionFeatures, SoftMaxPrediction>>? _smEngines;
     private ConcurrentBag<PredictionEngine<DistributionFeatures, PreventivePrediction>>? _pvEngines;
 
     private record MLModelMeta(string Version, int Samples,
@@ -47,9 +47,9 @@ public class DistributionMLService : IDistributionMLService
         ILogger<DistributionMLService> log,
         string modelDirectory = "ml_models")
     {
-        _ctx     = new MLContext(seed: 42);
-        _repo    = repo;
-        _log     = log;
+        _ctx = new MLContext(seed: 42);
+        _repo = repo;
+        _log = log;
         _modelDir = modelDirectory;
         Directory.CreateDirectory(_modelDir);
         TryLoadFromDisk();
@@ -89,7 +89,7 @@ public class DistributionMLService : IDistributionMLService
             double rawSoftMax, rawPreventive;
             try
             {
-                rawSoftMax    = smEng.Predict(f).PredictedSoftMaxPercent;
+                rawSoftMax = smEng.Predict(f).PredictedSoftMaxPercent;
                 rawPreventive = pvEng.Predict(f).PredictedPreventiveThreshold;
             }
             finally
@@ -99,8 +99,8 @@ public class DistributionMLService : IDistributionMLService
                 _pvEngines.Add(pvEng);
             }
 
-            double softMax    = Math.Clamp(rawSoftMax,    50, 100);
-            double preventive = Math.Clamp(rawPreventive, 15,  60);
+            double softMax = Math.Clamp(rawSoftMax, 50, 100);
+            double preventive = Math.Clamp(rawPreventive, 15, 60);
 
             // ML-2: coherence constraint — guarantees a minimal margin between
             // PreventiveThreshold and SoftMax to avoid impossible states.
@@ -109,9 +109,9 @@ public class DistributionMLService : IDistributionMLService
             {
                 // On préfère ajuster le moins coûteux des deux
                 if (softMax < 80)
-                    softMax    = Math.Clamp(preventive + MinMarginPercent, 50, 100);
+                    softMax = Math.Clamp(preventive + MinMarginPercent, 50, 100);
                 else
-                    preventive = Math.Clamp(softMax    - MinMarginPercent, 15,  60);
+                    preventive = Math.Clamp(softMax - MinMarginPercent, 15, 60);
 
                 _log.LogDebug(
                     "ML-2 coherence correction applied: softMax={SM:F1}%, preventive={PV:F1}%",
@@ -157,7 +157,7 @@ public class DistributionMLService : IDistributionMLService
 
         try
         {
-            var data  = _ctx.Data.LoadFromEnumerable(features);
+            var data = _ctx.Data.LoadFromEnumerable(features);
             var split = _ctx.Data.TrainTestSplit(data, testFraction: 0.2);
 
             var (smModel, smR2) = Train(split.TrainSet, split.TestSet,
@@ -166,10 +166,10 @@ public class DistributionMLService : IDistributionMLService
                 nameof(DistributionFeatures.OptimalPreventiveThreshold));
 
             string ver = $"v{DateTime.UtcNow:yyyyMMdd-HHmmss}";
-            Save(smModel, SOFTMAX_MODEL_FILE,    data.Schema);
+            Save(smModel, SOFTMAX_MODEL_FILE, data.Schema);
             Save(pvModel, PREVENTIVE_MODEL_FILE, data.Schema);
 
-            _softMaxModel    = smModel;
+            _softMaxModel = smModel;
             _preventiveModel = pvModel;
             _meta = new MLModelMeta(ver, features.Count, smR2, pvR2, DateTime.UtcNow);
 
@@ -192,7 +192,7 @@ public class DistributionMLService : IDistributionMLService
     /// <summary>ML-6: async to avoid GetAwaiter().GetResult() — risk of deadlock.</summary>
     public async Task<MLModelStatus> GetStatusAsync(CancellationToken ct = default)
     {
-        int sessions  = await _repo.CountSessionsAsync(ct);
+        int sessions = await _repo.CountSessionsAsync(ct);
         int feedbacks = await _repo.CountValidFeedbacksAsync(ct);
         return new MLModelStatus(
             _meta is not null, _meta?.Version, _meta?.Samples ?? 0,
@@ -234,7 +234,7 @@ public class DistributionMLService : IDistributionMLService
             var pvMetrics = _ctx.Regression.Evaluate(_preventiveModel.Transform(data),
                 labelColumnName: nameof(DistributionFeatures.OptimalPreventiveThreshold));
 
-            double recentR2  = (smMetrics.RSquared + pvMetrics.RSquared) / 2.0;
+            double recentR2 = (smMetrics.RSquared + pvMetrics.RSquared) / 2.0;
             double baselineR2 = (_meta.SoftMaxR2 + _meta.PreventiveR2) / 2.0;
             double degradation = baselineR2 - recentR2;
 
@@ -315,6 +315,13 @@ public class DistributionMLService : IDistributionMLService
             nameof(DistributionFeatures.ForecastTodayNormalized),
             nameof(DistributionFeatures.ForecastTomorrowNormalized),
             nameof(DistributionFeatures.HasHaForecast),
+            // ML-9 : tendance solaire J vs J+1 + qualité du signal de blocage
+            // ForecastRatioTomorrowVsToday : encode "demain meilleur/pire qu'aujourd'hui"
+            //   → permet au ML d'apprendre à charger plus quand la tendance est mauvaise
+            // SolarBlockedByHaForecast : différencie "bloqué par Solcast précis" vs "Open-Meteo"
+            //   → permet au ML de pondérer sa confiance selon la qualité de la source
+            nameof(DistributionFeatures.ForecastRatioTomorrowVsToday),
+            nameof(DistributionFeatures.SolarBlockedByHaForecast),
         };
 
         var pipeline = _ctx.Transforms
@@ -323,15 +330,15 @@ public class DistributionMLService : IDistributionMLService
             .Append(_ctx.Transforms.NormalizeMinMax("Features"))
             .Append(_ctx.Regression.Trainers.FastTree(new FastTreeRegressionTrainer.Options
             {
-                NumberOfTrees             = 150,
-                NumberOfLeaves            = 30,
+                NumberOfTrees = 150,
+                NumberOfLeaves = 30,
                 MinimumExampleCountPerLeaf = 5,
-                LearningRate              = 0.08f,
-                LabelColumnName           = "Label",
-                FeatureColumnName         = "Features"
+                LearningRate = 0.08f,
+                LabelColumnName = "Label",
+                FeatureColumnName = "Features"
             }));
 
-        var model   = pipeline.Fit(train);
+        var model = pipeline.Fit(train);
         var metrics = _ctx.Regression.Evaluate(model.Transform(test));
         return (model, metrics.RSquared);
     }
@@ -350,10 +357,10 @@ public class DistributionMLService : IDistributionMLService
         if (!File.Exists(sm) || !File.Exists(pv)) return;
         try
         {
-            _softMaxModel    = _ctx.Model.Load(sm, out var smSchema);
+            _softMaxModel = _ctx.Model.Load(sm, out var smSchema);
             _preventiveModel = _ctx.Model.Load(pv, out _);
             var ts = File.GetLastWriteTimeUtc(sm);
-            _meta  = new MLModelMeta($"v{ts:yyyyMMdd-HHmmss}", 0, 0.7, 0.7, ts);
+            _meta = new MLModelMeta($"v{ts:yyyyMMdd-HHmmss}", 0, 0.7, 0.7, ts);
             // ML-1 : construire les pools dès le chargement depuis le disque
             RebuildPredictionPools(smSchema);
             _log.LogInformation("ML models loaded from disk (version {V})", _meta.Version);
@@ -386,50 +393,50 @@ public class DistributionMLService : IDistributionMLService
         if (session.Feedback?.Status != FeedbackStatus.Valid) return null;
         if (session.Weather is null || !session.BatterySnapshots.Any()) return null;
 
-        var w  = session.Weather;
+        var w = session.Weather;
         var bs = session.BatterySnapshots.ToList();
         var fb = session.Feedback;
         var dt = session.RequestedAt;
 
         double totalCap = bs.Sum(b => b.CapacityWh);
 
-        double[] rad   = ParseArr(w.RadiationForecast12hJson);
-        double avg6h   = rad.Take(6).DefaultIfEmpty(0).Average();
+        double[] rad = ParseArr(w.RadiationForecast12hJson);
+        double avg6h = rad.Take(6).DefaultIfEmpty(0).Average();
 
-        double hourRad  = 2.0 * Math.PI * dt.Hour / 24.0;
+        double hourRad = 2.0 * Math.PI * dt.Hour / 24.0;
         double monthRad = 2.0 * Math.PI * (dt.Month - 1) / 12.0;
 
         return new DistributionFeatures
         {
-            HourOfDay   = dt.Hour,
-            DayOfWeek   = (float)dt.DayOfWeek,
+            HourOfDay = dt.Hour,
+            DayOfWeek = (float)dt.DayOfWeek,
             MonthOfYear = dt.Month,
-            DayOfYear   = dt.DayOfYear,
+            DayOfYear = dt.DayOfYear,
 
-            SinHour   = (float)Math.Sin(hourRad),
-            CosHour   = (float)Math.Cos(hourRad),
-            SinMonth  = (float)Math.Sin(monthRad),
-            CosMonth  = (float)Math.Cos(monthRad),
+            SinHour = (float)Math.Sin(hourRad),
+            CosHour = (float)Math.Cos(hourRad),
+            SinMonth = (float)Math.Sin(monthRad),
+            CosMonth = (float)Math.Cos(monthRad),
 
-            DaylightHours    = (float)w.DaylightHours,
+            DaylightHours = (float)w.DaylightHours,
             HoursUntilSunset = (float)w.HoursUntilSunset,
 
-            CloudCoverPercent      = (float)w.CloudCoverPercent,
-            DirectRadiationWm2     = (float)w.DirectRadiationWm2,
-            DiffuseRadiationWm2    = (float)w.DiffuseRadiationWm2,
-            PrecipitationMmH       = (float)w.PrecipitationMmH,
+            CloudCoverPercent = (float)w.CloudCoverPercent,
+            DirectRadiationWm2 = (float)w.DirectRadiationWm2,
+            DiffuseRadiationWm2 = (float)w.DiffuseRadiationWm2,
+            PrecipitationMmH = (float)w.PrecipitationMmH,
             AvgForecastRadiation6h = (float)avg6h,
 
-            AvgBatteryPercent   = (float)bs.Average(b => b.CurrentPercentBefore),
-            MinBatteryPercent   = (float)bs.Min(b => b.CurrentPercentBefore),
-            MaxBatteryPercent   = (float)bs.Max(b => b.CurrentPercentBefore),
-            TotalCapacityWh     = (float)bs.Sum(b => b.CapacityWh),
-            UrgentBatteryCount  = bs.Count(b => b.WasUrgent),
+            AvgBatteryPercent = (float)bs.Average(b => b.CurrentPercentBefore),
+            MinBatteryPercent = (float)bs.Min(b => b.CurrentPercentBefore),
+            MaxBatteryPercent = (float)bs.Max(b => b.CurrentPercentBefore),
+            TotalCapacityWh = (float)bs.Sum(b => b.CapacityWh),
+            UrgentBatteryCount = bs.Count(b => b.WasUrgent),
             TotalMaxChargeRateW = (float)bs.Sum(b => b.MaxChargeRateW),
 
             // ML-4 : features de dispersion calculées depuis les snapshots
-            SocStdDev            = (float)StdDev(bs.Select(b => b.CurrentPercentBefore)),
-            CapacityRatio        = bs.Min(b => b.CapacityWh) > 0
+            SocStdDev = (float)StdDev(bs.Select(b => b.CurrentPercentBefore)),
+            CapacityRatio = bs.Min(b => b.CapacityWh) > 0
                 ? (float)(bs.Max(b => b.CapacityWh) / bs.Min(b => b.CapacityWh))
                 : 1.0f,
             NonUrgentBatteryCount = bs.Count(b => !b.WasUrgent),
@@ -437,18 +444,18 @@ public class DistributionMLService : IDistributionMLService
             SurplusW = (float)session.SurplusW,
 
             // Tarif — depuis les champs persistés en session
-            NormalizedTariff     = (float)(session.TariffPricePerKwh.HasValue
+            NormalizedTariff = (float)(session.TariffPricePerKwh.HasValue
                 ? Math.Min(1.0, session.TariffPricePerKwh.Value / 0.40) : 0.5),
-            IsOffPeakHour        = session.WasGridChargeFavorable ? 1f : 0f,
+            IsOffPeakHour = session.WasGridChargeFavorable ? 1f : 0f,
             HoursToNextFavorable = (float)(session.HoursToNextFavorableTariff ?? 12.0),
             AvgSolarForecastGrid = (float)(session.AvgSolarForecastWm2 ?? 0),
-            SolarExpectedSoon    = session.SolarExpectedSoon ? 1f : 0f,
-            MaxSavingsPerKwh     = (float)(session.TariffMaxSavingsPerKwh ?? 0),
+            SolarExpectedSoon = session.SolarExpectedSoon ? 1f : 0f,
+            MaxSavingsPerKwh = (float)(session.TariffMaxSavingsPerKwh ?? 0),
 
             // ML-7 : contexte adaptatif étendu — reconstruit depuis les champs persistés
-            HoursRemainingInSlot  = (float)(session.HoursRemainingInSlot ?? 0.0),
+            HoursRemainingInSlot = (float)(session.HoursRemainingInSlot ?? 0.0),
             HoursUntilSolarCapped = (float)Math.Min(session.HoursUntilSolar ?? 24.0, 24.0),
-            WasEmergencySession   = session.HadEmergencyGridCharge ? 1f : 0f,
+            WasEmergencySession = session.HadEmergencyGridCharge ? 1f : 0f,
             // Puissance réseau normalisée depuis la valeur effective persistée
             NormalizedGridChargeW = session.EffectiveGridChargeW.HasValue && bs.Any()
                 ? (float)Math.Clamp(
@@ -458,7 +465,7 @@ public class DistributionMLService : IDistributionMLService
 
             // ML-8 : prévisions HA installation-spécifiques — reconstruit depuis la session
             // Normalisées par capacité totale (sans dimension, stable entre installations)
-            ForecastTodayNormalized    = totalCap > 0 && session.ForecastTodayWh.HasValue
+            ForecastTodayNormalized = totalCap > 0 && session.ForecastTodayWh.HasValue
                 ? (float)Math.Clamp(session.ForecastTodayWh.Value / totalCap, 0, 5) : 0f,
             ForecastTomorrowNormalized = totalCap > 0 && session.ForecastTomorrowWh.HasValue
                 ? (float)Math.Clamp(session.ForecastTomorrowWh.Value / totalCap, 0, 5) : 0f,
@@ -466,7 +473,7 @@ public class DistributionMLService : IDistributionMLService
                 ? 1f : 0f,
 
             // Labels réels — jamais d'heuristique
-            OptimalSoftMaxPercent      = (float)fb.ObservedOptimalSoftMax,
+            OptimalSoftMaxPercent = (float)fb.ObservedOptimalSoftMax,
             OptimalPreventiveThreshold = (float)fb.ObservedOptimalPreventive,
         };
     }
@@ -489,12 +496,12 @@ public class DistributionMLService : IDistributionMLService
     private static string BuildRationale(DistributionFeatures f, double softMax, double preventive)
     {
         var reasons = new List<string>();
-        if (f.HoursUntilSunset < 3)  reasons.Add($"coucher soleil dans {f.HoursUntilSunset:F1}h");
+        if (f.HoursUntilSunset < 3) reasons.Add($"coucher soleil dans {f.HoursUntilSunset:F1}h");
         if (f.CloudCoverPercent > 60) reasons.Add($"nuages {f.CloudCoverPercent:F0}%");
         if (f.AvgForecastRadiation6h < 100) reasons.Add($"faible rayonnement prévu ({f.AvgForecastRadiation6h:F0}W/m²)");
         if (f.UrgentBatteryCount > 0) reasons.Add($"{f.UrgentBatteryCount} batterie(s) urgente(s)");
-        if (f.IsOffPeakHour > 0.5)    reasons.Add($"heure creuse {f.NormalizedTariff * 0.40:F2}€/kWh");
-        if (f.DaylightHours < 10)     reasons.Add($"jour court ({f.DaylightHours:F1}h) — saison hivernale");
+        if (f.IsOffPeakHour > 0.5) reasons.Add($"heure creuse {f.NormalizedTariff * 0.40:F2}€/kWh");
+        if (f.DaylightHours < 10) reasons.Add($"jour court ({f.DaylightHours:F1}h) — saison hivernale");
 
         string ctx = reasons.Any() ? string.Join(", ", reasons) : "conditions solaires favorables";
         return $"SoftMax={softMax:F0}%, préventif={preventive:F0}% — {ctx}";
