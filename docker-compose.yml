@@ -22,6 +22,38 @@ services:
     networks:
       - solar_net
 
+  # ── Solar Distribution API ───────────────────────────────────────────────────
+  solar_api:
+    build:
+      context: .
+      dockerfile: Dockerfile.Api
+    container_name: solar_api
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    ports:
+      - "${API_PORT:-8080}:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT:     Production
+      ASPNETCORE_URLS:            http://+:8080
+      TZ:                         ${TZ:-Europe/Brussels}
+      # ── Database
+      ConnectionStrings__MariaDb: "Server=mariadb;Port=3306;Database=solar_distribution;User=solar_user;Password=${DB_PASSWORD:-solarpass};CharSet=utf8mb4;"
+      # ── Swagger
+      Swagger__Enabled:           "true"
+      Swagger__RoutePrefix:       "swagger"
+      Swagger__ApiKey__Enabled:   "${SWAGGER_APIKEY_ENABLED:-false}"
+      Swagger__ApiKey__Key:       "${SWAGGER_APIKEY_KEY}"
+      # ── CORS
+      Cors__AllowAnyOrigin:       "${CORS_ALLOW_ANY:-false}"
+      Cors__AllowedOrigins__0:    "${CORS_ORIGIN_0:-http://localhost:3000}"
+      Cors__AllowedOrigins__1:    "${CORS_ORIGIN_1:-http://localhost:5173}"
+    volumes:
+      - solar_data:/app/ml_models
+    networks:
+      - solar_net
+
   # ── Solar Distribution Worker ────────────────────────────────────────────────
   solar_worker:
     build:
@@ -43,12 +75,6 @@ services:
       - solar_data:/data
     networks:
       - solar_net
-    # Empêche le worker de tuer MariaDB avec trop de connexions
-    # (optionnel, utile si plusieurs instances)
-    # deploy:
-    #   resources:
-    #     limits:
-    #       memory: 512m
 
 volumes:
   mariadb_data:

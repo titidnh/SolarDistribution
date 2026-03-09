@@ -1,0 +1,52 @@
+# ── Stage 1 : Build ───────────────────────────────────────────────────────────
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+
+# Copie des .csproj d'abord pour cache Docker optimal
+COPY SolarDistribution.Core/SolarDistribution.Core.csproj                    ./SolarDistribution.Core/
+COPY SolarDistribution.Infrastructure/SolarDistribution.Infrastructure.csproj ./SolarDistribution.Infrastructure/
+COPY SolarDistribution.Api/SolarDistribution.Api.csproj                       ./SolarDistribution.Api/
+
+# Restore NuGet
+RUN dotnet restore SolarDistribution.Api/SolarDistribution.Api.csproj
+
+# Copie du code source
+COPY SolarDistribution.Core/           ./SolarDistribution.Core/
+COPY SolarDistribution.Infrastructure/ ./SolarDistribution.Infrastructure/
+COPY SolarDistribution.Api/            ./SolarDistribution.Api/
+
+# Build + publish
+RUN dotnet publish SolarDistribution.Api/SolarDistribution.Api.csproj \
+    -c Release \
+    -o /app/publish \
+    --no-restore
+
+# ── Stage 2 : Runtime ─────────────────────────────────────────────────────────
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+WORKDIR /app
+
+# Utilisateur non-root pour la sécurité
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends adduser \
+    && rm -rf /var/lib/apt/lists/* \
+    && addgroup --system solar \
+    && adduser --system --ingroup solar solar
+
+# Dossier pour les modèles ML persistés
+RUN mkdir -p /app/ml_models \
+ && chown -R solar:solar /app/ml_models
+
+# Copie du binaire
+COPY --from=build /app/publish .
+RUN chown -R solar:solar /app
+
+USER solar
+
+# Variables d'environnement par défaut (surchargées via docker-compose / .env)
+ENV ASPNETCORE_ENVIRONMENT=Production \
+    ASPNETCORE_URLS=http://+:8080 \
+    TZ=Europe/Brussels
+
+EXPOSE 8080
+
+ENTRYPOINT ["dotnet", "SolarDistribution.Api.dll"]
