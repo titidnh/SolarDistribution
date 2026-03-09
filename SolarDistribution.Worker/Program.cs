@@ -68,6 +68,9 @@ var host = Host.CreateDefaultBuilder(args)
     {
         services.AddSingleton(config);
         services.AddSingleton(config.Tariff);
+        services.AddSingleton(config.Ml);
+        services.AddSingleton(config.HomeAssistant);
+        services.AddSingleton(config.Polling);
 
         // ── Database ──────────────────────────────────────────────────────────
         services.AddDbContext<SolarDbContext>(opts =>
