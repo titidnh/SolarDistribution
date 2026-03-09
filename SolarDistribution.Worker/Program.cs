@@ -115,6 +115,7 @@ var host = Host.CreateDefaultBuilder(args)
             });
 
         services.AddSingleton<HomeAssistantDataReader>();
+        services.AddSingleton<CommandStateCache>();
         services.AddSingleton<HomeAssistantCommandSender>();
 
         // ── Workers ───────────────────────────────────────────────────────────
