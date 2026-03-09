@@ -83,7 +83,7 @@ public class TariffSlot
     public List<int>? DaysOfWeek { get; set; }
 
     public TimeSpan ParsedStart => TimeSpan.Parse(StartTime);
-    public TimeSpan ParsedEnd   => TimeSpan.Parse(EndTime);
+    public TimeSpan ParsedEnd => TimeSpan.Parse(EndTime);
 
     /// <summary>
     /// Checks if this slot is active at the given instant (local time).
@@ -102,12 +102,12 @@ public class TariffSlot
                 return false;
         }
 
-        var tod   = localTime.TimeOfDay;
+        var tod = localTime.TimeOfDay;
         var start = ParsedStart;
-        var end   = ParsedEnd;
+        var end = ParsedEnd;
 
         if (start == end) return true;                          // entire day
-        if (start < end)  return tod >= start && tod < end;    // normal slot
+        if (start < end) return tod >= start && tod < end;    // normal slot
         return tod >= start || tod < end;                       // spanning midnight
     }
 }
@@ -122,7 +122,7 @@ public class TariffSlot
 /// </summary>
 public class TariffEngine
 {
-    private readonly TariffConfig          _config;
+    private readonly TariffConfig _config;
     private readonly ILogger<TariffEngine> _logger;
 
     public TariffEngine(TariffConfig config, ILogger<TariffEngine>? logger = null)
@@ -140,8 +140,8 @@ public class TariffEngine
 
         if (matching.Count > 1)
         {
-            var names    = string.Join(", ", matching.Select(s => $"\"{s.Name}\""));
-            double diff  = matching.Max(s => s.PricePerKwh) - matching.Min(s => s.PricePerKwh);
+            var names = string.Join(", ", matching.Select(s => $"\"{s.Name}\""));
+            double diff = matching.Max(s => s.PricePerKwh) - matching.Min(s => s.PricePerKwh);
 
             if (diff > 0.01)
             {
@@ -197,30 +197,74 @@ public class TariffEngine
 
     public TariffContext EvaluateContext(DateTime localTime, double[] solarForecastWm2)
     {
-        var activeSlot   = GetActiveSlot(localTime);
-        double? price    = activeSlot?.PricePerKwh;
+        var activeSlot = GetActiveSlot(localTime);
+        double? price = activeSlot?.PricePerKwh;
         bool isFavorable = IsGridChargeFavorable(localTime);
 
-        int horizon       = _config.SolarForecastHorizonHours;
-        double avgSolar   = solarForecastWm2.Take(horizon).DefaultIfEmpty(0).Average();
+        int horizon = _config.SolarForecastHorizonHours;
+        double avgSolar = solarForecastWm2.Take(horizon).DefaultIfEmpty(0).Average();
         bool solarExpected = avgSolar >= _config.MinSolarForecastForGridBlock;
 
         bool gridChargeAllowed = isFavorable && !solarExpected && _config.Slots.Any();
 
         double? maxFuture = GetMaxPriceNextHours(localTime, 24);
-        double savings    = (maxFuture ?? 0) - (price ?? 0);
+        double savings = (maxFuture ?? 0) - (price ?? 0);
+
+        // Calcul du temps restant dans le créneau tarifaire favorable actuel
+        double? hoursRemainingInSlot = null;
+        if (isFavorable && activeSlot is not null)
+        {
+            hoursRemainingInSlot = ComputeHoursRemainingInSlot(activeSlot, localTime);
+        }
+
+        // Heure prévue de prochain soleil suffisant (en heures depuis maintenant)
+        double? hoursUntilSolar = ComputeHoursUntilSolar(localTime, solarForecastWm2);
 
         return new TariffContext(
-            ActiveSlotName:       activeSlot?.Name,
-            CurrentPricePerKwh:   price,
-            IsFavorableForGrid:   isFavorable,
-            GridChargeAllowed:    gridChargeAllowed,
-            AvgSolarForecastWm2:  avgSolar,
-            SolarExpectedSoon:    solarExpected,
+            ActiveSlotName: activeSlot?.Name,
+            CurrentPricePerKwh: price,
+            IsFavorableForGrid: isFavorable,
+            GridChargeAllowed: gridChargeAllowed,
+            AvgSolarForecastWm2: avgSolar,
+            SolarExpectedSoon: solarExpected,
             HoursToNextFavorable: HoursUntilNextFavorableTariff(localTime),
-            MaxSavingsPerKwh:     Math.Max(0, savings),
-            ExportPricePerKwh:    _config.ExportPricePerKwh
+            MaxSavingsPerKwh: Math.Max(0, savings),
+            ExportPricePerKwh: _config.ExportPricePerKwh,
+            HoursRemainingInSlot: hoursRemainingInSlot,
+            HoursUntilSolar: hoursUntilSolar,
+            SolarForecastWm2: solarForecastWm2
         );
+    }
+
+    /// <summary>
+    /// Calcule le nombre d'heures restantes dans le créneau tarifaire actif.
+    /// Parcourt les minutes suivantes jusqu'à ce que le slot ne soit plus actif.
+    /// </summary>
+    private static double ComputeHoursRemainingInSlot(TariffSlot slot, DateTime localTime)
+    {
+        // Cherche la prochaine minute où ce slot n'est plus actif (max 48h)
+        for (int m = 1; m <= 48 * 60; m++)
+        {
+            if (!slot.IsActiveAt(localTime.AddMinutes(m)))
+                return m / 60.0;
+        }
+        return 48.0; // slot permanent (toute la journée)
+    }
+
+    /// <summary>
+    /// Estime dans combien d'heures le rayonnement solaire sera suffisant
+    /// pour de l'autoconsommation, basé sur la prévision horaire.
+    /// Retourne null si aucune heure solaire n'est prévue dans l'horizon.
+    /// </summary>
+    private double ComputeHoursUntilSolar(DateTime localTime, double[] solarForecastWm2)
+    {
+        int horizon = Math.Max(_config.SolarForecastHorizonHours, solarForecastWm2.Length);
+        for (int h = 0; h < solarForecastWm2.Length && h < horizon; h++)
+        {
+            if (solarForecastWm2[h] >= _config.MinSolarForecastForGridBlock)
+                return h; // déjà actif (h=0) ou dans h heures
+        }
+        return double.MaxValue; // pas de soleil prévu dans l'horizon
     }
 
     private double? GetMaxPriceNextHours(DateTime localTime, int horizonHours)
@@ -249,7 +293,24 @@ public record TariffContext(
     bool SolarExpectedSoon,
     double? HoursToNextFavorable,
     double MaxSavingsPerKwh,
-    double ExportPricePerKwh
+    double ExportPricePerKwh,
+    /// <summary>
+    /// Heures restantes dans le créneau tarifaire favorable actuel.
+    /// null si le tarif actuel n'est pas favorable.
+    /// </summary>
+    double? HoursRemainingInSlot,
+    /// <summary>
+    /// Heures avant que le soleil soit suffisant pour de l'autoconsommation.
+    /// 0 = soleil déjà disponible. double.MaxValue = pas prévu dans l'horizon.
+    /// </summary>
+    double? HoursUntilSolar,
+    /// <summary>
+    /// Prévision horaire de rayonnement solaire (W/m²) sur 12h.
+    /// Utilisée pour estimer l'énergie solaire attendue pendant le créneau restant
+    /// et ainsi ne demander au réseau QUE la différence.
+    /// Index 0 = heure courante, index 1 = heure+1, etc.
+    /// </summary>
+    double[] SolarForecastWm2
 )
 {
     public double NormalizedPrice => CurrentPricePerKwh.HasValue

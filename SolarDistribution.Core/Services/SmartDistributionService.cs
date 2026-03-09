@@ -110,6 +110,19 @@ public class SmartDistributionService
                 tariffCtx.SolarExpectedSoon ? "yes (skipped)" : "no");
         }
 
+        // Log la puissance de charge réseau adaptative pour chaque batterie éligible
+        foreach (var b in effective.Where(b => b.GridChargeAllowedW > 0 && !b.IsEmergencyGridCharge))
+        {
+            _logger.LogInformation(
+                "🔋 Smart grid charge — Battery {Id}: SOC {Soc:F1}% → {SoftMax:F0}%, " +
+                "{W:F0}W/{Max:F0}W ({Pct:F0}% of max) over {H:F1}h remaining in slot [{Slot}]",
+                b.Id, b.CurrentPercent, b.SoftMaxPercent,
+                b.GridChargeAllowedW, b.MaxChargeRateW,
+                b.MaxChargeRateW > 0 ? b.GridChargeAllowedW / b.MaxChargeRateW * 100 : 0,
+                tariffCtx.HoursRemainingInSlot ?? 0,
+                tariffCtx.ActiveSlotName);
+        }
+
         // ── 6. Distribution ───────────────────────────────────────────────────
         var result = _algo.Distribute(surplusW, effective);
 
@@ -132,38 +145,95 @@ public class SmartDistributionService
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Calcule GridChargeAllowedW pour chaque batterie selon 2 règles indépendantes :
+    /// Calcule GridChargeAllowedW pour chaque batterie selon la priorité suivante :
     ///
-    ///   1. URGENCE SOC : si SOC < EmergencyGridChargeBelowPercent
-    ///      → recharge forcée réseau, SAUF si soleil attendu (SolarExpectedSoon)
-    ///      → GridChargeAllowedW = MaxChargeRateW, cible = EmergencyGridChargeTargetPercent
+    ///   PRIORITÉ 1 — AUTOCONSOMMATION (toujours préférée)
+    ///     Si le soleil est attendu avant la fin du créneau tarifaire favorable,
+    ///     ET que les batteries peuvent tenir jusqu'au retour du soleil sans tomber
+    ///     sous EmergencyGridChargeBelowPercent → on n'active PAS la charge réseau.
+    ///     Le solaire prendra le relais à temps.
     ///
-    ///   2. TARIF FAVORABLE (logique normale) : tariff.GridChargeAllowed
-    ///      → toutes les batteries éligibles chargent jusqu'à SoftMaxPercent
+    ///   PRIORITÉ 2 — URGENCE SOC (indépendante du tarif)
+    ///     Si SOC < EmergencyGridChargeBelowPercent ET soleil non attendu à temps
+    ///     → recharge forcée pleine puissance depuis le réseau.
     ///
-    /// Les deux peuvent se cumuler — l'urgence prend toujours le dessus sur le tarif.
+    ///   PRIORITÉ 3 — CHARGE INTELLIGENTE HEURES CREUSES
+    ///     Tarif favorable + soleil insuffisant ou trop lointain.
+    ///     La puissance est modulée selon le temps restant dans le créneau :
+    ///
+    ///     a) URGENCE TEMPORELLE : créneau se termine bientôt (< Minutes critiques)
+    ///        OU soleil n'arrivera pas avant la fin du créneau
+    ///        → charge au maximum (MaxChargeRateW)
+    ///
+    ///     b) CHARGE ÉTALÉE : beaucoup de temps restant
+    ///        → puissance réduite = énergie nécessaire / temps restant
+    ///        → minimum MinGridChargeW (100W) pour éviter charge trop faible
+    ///        → objectif : remplir jusqu'à SoftMaxPercent juste avant la fin du créneau
+    ///
+    /// La puissance calculée garantit d'atteindre SoftMaxPercent avant la fin du slot
+    /// sans gaspiller les heures creuses ni sur-solliciter inutilement le réseau.
     /// </summary>
     private static IList<Battery> Apply(
         IList<Battery> src,
         MLRecommendation? reco,
-        TariffContext tariff)
+        TariffContext tariff,
+        double minGridChargeW = 100.0,
+        double urgencyThresholdHours = 1.0)
     {
         return src.Select(b =>
         {
-            // ── Urgence SOC : recharge forcée réseau ─────────────────────────
-            // Déclenchée si SOC < seuil d'urgence ET pas de soleil attendu.
-            // Si le soleil est attendu → l'autoconsommation va résoudre le problème,
-            // pas besoin de payer le réseau.
+            double softMax = reco?.RecommendedSoftMaxPercent ?? b.SoftMaxPercent;
+
+            // ── URGENCE SOC : recharge forcée réseau ─────────────────────────
+            // SOC < seuil d'urgence ET le soleil n'arrivera pas à temps pour sauver la batterie
+            bool solarWillArrive = tariff.HoursUntilSolar.HasValue
+                && tariff.HoursUntilSolar.Value < double.MaxValue;
+
             bool isEmergency = b.EmergencyGridChargeBelowPercent.HasValue
                 && b.CurrentPercent < b.EmergencyGridChargeBelowPercent.Value
-                && !tariff.SolarExpectedSoon;
+                && !solarWillArrive;
 
-            // ── Charge réseau autorisée ───────────────────────────────────────
-            // Urgence → toujours autorisée (indépendant du tarif)
-            // Sinon → seulement si le tarif est favorable (heures creuses)
-            double gridAllowedW = (isEmergency || tariff.GridChargeAllowed)
-                ? b.MaxChargeRateW
-                : 0;
+            // ── AUTOCONSOMMATION POSSIBLE ? ──────────────────────────────────
+            // Le soleil arrive AVANT la fin du créneau tarifaire favorable
+            // ET la batterie peut tenir jusqu'au retour du soleil (SOC au-dessus du seuil d'urgence)
+            bool solarBeforeSlotEnd = false;
+            if (!isEmergency
+                && tariff.IsFavorableForGrid
+                && tariff.HoursRemainingInSlot.HasValue
+                && tariff.HoursUntilSolar.HasValue
+                && tariff.HoursUntilSolar.Value < double.MaxValue)
+            {
+                bool solarArrivesBeforeSlotEnd =
+                    tariff.HoursUntilSolar.Value <= tariff.HoursRemainingInSlot.Value;
+
+                // La batterie tiendra-t-elle jusqu'au soleil sans tomber en urgence ?
+                bool batteryCanWait = !b.EmergencyGridChargeBelowPercent.HasValue
+                    || b.CurrentPercent > b.EmergencyGridChargeBelowPercent.Value;
+
+                solarBeforeSlotEnd = solarArrivesBeforeSlotEnd && batteryCanWait;
+            }
+
+            // ── CALCUL DE LA PUISSANCE DE CHARGE RÉSEAU ──────────────────────
+            double gridAllowedW = 0;
+
+            if (isEmergency)
+            {
+                // Urgence SOC → pleine puissance, indépendant du tarif
+                gridAllowedW = b.MaxChargeRateW;
+            }
+            else if (solarBeforeSlotEnd)
+            {
+                // L'autoconsommation va arriver à temps → pas de charge réseau nécessaire
+                gridAllowedW = 0;
+            }
+            else if (tariff.GridChargeAllowed)
+            {
+                // Tarif favorable + soleil insuffisant/trop lointain → charge intelligente
+                gridAllowedW = ComputeAdaptiveGridChargeW(
+                    b, softMax, tariff, minGridChargeW, urgencyThresholdHours);
+            }
+
+            bool isEmergencyCharge = isEmergency;
 
             return new Battery
             {
@@ -173,16 +243,115 @@ public class SmartDistributionService
                 MinPercent = reco is null
                     ? b.MinPercent
                     : Math.Max(b.MinPercent, reco.RecommendedPreventiveThreshold),
-                SoftMaxPercent = reco?.RecommendedSoftMaxPercent ?? b.SoftMaxPercent,
+                SoftMaxPercent = softMax,
                 HardMaxPercent = b.HardMaxPercent,
                 CurrentPercent = b.CurrentPercent,
                 Priority = b.Priority,
                 GridChargeAllowedW = gridAllowedW,
                 EmergencyGridChargeBelowPercent = b.EmergencyGridChargeBelowPercent,
-                EmergencyGridChargeTargetPercent = isEmergency ? b.EmergencyGridChargeTargetPercent : null,
-                IsEmergencyGridCharge = isEmergency,
+                EmergencyGridChargeTargetPercent = isEmergencyCharge ? b.EmergencyGridChargeTargetPercent : null,
+                IsEmergencyGridCharge = isEmergencyCharge,
             };
         }).ToList();
+    }
+
+    /// <summary>
+    /// <summary>
+    /// Calcule la puissance de charge réseau optimale en heures creuses.
+    ///
+    /// Principe fondamental : on ne demande au réseau QUE l'énergie que le solaire
+    /// ne pourra PAS apporter pendant le créneau restant. La puissance est ensuite
+    /// étalée sur le temps disponible pour maximiser l'utilisation des heures creuses
+    /// sans sur-solliciter le réseau.
+    ///
+    /// Étapes :
+    ///   1. Énergie brute nécessaire pour atteindre SoftMax depuis SOC actuel
+    ///   2. Soustraction de l'énergie solaire estimée pendant les heures restantes
+    ///      (prévision W/m² × solarEfficiencyFactor × heures restantes dans le créneau)
+    ///   3. Énergie nette ≤ 0 → le solaire suffira → 0W réseau
+    ///   4. Puissance étalée = énergie nette / heures restantes
+    ///   5. Clamp : [minGridChargeW .. MaxChargeRateW]
+    ///
+    /// Urgences temporelles (court-circuit, ignorent le calcul solaire) :
+    ///   - Créneau se termine dans moins de urgencyThresholdHours → MaxChargeRateW
+    ///   - Soleil absent ET temps court → MaxChargeRateW
+    ///
+    /// solarEfficiencyFactor (0.0–1.0) :
+    ///   Conversion W/m² → W effectifs livrés à la batterie.
+    ///   Inclut surface, rendement panneau, pertes onduleur.
+    ///   Valeur conservatrice par défaut : 0.15.
+    ///   Sous-estimer est PRÉFÉRABLE (sécuritaire) à sur-estimer (risque manque d'énergie).
+    ///
+    /// Exemple :
+    ///   Batterie 30%→80%, 10kWh, MaxRate 2000W, 3h creuses restantes,
+    ///   prévision solaire [200, 350, 400] W/m², factor 0.15
+    ///   → énergie brute  = 5000 Wh
+    ///   → énergie solaire = (200+350+400) × 0.15 = 142.5 Wh  (heures 0,1,2 dans le créneau)
+    ///   → énergie nette  = 5000 - 142.5 = 4857.5 Wh
+    ///   → puissance cible = 4857.5 / 3 = 1619W  (au lieu de 1667W sans la déduction solaire)
+    ///   → clampé à 2000W max → 1619W envoyé
+    /// </summary>
+    private static double ComputeAdaptiveGridChargeW(
+        Battery b,
+        double softMaxPercent,
+        TariffContext tariff,
+        double minGridChargeW,
+        double urgencyThresholdHours,
+        double solarEfficiencyFactor = 0.15)
+    {
+        double hoursRemaining = tariff.HoursRemainingInSlot ?? 0;
+
+        // ── Urgence temporelle : créneau presque terminé → pleine puissance ──
+        if (hoursRemaining <= urgencyThresholdHours)
+            return b.MaxChargeRateW;
+
+        // ── Soleil absent ET peu de temps → pleine puissance ─────────────────
+        bool solarAfterSlot = !tariff.HoursUntilSolar.HasValue
+            || tariff.HoursUntilSolar.Value >= double.MaxValue
+            || tariff.HoursUntilSolar.Value > hoursRemaining;
+        if (solarAfterSlot && hoursRemaining <= urgencyThresholdHours * 2)
+            return b.MaxChargeRateW;
+
+        // ── Batterie déjà pleine ──────────────────────────────────────────────
+        if (b.CurrentPercent >= softMaxPercent)
+            return 0;
+
+        // ── Énergie brute nécessaire pour atteindre SoftMax (Wh) ─────────────
+        double energyNeededWh = (softMaxPercent - b.CurrentPercent) / 100.0 * b.CapacityWh;
+
+        // ── Énergie solaire attendue pendant les heures creuses restantes ─────
+        // Parcourt les prochaines `hoursRemaining` heures de la prévision horaire.
+        // Chaque index h = 1 heure. On ne compte que depuis HoursUntilSolar.
+        // La dernière heure peut être partielle (ex: 2.5h restantes → h=2 compte 0.5h).
+        double solarExpectedWh = 0;
+        double solarStartH = tariff.HoursUntilSolar.HasValue
+                             && tariff.HoursUntilSolar.Value < double.MaxValue
+            ? tariff.HoursUntilSolar.Value
+            : double.MaxValue;
+
+        var forecast = tariff.SolarForecastWm2;
+        int forecastHours = (int)Math.Min(Math.Ceiling(hoursRemaining), forecast.Length);
+
+        for (int h = 0; h < forecastHours; h++)
+        {
+            if (h < solarStartH) continue;                            // soleil pas encore levé
+            double hourFraction = Math.Min(1.0, hoursRemaining - h); // heure partielle en fin de slot
+            solarExpectedWh += forecast[h] * solarEfficiencyFactor * hourFraction;
+        }
+
+        // ── Énergie nette = ce que le réseau doit compléter ──────────────────
+        double netEnergyNeededWh = Math.Max(0, energyNeededWh - solarExpectedWh);
+
+        // Le solaire couvre tout → pas besoin de charger depuis le réseau
+        if (netEnergyNeededWh <= 0)
+            return 0;
+
+        // ── Puissance étalée sur le temps restant ─────────────────────────────
+        // On divise l'énergie nette par le temps disponible pour étaler la charge.
+        // Le clamp final garantit le respect des limites physiques ET du minimum fonctionnel.
+        double targetW = netEnergyNeededWh / hoursRemaining;
+
+        return Math.Clamp(targetW, minGridChargeW, b.MaxChargeRateW);
     }
 
     private static DistributionFeatures BuildFeatures(
@@ -257,17 +426,31 @@ public class SmartDistributionService
     {
         if (!ctx.CurrentPricePerKwh.HasValue) return;
 
+        string slotInfo = ctx.HoursRemainingInSlot.HasValue
+            ? $" | slot ends in {ctx.HoursRemainingInSlot.Value:F1}h"
+            : string.Empty;
+
+        string solarInfo = ctx.HoursUntilSolar.HasValue && ctx.HoursUntilSolar.Value < double.MaxValue
+            ? $" | solar in {ctx.HoursUntilSolar.Value:F1}h"
+            : " | no solar forecast";
+
         if (ctx.GridChargeAllowed)
             _logger.LogInformation(
-                "Tariff [{Slot}] {Price:F3}€/kWh — GRID CHARGE ALLOWED " +
-                "(surplus={S:F0}W, solar forecast={F:F0}W/m², savings={Sav:F3}€/kWh)",
-                ctx.ActiveSlotName, ctx.CurrentPricePerKwh, surplusW,
-                ctx.AvgSolarForecastWm2, ctx.MaxSavingsPerKwh);
+                "Tariff [{Slot}] {Price:F3}€/kWh — GRID CHARGE ALLOWED{SlotInfo}{SolarInfo} " +
+                "(surplus={S:F0}W, forecast={F:F0}W/m², savings={Sav:F3}€/kWh)",
+                ctx.ActiveSlotName, ctx.CurrentPricePerKwh, slotInfo, solarInfo,
+                surplusW, ctx.AvgSolarForecastWm2, ctx.MaxSavingsPerKwh);
+        else if (ctx.IsFavorableForGrid)
+            _logger.LogInformation(
+                "Tariff [{Slot}] {Price:F3}€/kWh — favorable but grid charge skipped{SolarInfo}{SlotInfo} " +
+                "(autoconsumption will cover)",
+                ctx.ActiveSlotName, ctx.CurrentPricePerKwh, solarInfo, slotInfo);
         else
             _logger.LogDebug(
-                "Tariff [{Slot}] {Price:F3}€/kWh — grid charge blocked ({Reason})",
+                "Tariff [{Slot}] {Price:F3}€/kWh — grid charge blocked ({Reason}){SlotInfo}",
                 ctx.ActiveSlotName, ctx.CurrentPricePerKwh,
-                ctx.SolarExpectedSoon ? "solar expected soon" : "price above threshold");
+                ctx.SolarExpectedSoon ? "solar expected soon" : "price above threshold",
+                slotInfo);
     }
 }
 
