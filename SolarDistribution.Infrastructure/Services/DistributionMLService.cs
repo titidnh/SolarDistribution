@@ -303,6 +303,18 @@ public class DistributionMLService : IDistributionMLService
             nameof(DistributionFeatures.AvgSolarForecastGrid),
             nameof(DistributionFeatures.SolarExpectedSoon),
             nameof(DistributionFeatures.MaxSavingsPerKwh),
+            // ML-7 : contexte adaptatif — temps restant, soleil, urgence
+            nameof(DistributionFeatures.HoursRemainingInSlot),
+            nameof(DistributionFeatures.HoursUntilSolarCapped),
+            nameof(DistributionFeatures.WasEmergencySession),
+            nameof(DistributionFeatures.NormalizedGridChargeW),
+            // ML-8 : prévisions HA installation-spécifiques
+            // Ces features sont parmi les plus prédictives : elles encodent directement
+            // "combien d'énergie mon installation va produire" au lieu d'un proxy W/m².
+            // Normalisées par capacité totale → sans dimension, comparables entre installations.
+            nameof(DistributionFeatures.ForecastTodayNormalized),
+            nameof(DistributionFeatures.ForecastTomorrowNormalized),
+            nameof(DistributionFeatures.HasHaForecast),
         };
 
         var pipeline = _ctx.Transforms
@@ -379,6 +391,8 @@ public class DistributionMLService : IDistributionMLService
         var fb = session.Feedback;
         var dt = session.RequestedAt;
 
+        double totalCap = bs.Sum(b => b.CapacityWh);
+
         double[] rad   = ParseArr(w.RadiationForecast12hJson);
         double avg6h   = rad.Take(6).DefaultIfEmpty(0).Average();
 
@@ -430,6 +444,26 @@ public class DistributionMLService : IDistributionMLService
             AvgSolarForecastGrid = (float)(session.AvgSolarForecastWm2 ?? 0),
             SolarExpectedSoon    = session.SolarExpectedSoon ? 1f : 0f,
             MaxSavingsPerKwh     = (float)(session.TariffMaxSavingsPerKwh ?? 0),
+
+            // ML-7 : contexte adaptatif étendu — reconstruit depuis les champs persistés
+            HoursRemainingInSlot  = (float)(session.HoursRemainingInSlot ?? 0.0),
+            HoursUntilSolarCapped = (float)Math.Min(session.HoursUntilSolar ?? 24.0, 24.0),
+            WasEmergencySession   = session.HadEmergencyGridCharge ? 1f : 0f,
+            // Puissance réseau normalisée depuis la valeur effective persistée
+            NormalizedGridChargeW = session.EffectiveGridChargeW.HasValue && bs.Any()
+                ? (float)Math.Clamp(
+                    session.EffectiveGridChargeW.Value / Math.Max(1, bs.Average(b => b.MaxChargeRateW)),
+                    0, 1)
+                : 0f,
+
+            // ML-8 : prévisions HA installation-spécifiques — reconstruit depuis la session
+            // Normalisées par capacité totale (sans dimension, stable entre installations)
+            ForecastTodayNormalized    = totalCap > 0 && session.ForecastTodayWh.HasValue
+                ? (float)Math.Clamp(session.ForecastTodayWh.Value / totalCap, 0, 5) : 0f,
+            ForecastTomorrowNormalized = totalCap > 0 && session.ForecastTomorrowWh.HasValue
+                ? (float)Math.Clamp(session.ForecastTomorrowWh.Value / totalCap, 0, 5) : 0f,
+            HasHaForecast = (session.ForecastTodayWh.HasValue || session.ForecastTomorrowWh.HasValue)
+                ? 1f : 0f,
 
             // Labels réels — jamais d'heuristique
             OptimalSoftMaxPercent      = (float)fb.ObservedOptimalSoftMax,

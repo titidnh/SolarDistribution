@@ -2,41 +2,26 @@ using Microsoft.ML.Data;
 
 namespace SolarDistribution.Core.Services.ML;
 
-// ── ML features ───────────────────────────────────────────────────────────────
-
 /// <summary>
 /// Input features for the ML model.
 /// Each row represents a historical distribution session with valid feedback.
-///
-/// CYCLIC ENCODING for hour + month:
-///   Raw values (1-12, 0-23) are misleading for trees because
-///   December (12) and January (1) appear far apart.
-///   Solution: sin/cos — December and January become adjacent on the circle.
-///   We also keep raw values for FastTree direct thresholds.
-///
-/// TARIFF FEATURES:
-///   Allow ML to learn WHEN to charge from the grid.
-///   E.g.: low tariff + no sun expected -> SoftMax may rise to 90%.
 /// </summary>
 public class DistributionFeatures
 {
     // ── Raw temporal ─────────────────────────────────────────────────────────
-    [LoadColumn(0)]  public float HourOfDay   { get; set; }   // 0-23
-    [LoadColumn(1)]  public float DayOfWeek   { get; set; }   // 0-6
-    [LoadColumn(2)]  public float MonthOfYear { get; set; }   // 1-12
-    [LoadColumn(3)]  public float DayOfYear   { get; set; }   // 1-366 : progression annuelle
+    [LoadColumn(0)]  public float HourOfDay   { get; set; }
+    [LoadColumn(1)]  public float DayOfWeek   { get; set; }
+    [LoadColumn(2)]  public float MonthOfYear { get; set; }
+    [LoadColumn(3)]  public float DayOfYear   { get; set; }
 
-    // ── Cyclic encoding hour (period = 24h) ─────────────────────────────────
-    [LoadColumn(4)]  public float SinHour     { get; set; }   // sin(2π × h / 24)
-    [LoadColumn(5)]  public float CosHour     { get; set; }   // cos(2π × h / 24)
+    // ── Cyclic encoding ──────────────────────────────────────────────────────
+    [LoadColumn(4)]  public float SinHour     { get; set; }
+    [LoadColumn(5)]  public float CosHour     { get; set; }
+    [LoadColumn(6)]  public float SinMonth    { get; set; }
+    [LoadColumn(7)]  public float CosMonth    { get; set; }
 
-    // ── Cyclic encoding month (period = 12) ─────────────────────────────────
-    // June (6) = production peak, December (12) = low.
-    [LoadColumn(6)]  public float SinMonth    { get; set; }   // sin(2π × (m-1) / 12)
-    [LoadColumn(7)]  public float CosMonth    { get; set; }   // cos(2π × (m-1) / 12)
-
-    // ── Direct seasonality ──────────────────────────────────────────────────
-    [LoadColumn(8)]  public float DaylightHours    { get; set; }   // h de jour : 8h (déc) → 16h (juin)
+    // ── Seasonality ─────────────────────────────────────────────────────────
+    [LoadColumn(8)]  public float DaylightHours    { get; set; }
     [LoadColumn(9)]  public float HoursUntilSunset { get; set; }
 
     // ── Weather ─────────────────────────────────────────────────────────────
@@ -44,9 +29,9 @@ public class DistributionFeatures
     [LoadColumn(11)] public float DirectRadiationWm2     { get; set; }
     [LoadColumn(12)] public float DiffuseRadiationWm2    { get; set; }
     [LoadColumn(13)] public float PrecipitationMmH       { get; set; }
-    [LoadColumn(14)] public float AvgForecastRadiation6h { get; set; }  // prévision 6h
+    [LoadColumn(14)] public float AvgForecastRadiation6h { get; set; }
 
-    // ── Battery state ───────────────────────────────────────────────────────
+    // ── Battery state ────────────────────────────────────────────────────────
     [LoadColumn(15)] public float AvgBatteryPercent   { get; set; }
     [LoadColumn(16)] public float MinBatteryPercent   { get; set; }
     [LoadColumn(17)] public float MaxBatteryPercent   { get; set; }
@@ -54,47 +39,63 @@ public class DistributionFeatures
     [LoadColumn(19)] public float UrgentBatteryCount  { get; set; }
     [LoadColumn(20)] public float TotalMaxChargeRateW { get; set; }
 
-    // ML-4: dispersion features — allow the model to distinguish
-    // heterogeneous installations (batteries with very different capacities)
-    // from homogeneous ones, without access to individual features.
-
-    /// <summary>Standard deviation of SOC among batteries (0 if single battery).</summary>
-    [LoadColumn(21)] public float SocStdDev           { get; set; }
-
-    /// <summary>Max/min ratio of installed capacities (1.0 if batteries identical).</summary>
-    [LoadColumn(22)] public float CapacityRatio        { get; set; }
-
-    /// <summary>Number of batteries with Priority > 0 (non-urgent batteries).</summary>
+    // ── ML-4: battery dispersion ─────────────────────────────────────────────
+    [LoadColumn(21)] public float SocStdDev            { get; set; }
+    [LoadColumn(22)] public float CapacityRatio         { get; set; }
     [LoadColumn(23)] public float NonUrgentBatteryCount { get; set; }
 
-    // ── Solar surplus ───────────────────────────────────────────────────────
+    // ── Solar surplus ────────────────────────────────────────────────────────
     [LoadColumn(24)] public float SurplusW { get; set; }
 
-    // ── Tariff context ──────────────────────────────────────────────────────
-    // These features allow ML to learn how to adapt SoftMax and the preventive
-    // threshold according to electricity cost and production forecast.
-
-    /// <summary>Current normalized price 0→1 (0.4 €/kWh = 1.0). 0.5 if unknown.</summary>
+    // ── Tariff context ───────────────────────────────────────────────────────
     [LoadColumn(25)] public float NormalizedTariff      { get; set; }
-
-    /// <summary>1.0 if currently in a favorable tariff slot, otherwise 0.0</summary>
     [LoadColumn(26)] public float IsOffPeakHour         { get; set; }
-
-    /// <summary>Hours until the next favorable slot (0 = already favorable)</summary>
     [LoadColumn(27)] public float HoursToNextFavorable  { get; set; }
-
-    /// <summary>Average forecasted radiation over the decision horizon (W/m²)</summary>
     [LoadColumn(28)] public float AvgSolarForecastGrid  { get; set; }
-
-    /// <summary>1.0 if significant solar production is expected soon</summary>
     [LoadColumn(29)] public float SolarExpectedSoon     { get; set; }
-
-    /// <summary>Potential savings in €/kWh if charging from grid now vs later</summary>
     [LoadColumn(30)] public float MaxSavingsPerKwh      { get; set; }
 
-    // ── Labels (regression targets — derived from real SessionFeedback) ─────
-    [LoadColumn(31)] public float OptimalSoftMaxPercent      { get; set; }
-    [LoadColumn(32)] public float OptimalPreventiveThreshold { get; set; }
+    // ── ML-7: extended adaptive context ─────────────────────────────────────
+    /// <summary>Hours remaining in the current favorable tariff slot (0 if not favorable).</summary>
+    [LoadColumn(31)] public float HoursRemainingInSlot  { get; set; }
+
+    /// <summary>Hours until solar is sufficient, clamped to 24h (0 = already available).</summary>
+    [LoadColumn(32)] public float HoursUntilSolarCapped { get; set; }
+
+    /// <summary>1.0 if any battery was in emergency grid charge during this session.</summary>
+    [LoadColumn(33)] public float WasEmergencySession   { get; set; }
+
+    /// <summary>Adaptive grid charge power normalized by total MaxChargeRateW (0–1).</summary>
+    [LoadColumn(34)] public float NormalizedGridChargeW { get; set; }
+
+    // ── ML-8: HA solar forecasts (installation-specific) ─────────────────────
+    /// <summary>
+    /// Production solaire estimée AUJOURD'HUI depuis HA (Wh), normalisée par capacité totale.
+    /// Valeur source : ForecastTodayEntity (ex: Solcast). 0 si non configuré.
+    /// Normalisée : ForecastTodayWh / TotalCapacityWh → sans unité, comparable entre installations.
+    /// SIGNAL DIRECT pour le ML : "combien d'énergie vient du solaire aujourd'hui par rapport
+    /// à ce que mes batteries peuvent absorber" → calibre SoftMax et seuil préventif.
+    /// </summary>
+    [LoadColumn(35)] public float ForecastTodayNormalized   { get; set; }
+
+    /// <summary>
+    /// Production solaire estimée DEMAIN depuis HA (Wh), normalisée par capacité totale.
+    /// Valeur source : ForecastTomorrowEntity (ex: Solcast). 0 si non configuré.
+    /// SIGNAL PROSPECTIF pour le ML : permet d'apprendre "si demain est bien ensoleillé,
+    /// ne pas trop charger la nuit → garder de la place pour l'autoconsommation du lendemain".
+    /// </summary>
+    [LoadColumn(36)] public float ForecastTomorrowNormalized { get; set; }
+
+    /// <summary>
+    /// 1.0 si les prévisions HA sont disponibles (ForecastToday ou Tomorrow non nulles).
+    /// Permet au ML de pondérer différemment les sessions avec données précises
+    /// vs sessions basées uniquement sur Open-Meteo.
+    /// </summary>
+    [LoadColumn(37)] public float HasHaForecast { get; set; }
+
+    // ── Labels ───────────────────────────────────────────────────────────────
+    [LoadColumn(38)] public float OptimalSoftMaxPercent      { get; set; }
+    [LoadColumn(39)] public float OptimalPreventiveThreshold { get; set; }
 }
 
 public class SoftMaxPrediction
@@ -107,8 +108,6 @@ public class PreventivePrediction
     [ColumnName("Score")] public float PredictedPreventiveThreshold { get; set; }
 }
 
-// ── Résultat de prédiction ────────────────────────────────────────────────────
-
 public record MLRecommendation(
     double RecommendedSoftMaxPercent,
     double RecommendedPreventiveThreshold,
@@ -117,21 +116,11 @@ public record MLRecommendation(
     string Rationale
 );
 
-// ── Interface ─────────────────────────────────────────────────────────────────
-
 public interface IDistributionMLService
 {
     Task<MLRecommendation?> PredictAsync(DistributionFeatures features, CancellationToken ct = default);
     Task<MLTrainingResult>  RetrainAsync(CancellationToken ct = default);
-    /// <summary>
-    /// ML-6 : GetStatus est désormais async pour éviter GetAwaiter().GetResult()
-    /// qui peut provoquer un deadlock dans certains contextes de scheduling .NET.
-    /// </summary>
     Task<MLModelStatus>     GetStatusAsync(CancellationToken ct = default);
-    /// <summary>
-    /// ML-5 : Vérifie si le modèle actif a subi une dérive significative
-    /// sur les N dernières sessions. Retourne true si un retrain forcé est conseillé.
-    /// </summary>
     Task<bool>              CheckForDriftAsync(int windowSize, double threshold, CancellationToken ct = default);
 }
 

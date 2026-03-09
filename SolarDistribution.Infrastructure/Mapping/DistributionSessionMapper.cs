@@ -6,13 +6,6 @@ using SolarDistribution.Core.Services.ML;
 
 namespace SolarDistribution.Infrastructure.Mapping;
 
-/// <summary>
-/// Fix #6 : Responsabilité de la construction des entités de persistance
-/// extraite de SmartDistributionService vers ce mapper dédié.
-///
-/// SmartDistributionService (Core) ne doit pas savoir COMMENT les données
-/// sont persistées (EF, JSON, etc.) — c'est le rôle de l'Infrastructure.
-/// </summary>
 public static class DistributionSessionMapper
 {
     public static DistributionSession ToEntity(
@@ -32,6 +25,8 @@ public static class DistributionSessionMapper
             GridChargedW               = result.GridChargedW,
             DecisionEngine             = decisionEngine,
             MlConfidenceScore          = mlReco?.ConfidenceScore,
+
+            // Contexte tarifaire standard
             TariffSlotName             = tariff.ActiveSlotName,
             TariffPricePerKwh          = tariff.CurrentPricePerKwh,
             WasGridChargeFavorable     = tariff.IsFavorableForGrid,
@@ -39,6 +34,16 @@ public static class DistributionSessionMapper
             HoursToNextFavorableTariff = tariff.HoursToNextFavorable,
             AvgSolarForecastWm2        = tariff.AvgSolarForecastWm2,
             TariffMaxSavingsPerKwh     = tariff.MaxSavingsPerKwh,
+
+            // Contexte adaptatif étendu (ML-7)
+            HoursRemainingInSlot       = tariff.HoursRemainingInSlot,
+            HoursUntilSolar            = tariff.HoursUntilSolar.HasValue
+                                         && tariff.HoursUntilSolar.Value < double.MaxValue
+                ? tariff.HoursUntilSolar.Value : null,
+
+            // Prévisions HA installation-spécifiques (ML-8)
+            ForecastTodayWh            = tariff.ForecastTodayWh,
+            ForecastTomorrowWh         = tariff.ForecastTomorrowWh,
         };
 
         session.BatterySnapshots = result.Allocations.Select(alloc =>
@@ -46,20 +51,31 @@ public static class DistributionSessionMapper
             var orig = originalBatteries.FirstOrDefault(b => b.Id == alloc.BatteryId);
             return new BatterySnapshot
             {
-                BatteryId            = alloc.BatteryId,
-                CapacityWh           = orig?.CapacityWh       ?? 0,
-                MaxChargeRateW       = orig?.MaxChargeRateW   ?? 0,
-                MinPercent           = orig?.MinPercent       ?? 0,
-                SoftMaxPercent       = orig?.SoftMaxPercent   ?? 80,
-                CurrentPercentBefore = alloc.PreviousPercent,
-                CurrentPercentAfter  = alloc.NewPercent,
-                Priority             = orig?.Priority         ?? 0,
-                WasUrgent            = alloc.WasUrgent,
-                AllocatedW           = alloc.AllocatedW,
-                IsGridCharge         = alloc.IsGridCharge,
-                Reason               = alloc.Reason
+                BatteryId             = alloc.BatteryId,
+                CapacityWh            = orig?.CapacityWh       ?? 0,
+                MaxChargeRateW        = orig?.MaxChargeRateW   ?? 0,
+                MinPercent            = orig?.MinPercent       ?? 0,
+                SoftMaxPercent        = orig?.SoftMaxPercent   ?? 80,
+                CurrentPercentBefore  = alloc.PreviousPercent,
+                CurrentPercentAfter   = alloc.NewPercent,
+                Priority              = orig?.Priority         ?? 0,
+                WasUrgent             = alloc.WasUrgent,
+                AllocatedW            = alloc.AllocatedW,
+                IsGridCharge          = alloc.IsGridCharge,
+                IsEmergencyGridCharge = alloc.IsEmergencyGridCharge,
+                GridChargeAllowedW    = orig?.GridChargeAllowedW ?? 0,
+                Reason                = alloc.Reason
             };
         }).ToList();
+
+        // Champs de synthèse session
+        session.HadEmergencyGridCharge = result.Allocations.Any(a => a.IsEmergencyGridCharge);
+
+        var hcBatteries = originalBatteries
+            .Where(b => b.GridChargeAllowedW > 0 && !b.IsEmergencyGridCharge)
+            .Select(b => b.GridChargeAllowedW)
+            .ToList();
+        session.EffectiveGridChargeW = hcBatteries.Any() ? hcBatteries.Average() : null;
 
         if (wx is not null)
         {

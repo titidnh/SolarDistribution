@@ -31,16 +31,21 @@ catch (Exception ex)
 // ── Serilog ───────────────────────────────────────────────────────────────────
 var logLevel = config.Logging.Level.ToLower() switch
 {
-    "debug" => LogEventLevel.Debug,
+    "debug"   => LogEventLevel.Debug,
     "warning" => LogEventLevel.Warning,
-    "error" => LogEventLevel.Error,
-    _ => LogEventLevel.Information
+    "error"   => LogEventLevel.Error,
+    _         => LogEventLevel.Information
 };
 
 var loggerConfig = new LoggerConfiguration()
     .MinimumLevel.Is(logLevel)
-    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
-    .MinimumLevel.Override("Microsoft.EntityFrameworkCore", LogEventLevel.Warning)
+    // Silence les logs verbeux de la stack HTTP .NET (HttpClient lifecycle, Polly retries)
+    .MinimumLevel.Override("Microsoft",                              LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.EntityFrameworkCore",          LogEventLevel.Warning)
+    .MinimumLevel.Override("System.Net.Http",                        LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.Extensions.Http",              LogEventLevel.Warning)
+    .MinimumLevel.Override("Polly",                                  LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.Extensions.Http.Resilience",   LogEventLevel.Warning)
     .Enrich.FromLogContext()
     .WriteTo.Console(outputTemplate:
         "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}");
@@ -61,22 +66,40 @@ var host = Host.CreateDefaultBuilder(args)
     .UseSerilog()
     .ConfigureServices(services =>
     {
-        // Config YAML en singleton
         services.AddSingleton(config);
+        services.AddSingleton(config.Tariff);
 
-        // ── MariaDB / EF Core ─────────────────────────────────────────────────
-        services.AddDbContext<SolarDbContext>(options =>
-            options.UseMySql(
+        // ── Database ──────────────────────────────────────────────────────────
+        services.AddDbContext<SolarDbContext>(opts =>
+            opts.UseMySql(
                 config.Database.ConnectionString,
                 ServerVersion.AutoDetect(config.Database.ConnectionString),
-                mysql => mysql.EnableRetryOnFailure(3)),
-            ServiceLifetime.Singleton);   // Singleton car le Worker est long-running
+                mysqlOpts => mysqlOpts.CommandTimeout(30)));
 
-        services.AddSingleton<IDistributionRepository, DistributionRepository>();
+        // ── Repositories & services ───────────────────────────────────────────
+        services.AddScoped<IDistributionRepository, DistributionRepository>();
+        services.AddSingleton<IBatteryDistributionService, BatteryDistributionService>();
+        services.AddSingleton<IDistributionSessionFactory, DistributionSessionFactory>();
+        services.AddSingleton<TariffEngine>();
+        services.AddSingleton<SmartDistributionService>();
 
-        // ── Home Assistant HTTP Client ────────────────────────────────────────
-        services
-            .AddHttpClient<IHomeAssistantClient, HomeAssistantClient>(client =>
+        // ── ML ────────────────────────────────────────────────────────────────
+        services.AddSingleton<IDistributionMLService>(sp =>
+            new DistributionMLService(
+                sp.GetRequiredService<IDistributionRepository>(),
+                sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<DistributionMLService>>(),
+                config.Ml.ModelDirectory));
+
+        // ── Weather ───────────────────────────────────────────────────────────
+        services.AddHttpClient<IWeatherService, OpenMeteoWeatherService>(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(10);
+            client.DefaultRequestHeaders.Add("User-Agent", "SolarDistribution-Worker/1.0");
+        });
+        services.AddSingleton<WeatherCacheService>();
+
+        // ── Home Assistant ────────────────────────────────────────────────────
+        services.AddHttpClient<IHomeAssistantClient, HomeAssistantClient>(client =>
             {
                 client.BaseAddress = new Uri(config.HomeAssistant.Url);
                 client.Timeout = TimeSpan.FromSeconds(config.HomeAssistant.TimeoutSeconds);
@@ -87,83 +110,27 @@ var host = Host.CreateDefaultBuilder(args)
             })
             .AddStandardResilienceHandler(opts =>
             {
-                // Retry : 3 tentatives avec jitter
                 opts.Retry.MaxRetryAttempts = config.HomeAssistant.RetryCount;
-                // Circuit breaker : ouvre après 5 échecs en 30s
                 opts.CircuitBreaker.SamplingDuration = TimeSpan.FromSeconds(30);
             });
 
-        // ── Services HA ───────────────────────────────────────────────────────
-        services.AddSingleton<WeatherCacheService>();
-        services.AddHostedService(sp => sp.GetRequiredService<WeatherCacheService>());
         services.AddSingleton<HomeAssistantDataReader>();
-        services.AddSingleton<CommandStateCache>();
         services.AddSingleton<HomeAssistantCommandSender>();
 
-        // ── Core : algo déterministe ──────────────────────────────────────────
-        services.AddSingleton<IBatteryDistributionService, BatteryDistributionService>();
-
-        // ── Tarification électrique ───────────────────────────────────────────
-        services.AddSingleton(config.Tariff);   // TariffConfig
-        services.AddSingleton<TariffEngine>();   // moteur de décision tarifaire
-
-        // ── ML.NET ────────────────────────────────────────────────────────────
-        services.AddSingleton<IDistributionMLService>(sp =>
-        {
-            var repo = sp.GetRequiredService<IDistributionRepository>();
-            var logger = sp.GetRequiredService<ILogger<DistributionMLService>>();
-            return new DistributionMLService(repo, logger, config.Ml.ModelDirectory);
-        });
-
-        // ── Feedback & Retrain planifié ───────────────────────────────────────
-        services.AddSingleton(config.Ml);  // MlConfig en singleton pour MlRetrainScheduler
-        services.AddSingleton<FeedbackEvaluator>();
-        services.AddHostedService<MlRetrainScheduler>();
-
-        // ── Météo Open-Meteo ──────────────────────────────────────────────────
-        services.AddHttpClient<IWeatherService, OpenMeteoWeatherService>(client =>
-        {
-            client.Timeout = TimeSpan.FromSeconds(10);
-            client.DefaultRequestHeaders.Add("User-Agent", "SolarDistribution-Worker/1.0");
-        });
-
-        // ── Session factory (Fix #6) ─────────────────────────────────────────
-        services.AddSingleton<IDistributionSessionFactory, DistributionSessionFactory>();
-
-        // ── SmartDistributionService ──────────────────────────────────────────
-        services.AddSingleton<SmartDistributionService>();
-
-        // ── Worker principal ──────────────────────────────────────────────────
+        // ── Workers ───────────────────────────────────────────────────────────
         services.AddHostedService<SolarWorker>();
+        services.AddHostedService<WeatherCacheService>(sp =>
+            sp.GetRequiredService<WeatherCacheService>());
+        services.AddHostedService<MlRetrainScheduler>();
+        services.AddSingleton<FeedbackEvaluator>();
     })
     .Build();
 
-// ── Migration automatique au démarrage ───────────────────────────────────────
-try
+// ── Migrations EF auto ────────────────────────────────────────────────────────
+using (var scope = host.Services.CreateScope())
 {
-    using var scope = host.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<SolarDbContext>();
-
-    Log.Information("Applying EF Core migrations...");
     await db.Database.MigrateAsync();
-    Log.Information("Database ready");
-}
-catch (Exception ex)
-{
-    Log.Fatal(ex, "Database migration failed — worker cannot start");
-    Environment.Exit(1);
 }
 
-// ── Démarrage ─────────────────────────────────────────────────────────────────
-try
-{
-    await host.RunAsync();
-}
-catch (Exception ex)
-{
-    Log.Fatal(ex, "Worker terminated unexpectedly");
-}
-finally
-{
-    Log.CloseAndFlush();
-}
+await host.RunAsync();

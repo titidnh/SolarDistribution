@@ -11,7 +11,7 @@ public class DistributionSession
     public string   DecisionEngine  { get; set; } = "Deterministic";
     public double?  MlConfidenceScore { get; set; }
 
-    // Contexte tarifaire — persisté pour l'entraînement ML
+    // Contexte tarifaire standard
     public string? TariffSlotName            { get; set; }
     public double? TariffPricePerKwh         { get; set; }
     public bool    WasGridChargeFavorable     { get; set; }
@@ -19,6 +19,22 @@ public class DistributionSession
     public double? HoursToNextFavorableTariff { get; set; }
     public double? AvgSolarForecastWm2        { get; set; }
     public double? TariffMaxSavingsPerKwh     { get; set; }
+
+    // Contexte adaptatif étendu (ML-7)
+    /// <summary>Heures restantes dans le créneau HC au moment de la session.</summary>
+    public double? HoursRemainingInSlot       { get; set; }
+    /// <summary>Heures avant le prochain ensoleillement (null si pas prévu ou nuit totale).</summary>
+    public double? HoursUntilSolar            { get; set; }
+    /// <summary>True si au moins une batterie était en charge d'urgence réseau.</summary>
+    public bool    HadEmergencyGridCharge     { get; set; }
+    /// <summary>Puissance réseau adaptative effective moyenne (W), hors urgence.</summary>
+    public double? EffectiveGridChargeW       { get; set; }
+
+    // Prévisions HA installation-spécifiques (ML-8)
+    /// <summary>Production solaire estimée aujourd'hui depuis HA (Wh). Null si non configuré.</summary>
+    public double? ForecastTodayWh            { get; set; }
+    /// <summary>Production solaire estimée demain depuis HA (Wh). Null si non configuré.</summary>
+    public double? ForecastTomorrowWh         { get; set; }
 
     public ICollection<BatterySnapshot> BatterySnapshots { get; set; } = new List<BatterySnapshot>();
     public WeatherSnapshot?  Weather      { get; set; }
@@ -31,8 +47,7 @@ public class SessionFeedback
     public long     Id          { get; set; }
     public long     SessionId   { get; set; }
     public DateTime CollectedAt { get; set; } = DateTime.UtcNow;
-    // Délai écoulé (heures) entre la session et la collecte du feedback
-    public double   FeedbackDelayHours { get; set; }
+    public double   FeedbackDelayHours    { get; set; }
     public string   ObservedSocJson       { get; set; } = "{}";
     public double   AvgSocAtFeedback      { get; set; }
     public double   MinSocAtFeedback      { get; set; }
@@ -63,6 +78,10 @@ public class BatterySnapshot
     public bool   WasUrgent            { get; set; }
     public double AllocatedW           { get; set; }
     public bool   IsGridCharge         { get; set; }
+    /// <summary>True si cette charge réseau était déclenchée par urgence SOC.</summary>
+    public bool   IsEmergencyGridCharge { get; set; }
+    /// <summary>Puissance réseau adaptative autorisée pour cette batterie (W).</summary>
+    public double GridChargeAllowedW   { get; set; }
     public string Reason               { get; set; } = string.Empty;
     public DistributionSession Session { get; set; } = null!;
 }
@@ -92,7 +111,6 @@ public class MLPredictionLog
     public long     SessionId   { get; set; }
     public string   ModelVersion                 { get; set; } = string.Empty;
     public double   ConfidenceScore              { get; set; }
-    // Score d'efficacité mesuré pour cette prédiction (0→1). Mis à jour après feedback.
     public double   EfficiencyScore              { get; set; }
     public string   PredictedSoftMaxJson         { get; set; } = string.Empty;
     public double   PredictedPreventiveThreshold { get; set; }

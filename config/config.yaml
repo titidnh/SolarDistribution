@@ -16,6 +16,26 @@ polling:
   dry_run: true           # ← mettre false en production
   min_change_trigger_w: 10
 
+  # ── Buffer de sécurité surplus ────────────────────────────────────────────
+  # Puissance (W) soustraite du surplus brut AVANT distribution aux batteries.
+  #
+  # POURQUOI : la consommation maison fluctue en permanence. Sans buffer,
+  # envoyer 100 % du surplus aux batteries provoque un import momentané depuis
+  # le réseau à chaque pic de consommation (bouilloire, four, lave-linge...).
+  #
+  # COMMENT : surplus_effectif = surplus_brut − surplus_buffer_w
+  #   Les W du buffer restent "sur le fil" pour absorber les pics.
+  #
+  # EXEMPLE avec 200 W de buffer :
+  #   P1 = -912 W (export)  →  surplus brut = 912 W
+  #   distribué batteries   = 912 - 200 = 712 W
+  #   les 200 W restants couvrent les pics de consommation
+  #   → pas d'import réseau entre deux cycles
+  #
+  # Mettre à 0 pour désactiver (tout le surplus va aux batteries).
+  # Valeur recommandée : 150 à 250 W selon la variabilité de votre consommation.
+  surplus_buffer_w: 200
+
 # ── Météo Open-Meteo ────────────────────────────────────────────────────────────
 #
 # Les données météo (radiation solaire, nuages, prévisions 12h) sont rafraîchies
@@ -87,6 +107,47 @@ solar:
   # Pas nécessaire en mode p1_invert : la consommation est implicite dans P1.
   # consumption_entity: "sensor.home_consumption_power"
 
+  # ┌────────────────────────────────────────────────────────────────────────────┐
+  # │  PRÉVISIONS SOLAIRES HA — OPTIONNEL MAIS FORTEMENT RECOMMANDÉ             │
+  # ├────────────────────────────────────────────────────────────────────────────┤
+  # │  Ces deux entités exposent la production estimée (en Wh) pour AUJOURD'HUI │
+  # │  et DEMAIN, calculée par votre intégration Solcast ou Forecast.solar.      │
+  # │                                                                            │
+  # │  POURQUOI C'EST PRÉCIEUX :                                                 │
+  # │    Open-Meteo donne le rayonnement générique W/m² pour votre localisation. │
+  # │    Solcast/Forecast.solar connaît VOTRE installation :                     │
+  # │      → orientation & inclinaison de vos panneaux                          │
+  # │      → surface installée                                                   │
+  # │      → masques et ombrages spécifiques                                    │
+  # │      → rendement réel de vos modules                                      │
+  # │    Résultat : 30 à 50% plus précis que le calcul générique.               │
+  # │                                                                            │
+  # │  CE QUE CA AMÉLIORE :                                                      │
+  # │    • Décision de charge réseau : si aujourd'hui prévision > capacité       │
+  # │      batterie → pas besoin de charger depuis le réseau cette nuit          │
+  # │    • Calcul adaptatif (ComputeAdaptiveGridChargeW) : l'énergie solaire     │
+  # │      attendue est déduite avec précision → puissance réseau exacte        │
+  # │    • ML features directes (ML-8) : le modèle apprend sur vos vraies       │
+  # │      données de production → SoftMax et seuil préventif optimisés         │
+  # │      pour VOTRE installation spécifiquement                               │
+  # │    • FeedbackEvaluator : labels d'entraînement enrichis selon le          │
+  # │      résultat réel vs prévision HA                                         │
+  # │                                                                            │
+  # │  INTÉGRATIONS COMPATIBLES :                                                │
+  # │    Solcast :        sensor.solcast_pv_forecast_forecast_today              │
+  # │                     sensor.solcast_pv_forecast_forecast_tomorrow           │
+  # │    Forecast.solar : sensor.energy_production_today                         │
+  # │                     sensor.energy_production_tomorrow                      │
+  # │    SolarEdge :      sensor.solaredge_estimated_power_today                 │
+  # │    Onduleur HA :    Chercher "Production estimée" dans Outils → États      │
+  # └────────────────────────────────────────────────────────────────────────────┘
+
+  # Production solaire estimée AUJOURD'HUI (Wh) — décommenter et adapter
+  # forecast_today_entity: "sensor.solcast_pv_forecast_forecast_today"
+
+  # Production solaire estimée DEMAIN (Wh) — décommenter et adapter
+  # forecast_tomorrow_entity: "sensor.solcast_pv_forecast_forecast_tomorrow"
+
 # ── Batteries ──────────────────────────────────────────────────────────────────
 batteries:
 
@@ -103,9 +164,39 @@ batteries:
     soft_max_percent: 80  # Cible normale (ajustée dynamiquement par ML)
     hard_max_percent: 100 # Plafond absolu
 
+    # Puissance de maintien (W) envoyée quand la batterie a atteint sa cible.
+    # Au lieu d'envoyer 0 W — ce qui peut provoquer un cycling on/off du BMS —
+    # on maintient cette consigne symbolique pour garder le BMS en mode charge.
+    # Absorbe aussi les micro-surplus résiduels (bruit du compteur P1).
+    # Défaut : 100 W. Mettre à 0 pour comportement standard (coupe à la cible).
+    idle_charge_w: 100
+
     entities:
       soc: "sensor.battery_main_state_of_charge"
       charge_power: "number.battery_main_charge_power"
+
+      # ── Puissance de charge réelle actuelle (OPTIONNEL — FORTEMENT RECOMMANDÉ) ──
+      #
+      # Entité HA exposant la puissance mesurée actuellement par la batterie (W).
+      #
+      # POURQUOI C'EST IMPORTANT :
+      #   Le surplus HA (P1 ou sensor) est déjà NET de ce que les batteries
+      #   consomment en ce moment. Sans cette entité, le Worker sous-estime
+      #   le surplus réel disponible.
+      #
+      #   Exemple : batteries chargent à 200W + 200W = 400W, P1 = -912W
+      #     Sans correction → order 912W  → gain réel = 912W (correct apparent)
+      #     MAIS les batteries recevront  → 912W au lieu de 1312W théoriques
+      #     Avec correction → surplus_réel = 912 + 400 = 1312W → order 1312W ✓
+      #
+      # EXEMPLES D'ENTITÉS selon matériel :
+      #   EcoFlow Delta via MQTT : sensor.delta3_bureau_ac_charge_power_w
+      #   Victron MPPT            : sensor.victron_battery_charge_power
+      #   Solis / SolarEdge       : sensor.inverter_battery_charge_power
+      #   Générique               : Chercher "charge power" dans HA → États
+      #
+      # current_charge_power_entity: "sensor.battery_main_charge_power_w"
+      # current_charge_power_multiplier: 1.0   # -1.0 si la valeur est négative en charge
 
       # OPTIONNEL — puissance max de recharge lue dynamiquement depuis HA.
       # Écrase max_charge_rate_w si disponible. Utile si le BMS ajuste la limite
@@ -192,6 +283,7 @@ batteries:
     min_percent: 20
     soft_max_percent: 80
     hard_max_percent: 100
+    idle_charge_w: 100     # Puissance de maintien quand la cible est atteinte (défaut 100 W)
 
     entities:
       soc: "sensor.battery_secondary_state_of_charge"
@@ -199,6 +291,8 @@ batteries:
       max_rate_read_multiplier: 1.0
       value_multiplier: 1.0
       value_unit: "W"
+      # current_charge_power_entity: "sensor.battery_secondary_charge_power_w"
+      # current_charge_power_multiplier: 1.0
 
       # ── Recharge réseau d'urgence (OPTIONNEL) ──────────────────────────────
       #

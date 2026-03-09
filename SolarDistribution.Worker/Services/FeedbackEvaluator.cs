@@ -155,8 +155,16 @@ public class FeedbackEvaluator
         double composite        = energyEfficiency * 0.6 + availability * 0.4;
 
         // ── Calcul des labels réels pour l'entraînement ML ────────────────────
-        double optimalSoftMax    = ComputeObservedOptimalSoftMax(session, observedSocs, availability);
-        double optimalPreventive = ComputeObservedOptimalPreventive(session, observedSocs);
+        // IMPORTANT : les sessions urgence, HC et avec prévisions HA ont des
+        // dynamiques différentes. On les traite séparément pour des labels précis.
+        bool wasEmergency  = session.HadEmergencyGridCharge;
+        bool wasOffPeak    = session.WasGridChargeFavorable;
+        bool hasHaForecast = session.ForecastTodayWh.HasValue || session.ForecastTomorrowWh.HasValue;
+
+        double optimalSoftMax    = ComputeObservedOptimalSoftMax(
+            session, observedSocs, availability, wasEmergency, wasOffPeak, hasHaForecast);
+        double optimalPreventive = ComputeObservedOptimalPreventive(
+            session, observedSocs, wasEmergency, hasHaForecast);
 
         // Avertissement si des lectures ont partiellement échoué
         string? invalidReason = anyReadFailed
@@ -234,65 +242,119 @@ public class FeedbackEvaluator
     // ── Calcul ObservedOptimalSoftMax ─────────────────────────────────────────
 
     /// <summary>
-    /// SoftMax optimal déduit de l'observation réelle.
+    /// SoftMax optimal déduit de l'observation réelle, selon le contexte de la session.
     ///
-    /// Logique :
-    ///   - Les batteries sont trop basses (AvailabilityScore faible) après N heures
-    ///     → on aurait dû viser plus haut → SoftMax = SoftMax_utilisé + correction
+    /// SESSIONS URGENCE (wasEmergency = true) :
+    ///   La batterie était en crise. Le vrai signal pour le ML est : quel SoftMax HC
+    ///   aurait permis d'avoir assez de réserve pour éviter cette urgence ?
+    ///   → Correction plus agressive (×1.5) pour forcer le ML à apprendre à viser
+    ///     plus haut en HC afin d'avoir de la marge face aux situations critiques.
+    ///   → Ces sessions enrichissent le ML sans polluer les labels HC normaux :
+    ///     le ML apprend la corrélation "urgence passée → viser SoftMax plus haut".
     ///
-    ///   - Les batteries sont restées inutilement hautes (>> SoftMax) et il y avait
-    ///     encore de la production → on aurait pu charger moins vite → légère réduction
+    /// SESSIONS HC NORMALES (wasOffPeak = true) :
+    ///   Ajustement standard selon le résultat observé N heures après.
     ///
-    ///   - Tout s'est bien passé → on garde le SoftMax utilisé comme label optimal
+    /// SESSIONS SANS CONTEXTE :
+    ///   Correction atténuée (×0.5) — signal moins fiable.
     /// </summary>
     private double ComputeObservedOptimalSoftMax(
         DistributionSession session,
         Dictionary<int, double> observedSocs,
-        double availabilityScore)
+        double availabilityScore,
+        bool wasEmergency,
+        bool wasOffPeak,
+        bool hasHaForecast)
     {
-        // SoftMax qui a été réellement appliqué lors de la session
         double appliedSoftMax = session.BatterySnapshots.Any()
             ? session.BatterySnapshots.Average(b => b.SoftMaxPercent)
             : 80.0;
 
         double avgSocNow = observedSocs.Values.DefaultIfEmpty(50).Average();
 
-        // Cas 1 : batteries trop basses → on aurait dû viser plus haut
+        if (wasEmergency)
+        {
+            // Session urgence → signal fort : le ML doit viser plus haut en HC
+            // pour constituer une réserve suffisante avant la prochaine crise.
+            if (availabilityScore < 0.8)
+            {
+                double penalty    = (0.8 - availabilityScore) / 0.8;
+                double correction = penalty * _config.Ml.FeedbackSoftmaxCorrectionFactor * 1.5;
+                return Math.Clamp(appliedSoftMax + correction, 65, 95);
+            }
+            // Urgence résolue, batterie remontée → le SoftMax HC était suffisant
+            return Math.Clamp(appliedSoftMax, 65, 95);
+        }
+
+        if (wasOffPeak)
+        {
+            // HC normale : ajustement standard
+            if (availabilityScore < 0.7)
+            {
+                double penalty    = (0.7 - availabilityScore) / 0.7;
+                double correction = penalty * _config.Ml.FeedbackSoftmaxCorrectionFactor;
+                return Math.Clamp(appliedSoftMax + correction, 60, 95);
+            }
+            // Batteries trop pleines et surplus non absorbé → réduction légère
+            if (avgSocNow > appliedSoftMax + 5 && session.UnusedSurplusW > 0)
+            {
+                double reduction = _config.Ml.FeedbackSoftmaxReduction;
+                // Si on avait une prévision HA qui annonçait une forte production demain,
+                // et que les batteries sont effectivement restées trop pleines → signal
+                // plus fort : le ML doit vraiment apprendre à réduire le SoftMax nocturne
+                // quand demain est ensoleillé (laisser de la place pour l'autoconsommation).
+                if (hasHaForecast && session.ForecastTomorrowWh.HasValue
+                    && session.ForecastTomorrowWh.Value > 0)
+                {
+                    double totalCap = session.BatterySnapshots.Sum(b => b.CapacityWh);
+                    double tomorrowRatio = totalCap > 0
+                        ? session.ForecastTomorrowWh.Value / totalCap : 0;
+                    // Si demain > 80% capacité batteries : réduction doublée
+                    if (tomorrowRatio > 0.8)
+                        reduction *= 1.5;
+                }
+                return Math.Clamp(appliedSoftMax - reduction, 60, 95);
+            }
+
+            return Math.Clamp(appliedSoftMax, 60, 95);
+        }
+
+        // Session sans contexte tarifaire — signal atténué
         if (availabilityScore < 0.7)
         {
-            // ML-3 : correction proportionnelle à la sévérité, facteur configurable
-            double penalty = (0.7 - availabilityScore) / 0.7; // 0→1
-            double correction = penalty * _config.Ml.FeedbackSoftmaxCorrectionFactor;
+            double penalty    = (0.7 - availabilityScore) / 0.7;
+            double correction = penalty * _config.Ml.FeedbackSoftmaxCorrectionFactor * 0.5;
             return Math.Clamp(appliedSoftMax + correction, 60, 95);
         }
 
-        // Cas 2 : batteries inutilement hautes et pas de pénurie
-        // (le surplus n'a pas pu être absorbé → batteries déjà trop pleines)
+        // Batteries inutilement hautes même sans contexte HC → réduction atténuée
         if (avgSocNow > appliedSoftMax + 5 && session.UnusedSurplusW > 0)
         {
-            // ML-3 : réduction configurable
-            return Math.Clamp(appliedSoftMax - _config.Ml.FeedbackSoftmaxReduction, 60, 95);
+            double reduction = _config.Ml.FeedbackSoftmaxReduction * 0.5;
+            return Math.Clamp(appliedSoftMax - reduction, 60, 95);
         }
 
-        // Cas 3 : équilibre → le SoftMax appliqué était bon
         return Math.Clamp(appliedSoftMax, 60, 95);
     }
 
     // ── Calcul ObservedOptimalPreventive ──────────────────────────────────────
 
     /// <summary>
-    /// Seuil préventif optimal déduit de l'observation.
+    /// Seuil préventif optimal déduit de l'observation, selon le contexte.
     ///
-    /// Logique :
-    ///   - Une batterie est tombée sous MinPercent → le seuil était trop bas,
-    ///     on aurait dû garder davantage en réserve → PreventiveThreshold + correction
+    /// SESSIONS URGENCE :
+    ///   Le déclenchement d'urgence EST la preuve que le seuil préventif était insuffisant.
+    ///   Le label idéal = SOC au moment du déclenchement + marge de sécurité.
+    ///   C'est un signal très fort et direct — le ML apprend exactement où placer la garde.
     ///
-    ///   - Les batteries n'ont jamais approché MinPercent → le seuil était adapté
-    ///     ou légèrement trop conservateur → maintenu ou réduit légèrement
+    /// SESSIONS NORMALES :
+    ///   Ajustement standard selon si une batterie est tombée sous MinPercent.
     /// </summary>
     private double ComputeObservedOptimalPreventive(
         DistributionSession session,
-        Dictionary<int, double> observedSocs)
+        Dictionary<int, double> observedSocs,
+        bool wasEmergency,
+        bool hasHaForecast)
     {
         double appliedMinPercent = session.BatterySnapshots.Any()
             ? session.BatterySnapshots.Average(b => b.MinPercent)
@@ -300,25 +362,58 @@ public class FeedbackEvaluator
 
         double minObservedSoc = observedSocs.Values.DefaultIfEmpty(50).Min();
 
-        // Batterie tombée trop bas → augmenter le seuil préventif
+        if (wasEmergency)
+        {
+            // SOC de déclenchement = valeur la plus basse parmi les batteries urgentes
+            double triggerSoc = session.BatterySnapshots
+                .Where(b => b.IsEmergencyGridCharge)
+                .Select(b => b.CurrentPercentBefore)
+                .DefaultIfEmpty(appliedMinPercent)
+                .Min();
+
+            // Seuil préventif idéal = SOC de déclenchement + marge de sécurité configurable
+            double safetyMargin   = _config.Ml.FeedbackMaxPreventiveCorrection * 0.5;
+            double idealThreshold = triggerSoc + safetyMargin;
+
+            // Si la batterie est encore basse au feedback → renforcement supplémentaire
+            if (minObservedSoc < appliedMinPercent)
+            {
+                double shortfall  = appliedMinPercent - minObservedSoc;
+                idealThreshold   += shortfall * _config.Ml.FeedbackPreventiveFactor;
+            }
+
+            return Math.Clamp(idealThreshold, 15, 50);
+        }
+
+        // Session normale : batterie tombée trop bas → augmenter le seuil
         if (minObservedSoc < appliedMinPercent)
         {
-            double shortfall = appliedMinPercent - minObservedSoc;
-            // ML-3 : facteur et plafond de correction configurables
+            double shortfall  = appliedMinPercent - minObservedSoc;
             double correction = Math.Min(
                 shortfall * _config.Ml.FeedbackPreventiveFactor,
                 _config.Ml.FeedbackMaxPreventiveCorrection);
+
+            // Si on avait une prévision HA pour aujourd'hui ET que les batteries sont quand
+            // même tombées bas → la prévision n'a pas suffi à compenser.
+            // Signal : garder un seuil préventif plus élevé même quand la prévision est bonne.
+            // Le ML apprend à ne pas baisser sa garde même avec une bonne météo prévue.
+            if (hasHaForecast && session.ForecastTodayWh.HasValue)
+            {
+                double totalCap = session.BatterySnapshots.Sum(b => b.CapacityWh);
+                double todayRatio = totalCap > 0 ? session.ForecastTodayWh.Value / totalCap : 0;
+                // Journée bien ensoleillée prévue mais batteries quand même basses
+                // → signal paradoxal → correction plus conservatrice
+                if (todayRatio > 0.5)
+                    correction = Math.Min(correction * 1.25, _config.Ml.FeedbackMaxPreventiveCorrection);
+            }
+
             return Math.Clamp(appliedMinPercent + correction, 15, 50);
         }
 
-        // Batterie restée très au-dessus → on était peut-être trop conservateur
+        // Batterie restée très au-dessus → seuil trop conservateur, réduction légère
         if (minObservedSoc > appliedMinPercent + 20)
-        {
-            // ML-3 : réduction configurable
             return Math.Clamp(appliedMinPercent - _config.Ml.FeedbackPreventiveReduction, 15, 50);
-        }
 
-        // Équilibre → seuil correct
         return Math.Clamp(appliedMinPercent, 15, 50);
     }
 }

@@ -16,32 +16,31 @@ public class Battery
 
     /// <summary>
     /// Puissance max autorisée depuis le réseau pour cette batterie (W).
-    ///   0  → charge réseau interdite (mode normal, surplus solaire uniquement).
-    ///   >0 → charge réseau permise (heures creuses à tarif favorable, ou urgence).
-    /// Calculé par SmartDistributionService en fonction du contexte tarifaire et de l'urgence.
+    ///   0  → charge réseau interdite (surplus solaire uniquement).
+    ///   >0 → charge réseau permise (heures creuses ou urgence SOC).
+    /// Calculé par SmartDistributionService selon le contexte tarifaire.
     /// </summary>
     public double GridChargeAllowedW { get; set; } = 0;
 
     /// <summary>
-    /// Cible de SOC pour la recharge réseau en urgence (%).
-    /// Quand GridChargeAllowedW > 0 pour raison d'urgence, la Pass 3 charge
-    /// jusqu'à cette cible au lieu de SoftMaxPercent.
-    /// null = utilise SoftMaxPercent.
+    /// Puissance de maintien envoyée à la batterie une fois sa cible atteinte (W).
+    ///
+    /// Quand la batterie a absorbé son surplus (SoftMax ou HardMax atteint),
+    /// au lieu d'envoyer 0 W, on envoie IdleChargeW pour :
+    ///   • Éviter le cycling on/off de certains BMS
+    ///   • Indiquer à l'onduleur que la charge est toujours autorisée
+    ///   • Absorber les micro-surplus résiduels (bruit du compteur P1)
+    ///
+    /// Défaut 0 W (comportement standard : coupe à la cible).
+    /// Configuré via BatteryConfig.IdleChargeW (défaut config = 100 W).
     /// </summary>
+    public double IdleChargeW { get; set; } = 0;
+
     public double? EmergencyGridChargeTargetPercent { get; set; }
-
-    /// <summary>
-    /// Seuil d'urgence (%) provenant de la config — propagé pour BuildReason et logs.
-    /// null = pas de recharge réseau d'urgence configurée.
-    /// </summary>
-    public double? EmergencyGridChargeBelowPercent { get; set; }
-
-    /// <summary>True si la recharge réseau de cette batterie est déclenchée par urgence SOC.</summary>
-    public bool IsEmergencyGridCharge { get; set; } = false;
+    public double? EmergencyGridChargeBelowPercent  { get; set; }
+    public bool    IsEmergencyGridCharge            { get; set; } = false;
 
     // ── Computed ──────────────────────────────────────────────────────────────
-
-    /// <summary>Si SOC < MinPercent → URGENT → priorité 0, passe avant tout.</summary>
     public int  EffectivePriority => CurrentPercent < MinPercent ? 0 : Priority;
     public bool IsUrgent          => CurrentPercent < MinPercent;
 
