@@ -3,33 +3,33 @@ namespace SolarDistribution.Worker.Configuration;
 
 public class SolarConfig
 {
-    public HomeAssistantConfig  HomeAssistant { get; set; } = new();
-    public PollingConfig        Polling       { get; set; } = new();
-    public LocationConfig       Location      { get; set; } = new();
-    public SolarConfig_Solar    Solar         { get; set; } = new();
-    public List<BatteryConfig>  Batteries     { get; set; } = new List<BatteryConfig>();
-    public TariffConfig         Tariff        { get; set; } = new();
-    public MariaDbConfig        Database      { get; set; } = new();
-    public MlConfig             Ml            { get; set; } = new();
-    public WeatherConfig        Weather       { get; set; } = new();
-    public LoggingConfig        Logging       { get; set; } = new();
+    public HomeAssistantConfig HomeAssistant { get; set; } = new();
+    public PollingConfig Polling { get; set; } = new();
+    public LocationConfig Location { get; set; } = new();
+    public SolarConfig_Solar Solar { get; set; } = new();
+    public List<BatteryConfig> Batteries { get; set; } = new List<BatteryConfig>();
+    public TariffConfig Tariff { get; set; } = new();
+    public MariaDbConfig Database { get; set; } = new();
+    public MlConfig Ml { get; set; } = new();
+    public WeatherConfig Weather { get; set; } = new();
+    public LoggingConfig Logging { get; set; } = new();
 }
 
 public class WeatherConfig { public int RefreshIntervalMinutes { get; set; } = 15; }
 
 public class HomeAssistantConfig
 {
-    public string Url            { get; set; } = string.Empty;
-    public string Token          { get; set; } = string.Empty;
-    public int    TimeoutSeconds { get; set; } = 10;
-    public int    RetryCount     { get; set; } = 3;
+    public string Url { get; set; } = string.Empty;
+    public string Token { get; set; } = string.Empty;
+    public int TimeoutSeconds { get; set; } = 10;
+    public int RetryCount { get; set; } = 3;
 }
 
 public class PollingConfig
 {
-    public int    IntervalSeconds    { get; set; } = 60;
-    public bool   DryRun             { get; set; } = false;
-    public double MinChangeTriggerW  { get; set; } = 10;
+    public int IntervalSeconds { get; set; } = 60;
+    public bool DryRun { get; set; } = false;
+    public double MinChangeTriggerW { get; set; } = 10;
 
     /// <summary>
     /// Buffer de sécurité en W soustrait du surplus avant distribution aux batteries.
@@ -51,19 +51,43 @@ public class PollingConfig
     /// Mettre à 0 pour désactiver (toute la puissance va aux batteries).
     /// </summary>
     public double SurplusBufferW { get; set; } = 200;
+
+    /// <summary>
+    /// Seuil EN DESSOUS duquel la charge solaire est STOPPÉE (Fix Bug #3 — anti-oscillation).
+    ///
+    /// Logique double-seuil (hystérésis de surplus) :
+    ///   · Démarrage : surplus > SurplusBufferW      (200 W)
+    ///   · Arrêt     : surplus &lt; SurplusStopBufferW  (80 W par défaut)
+    ///   · Zone [80W–200W] : on maintient l'état précédent (ni démarrage, ni arrêt)
+    ///
+    /// Évite les ON/OFF toutes les 5 min quand le soleil fluctue autour du seuil
+    /// de démarrage (passages nuageux ponctuels).
+    ///
+    /// Doit être &lt; SurplusBufferW. Mettre à 0 pour désactiver (comportement original).
+    /// </summary>
+    public double SurplusStopBufferW { get; set; } = 80;
+
+    /// <summary>
+    /// Nombre minimum de cycles consécutifs en charge avant d'autoriser un arrêt.
+    ///
+    /// Exemple : 3 cycles × 300 s = 15 min minimum de charge avant arrêt possible.
+    /// Protège contre les faux-négatifs de surplus sur une rafale nuageuse de 5 min.
+    /// Mettre à 0 pour désactiver.
+    /// </summary>
+    public int MinChargeDurationCycles { get; set; } = 3;
 }
 
 public class LocationConfig
 {
-    public double Latitude  { get; set; } = 50.85;
+    public double Latitude { get; set; } = 50.85;
     public double Longitude { get; set; } = 4.35;
 }
 
 public class SolarConfig_Solar
 {
-    public string  SurplusMode       { get; set; } = "direct";
-    public string  SurplusEntity     { get; set; } = string.Empty;
-    public string? ProductionEntity  { get; set; }
+    public string SurplusMode { get; set; } = "direct";
+    public string SurplusEntity { get; set; } = string.Empty;
+    public string? ProductionEntity { get; set; }
     public string? ConsumptionEntity { get; set; }
 
     /// <summary>
@@ -71,7 +95,7 @@ public class SolarConfig_Solar
     /// Entité HA : production solaire estimée AUJOURD'HUI (Wh).
     /// Ex: "sensor.solcast_pv_forecast_forecast_today"
     /// </summary>
-    public string? ForecastTodayEntity    { get; set; }
+    public string? ForecastTodayEntity { get; set; }
 
     /// <summary>
     /// [OPTIONNEL — FORTEMENT RECOMMANDÉ]
@@ -83,12 +107,12 @@ public class SolarConfig_Solar
 
 public class BatteryConfig
 {
-    public int    Id             { get; set; }
-    public string Name           { get; set; } = string.Empty;
-    public int    Priority       { get; set; } = 1;
-    public double CapacityWh     { get; set; }
+    public int Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public int Priority { get; set; } = 1;
+    public double CapacityWh { get; set; }
     public double MaxChargeRateW { get; set; }
-    public double MinPercent     { get; set; } = 20;
+    public double MinPercent { get; set; } = 20;
     public double SoftMaxPercent { get; set; } = 80;
     public double HardMaxPercent { get; set; } = 100;
 
@@ -105,27 +129,39 @@ public class BatteryConfig
     /// Défaut : 100 W (override possible par batterie)
     /// Mettre à 0 pour comportement standard (coupe la charge à la cible).
     /// </summary>
-    public double IdleChargeW    { get; set; } = 100;
+    public double IdleChargeW { get; set; } = 100;
+
+    /// <summary>
+    /// Zone morte SOC (%) autour de la cible SoftMax pour la charge réseau HC (Fix Bug #1).
+    ///
+    /// Exemple : SoftMaxPercent=90, SocHysteresisPercent=2
+    ///   → recharge réseau autorisée seulement si SOC &lt; 88%
+    ///   → entre 88% et 90% : 0W réseau (auto-décharge EcoFlow acceptée dans cette zone)
+    ///   → SOC descend à 87.9% → recharge normale ≥ 100W
+    ///
+    /// Valeur recommandée : 2.0. Mettre à 0 pour désactiver.
+    /// </summary>
+    public double SocHysteresisPercent { get; set; } = 0.0;
 
     public BatteryEntitiesConfig Entities { get; set; } = new();
-    public double? EmergencyGridChargeBelowPercent   { get; set; }
-    public double? EmergencyGridChargeTargetPercent  { get; set; }
+    public double? EmergencyGridChargeBelowPercent { get; set; }
+    public double? EmergencyGridChargeTargetPercent { get; set; }
 }
 
 public class HaConditionalAction
 {
-    public string  Type     { get; set; } = "turn_on";
+    public string Type { get; set; } = "turn_on";
     public string? EntityId { get; set; }
-    public string? Domain   { get; set; }
-    public string? Service  { get; set; }
+    public string? Domain { get; set; }
+    public string? Service { get; set; }
     public Dictionary<string, object>? Data { get; set; }
-    public string? Label    { get; set; }
+    public string? Label { get; set; }
 }
 
 public class BatteryEntitiesConfig
 {
-    public string  Soc                    { get; set; } = string.Empty;
-    public string  ChargePower            { get; set; } = string.Empty;
+    public string Soc { get; set; } = string.Empty;
+    public string ChargePower { get; set; } = string.Empty;
 
     /// <summary>
     /// [OPTIONNEL — FORTEMENT RECOMMANDÉ]
@@ -154,14 +190,14 @@ public class BatteryEntitiesConfig
     /// Multiplicateur appliqué à la valeur lue depuis CurrentChargePowerEntity.
     /// Défaut 1.0 (W). Mettre -1.0 si la valeur est négative quand la batterie charge.
     /// </summary>
-    public double  CurrentChargePowerMultiplier { get; set; } = 1.0;
+    public double CurrentChargePowerMultiplier { get; set; } = 1.0;
 
-    public string? MaxChargeRateEntity    { get; set; }
-    public string? ChargeSwitch           { get; set; }
-    public double  ValueMultiplier        { get; set; } = 1.0;
-    public double  MaxRateReadMultiplier  { get; set; } = 1.0;
-    public string  ValueUnit              { get; set; } = "W";
-    public List<HaConditionalAction> ZeroWActions    { get; set; } = new();
+    public string? MaxChargeRateEntity { get; set; }
+    public string? ChargeSwitch { get; set; }
+    public double ValueMultiplier { get; set; } = 1.0;
+    public double MaxRateReadMultiplier { get; set; } = 1.0;
+    public string ValueUnit { get; set; } = "W";
+    public List<HaConditionalAction> ZeroWActions { get; set; } = new();
     public List<HaConditionalAction> NonZeroWActions { get; set; } = new();
 }
 
@@ -173,22 +209,22 @@ public class MariaDbConfig
 
 public class MlConfig
 {
-    public string ModelDirectory               { get; set; } = "/data/ml_models";
-    public double FeedbackDelayHours           { get; set; } = 4.0;
-    public double FeedbackCheckIntervalHours   { get; set; } = 1.0;
-    public string RetrainCron                  { get; set; } = "0 3 * * 0";
-    public int    MinFeedbackForRetrain        { get; set; } = 50;
-    public double FeedbackSoftmaxCorrectionFactor   { get; set; } = 15.0;
-    public double FeedbackSoftmaxReduction          { get; set; } = 5.0;
-    public double FeedbackPreventiveFactor          { get; set; } = 1.5;
-    public double FeedbackMaxPreventiveCorrection   { get; set; } = 20.0;
-    public double FeedbackPreventiveReduction       { get; set; } = 3.0;
-    public double DriftDetectionR2Threshold         { get; set; } = 0.15;
-    public int    DriftDetectionWindowSize          { get; set; } = 100;
+    public string ModelDirectory { get; set; } = "/data/ml_models";
+    public double FeedbackDelayHours { get; set; } = 4.0;
+    public double FeedbackCheckIntervalHours { get; set; } = 1.0;
+    public string RetrainCron { get; set; } = "0 3 * * 0";
+    public int MinFeedbackForRetrain { get; set; } = 50;
+    public double FeedbackSoftmaxCorrectionFactor { get; set; } = 15.0;
+    public double FeedbackSoftmaxReduction { get; set; } = 5.0;
+    public double FeedbackPreventiveFactor { get; set; } = 1.5;
+    public double FeedbackMaxPreventiveCorrection { get; set; } = 20.0;
+    public double FeedbackPreventiveReduction { get; set; } = 3.0;
+    public double DriftDetectionR2Threshold { get; set; } = 0.15;
+    public int DriftDetectionWindowSize { get; set; } = 100;
 }
 
 public class LoggingConfig
 {
-    public string  Level    { get; set; } = "Information";
+    public string Level { get; set; } = "Information";
     public string? FilePath { get; set; } = "/data/logs/solar-worker.log";
 }

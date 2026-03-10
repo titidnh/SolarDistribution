@@ -21,6 +21,13 @@ public class SolarWorker : BackgroundService
     private int _consecutiveHaErrors = 0;
     private const int MaxBackoffSeconds = 300;
 
+    // ── État anti-oscillation surplus (Fix Bug #3) ────────────────────────────
+    // Double seuil : on démarre la charge quand surplus > SurplusBufferW,
+    // et on ne la coupe que quand surplus < SurplusStopBufferW ET qu'on a fait
+    // au moins MinChargeDurationCycles cycles. Entre les deux seuils : état maintenu.
+    private bool _isChargingFromSurplus = false;
+    private int _consecutiveChargeCycles = 0;
+
     public SolarWorker(
         SolarConfig config,
         HomeAssistantDataReader reader,
@@ -44,21 +51,24 @@ public class SolarWorker : BackgroundService
         _logger.LogInformation("  HA URL         : {Url}", _config.HomeAssistant.Url);
         _logger.LogInformation("  Batteries      : {Count}", _config.Batteries.Count);
         _logger.LogInformation("  DryRun         : {DryRun}", _config.Polling.DryRun);
-        _logger.LogInformation("  SurplusBuffer  : {Buffer}W", _config.Polling.SurplusBufferW);
+        _logger.LogInformation("  SurplusBuffer  : {Start}W start / {Stop}W stop / {Min} cycles min",
+            _config.Polling.SurplusBufferW,
+            _config.Polling.SurplusStopBufferW,
+            _config.Polling.MinChargeDurationCycles);
 
         foreach (var b in _config.Batteries)
             _logger.LogInformation(
-                "  [{Name}] maxRate={Rate}W idle={Idle}W softMax={SoftMax}%",
-                b.Name, b.MaxChargeRateW, b.IdleChargeW, b.SoftMaxPercent);
+                "  [{Name}] maxRate={Rate}W idle={Idle}W softMax={SoftMax}% hysteresis={Hyst}%",
+                b.Name, b.MaxChargeRateW, b.IdleChargeW, b.SoftMaxPercent, b.SocHysteresisPercent);
 
         _logger.LogInformation("  ML Status      : {Status}",
             (await _mlService.GetStatusAsync(stoppingToken)).IsAvailable ? "available" : "training...");
 
-        bool haFcToday    = _config.Solar.ForecastTodayEntity    is not null;
+        bool haFcToday = _config.Solar.ForecastTodayEntity is not null;
         bool haFcTomorrow = _config.Solar.ForecastTomorrowEntity is not null;
         _logger.LogInformation(
             "  HA Forecasts   : today={Today}, tomorrow={Tomorrow}",
-            haFcToday    ? _config.Solar.ForecastTodayEntity    : "not configured",
+            haFcToday ? _config.Solar.ForecastTodayEntity : "not configured",
             haFcTomorrow ? _config.Solar.ForecastTomorrowEntity : "not configured");
 
         if (!haFcToday && !haFcTomorrow)
@@ -86,7 +96,7 @@ public class SolarWorker : BackgroundService
                 _logger.LogError(ex, "Unhandled error in cycle #{Count} — will retry", _consecutiveHaErrors);
             }
 
-            var elapsed     = DateTime.UtcNow - cycleStart;
+            var elapsed = DateTime.UtcNow - cycleStart;
             var baseInterval = TimeSpan.FromSeconds(_config.Polling.IntervalSeconds);
             var delay = _consecutiveHaErrors > 0
                 ? ComputeBackoff(_consecutiveHaErrors, baseInterval)
@@ -140,9 +150,14 @@ public class SolarWorker : BackgroundService
             .Where(r => r.CurrentChargeW.HasValue)
             .Sum(r => r.CurrentChargeW!.Value);
 
-        double rawSurplus       = snapshot.SurplusW;
+        double rawSurplus = snapshot.SurplusW;
         double correctedSurplus = rawSurplus + currentBatteriesChargeW;
-        double effectiveSurplus = Math.Max(0, correctedSurplus - _config.Polling.SurplusBufferW);
+
+        // ── Fix Bug #3 : double seuil anti-oscillation ─────────────────────────
+        // Remplace l'ancien : effectiveSurplus = Max(0, corrected - bufferW)
+        // qui causait des ON/OFF toutes les 5 min quand le soleil fluctue autour
+        // du seuil (ex: nuages passagers). Voir ComputeEffectiveSurplus().
+        double effectiveSurplus = ComputeEffectiveSurplus(correctedSurplus);
 
         if (currentBatteriesChargeW > 0)
             _logger.LogInformation(
@@ -159,12 +174,12 @@ public class SolarWorker : BackgroundService
         var wxSnapshot = _weatherCache.GetCurrent();
 
         var result = await _smartService.DistributeAsync(
-            surplusW:           effectiveSurplus,
-            batteries:          batteries,
-            latitude:           _config.Location.Latitude,
-            longitude:          _config.Location.Longitude,
-            weatherSnapshot:    wxSnapshot,
-            forecastTodayWh:    snapshot.ForecastTodayWh,
+            surplusW: effectiveSurplus,
+            batteries: batteries,
+            latitude: _config.Location.Latitude,
+            longitude: _config.Location.Longitude,
+            weatherSnapshot: wxSnapshot,
+            forecastTodayWh: snapshot.ForecastTodayWh,
             forecastTomorrowWh: snapshot.ForecastTomorrowWh,
             ct: ct);
 
@@ -215,19 +230,80 @@ public class SolarWorker : BackgroundService
 
             return new Battery
             {
-                Id             = bc.Id,
-                CapacityWh     = bc.CapacityWh,
+                Id = bc.Id,
+                CapacityWh = bc.CapacityWh,
                 MaxChargeRateW = effectiveMaxRate,
-                MinPercent     = bc.MinPercent,
+                MinPercent = bc.MinPercent,
                 SoftMaxPercent = bc.SoftMaxPercent,
                 HardMaxPercent = bc.HardMaxPercent,
                 CurrentPercent = reading.SocPercent,
-                Priority       = bc.Priority,
-                IdleChargeW    = bc.IdleChargeW,             // ← nouveau
-                EmergencyGridChargeBelowPercent  = bc.EmergencyGridChargeBelowPercent,
+                Priority = bc.Priority,
+                IdleChargeW = bc.IdleChargeW,
+                SocHysteresisPercent = bc.SocHysteresisPercent, // Fix Bug #1
+                EmergencyGridChargeBelowPercent = bc.EmergencyGridChargeBelowPercent,
                 EmergencyGridChargeTargetPercent = bc.EmergencyGridChargeTargetPercent,
             };
         }).ToList();
+    }
+
+    /// <summary>
+    /// Calcule le surplus effectif à distribuer avec hystérésis double-seuil (Fix Bug #3).
+    ///
+    /// Transitions :
+    ///   Idle → Charging   : correctedSurplus &gt; SurplusBufferW (200W)
+    ///   Charging → Idle   : correctedSurplus &lt; SurplusStopBufferW (80W)
+    ///                       ET _consecutiveChargeCycles ≥ MinChargeDurationCycles
+    ///   Zone [80W–200W]   : état maintenu (pas de transition)
+    ///
+    /// Résultat : plus d'ON/OFF toutes les 5 min lors des passages nuageux.
+    /// </summary>
+    private double ComputeEffectiveSurplus(double correctedSurplus)
+    {
+        double startThreshold = _config.Polling.SurplusBufferW;
+        double stopThreshold = _config.Polling.SurplusStopBufferW;
+
+        // Config invalide → fallback comportement original
+        if (stopThreshold >= startThreshold)
+            return Math.Max(0, correctedSurplus - startThreshold);
+
+        if (!_isChargingFromSurplus)
+        {
+            if (correctedSurplus > startThreshold)
+            {
+                _isChargingFromSurplus = true;
+                _consecutiveChargeCycles = 1;
+                _logger.LogInformation(
+                    "⚡ Solar charge STARTED — surplus {S:F0}W > start threshold {T:F0}W",
+                    correctedSurplus, startThreshold);
+            }
+            return 0;
+        }
+        else
+        {
+            _consecutiveChargeCycles++;
+
+            bool belowStop = correctedSurplus < stopThreshold;
+            bool minDuration = _consecutiveChargeCycles >= _config.Polling.MinChargeDurationCycles;
+            bool durationDisabled = _config.Polling.MinChargeDurationCycles <= 0;
+
+            if (belowStop && (minDuration || durationDisabled))
+            {
+                _logger.LogInformation(
+                    "🔌 Solar charge STOPPED — surplus {S:F0}W < stop threshold {T:F0}W (after {C} cycles)",
+                    correctedSurplus, stopThreshold, _consecutiveChargeCycles);
+                _isChargingFromSurplus = false;
+                _consecutiveChargeCycles = 0;
+                return 0;
+            }
+
+            if (belowStop)
+                _logger.LogDebug(
+                    "Solar charge maintained — surplus {S:F0}W below stop threshold but min duration " +
+                    "not reached ({C}/{Min} cycles)",
+                    correctedSurplus, _consecutiveChargeCycles, _config.Polling.MinChargeDurationCycles);
+
+            return Math.Max(0, correctedSurplus - startThreshold);
+        }
     }
 
     private static TimeSpan ComputeBackoff(int errorCount, TimeSpan baseInterval)

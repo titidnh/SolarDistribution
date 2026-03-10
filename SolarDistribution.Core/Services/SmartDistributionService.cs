@@ -200,6 +200,9 @@ public class SmartDistributionService
                 HardMaxPercent = b.HardMaxPercent,
                 CurrentPercent = b.CurrentPercent,
                 Priority = b.Priority,
+                IdleChargeW = b.IdleChargeW,
+                // Propagation nécessaire pour que ComputeAdaptiveGridChargeW accède à l'hystérésis
+                SocHysteresisPercent = b.SocHysteresisPercent,
                 GridChargeAllowedW = gridAllowedW,
                 EmergencyGridChargeBelowPercent = b.EmergencyGridChargeBelowPercent,
                 EmergencyGridChargeTargetPercent = isEmergency ? b.EmergencyGridChargeTargetPercent : null,
@@ -242,8 +245,23 @@ public class SmartDistributionService
         if (solarAfterSlot && hoursRemaining <= urgencyThresholdHours * 2)
             return b.MaxChargeRateW;
 
-        if (b.CurrentPercent >= softMaxPercent)
+        // ── FIX Bug #1 : Hystérésis SOC ──────────────────────────────────────
+        // Problème original : quand le SOC atteint 90% puis redescend à 89.9%
+        // (auto-décharge EcoFlow self-powered), le calcul produisait energyNeeded=1Wh
+        // → targetW=0.18W → clampé à minGridChargeW=100W, MAIS DistributeGridToGroup
+        // fait Math.Min(spaceToTarget=1Wh, gridLeft=100W) → commande finale = 1W.
+        // Résultat : 50+ micro-commandes ignorées par l'EcoFlow mais comptées comme
+        // cycles BMS.
+        //
+        // Avec SocHysteresisPercent = 2% :
+        //   · Seuil effectif = softMax - hysteresis = 90% - 2% = 88%
+        //   · Entre 88% et 90% → return 0  (zone morte, auto-décharge acceptée)
+        //   · SOC descend à 87.9% → energyNeeded = ~21Wh → commande ≥ 100W (efficace)
+        //   · SocHysteresisPercent = 0 → comportement identique à l'original
+        double rechargeThreshold = softMaxPercent - b.SocHysteresisPercent;
+        if (b.CurrentPercent >= rechargeThreshold)
             return 0;
+        // ─────────────────────────────────────────────────────────────────────
 
         double energyNeededWh = (softMaxPercent - b.CurrentPercent) / 100.0 * b.CapacityWh;
 
@@ -460,14 +478,16 @@ public class SmartDistributionService
                 ctx.ActiveSlotName, ctx.CurrentPricePerKwh, slotInfo, solarInfo, fcInfo, eveningBoostInfo,
                 surplusW, ctx.MaxSavingsPerKwh);
         else if (ctx.IsFavorableForGrid)
+            // ── FIX Bug #2 : log explicite du motif de blocage ───────────────
+            // Avant : le motif passait silencieusement en LogDebug — invisible en prod.
+            // Maintenant : LogInformation avec la raison précise, visible dans les logs.
             _logger.LogInformation(
-                "Tariff [{Slot}] {Price:F3}€/kWh — favorable but skipped (autoconsumption covers){SolarInfo}{SlotInfo}{HaBlock}",
-                ctx.ActiveSlotName, ctx.CurrentPricePerKwh, solarInfo, slotInfo, haBlockInfo);
+                "Tariff [{Slot}] {Price:F3}€/kWh — GRID CHARGE BLOCKED{HaBlock}{SlotInfo}{SolarInfo}{FcInfo}",
+                ctx.ActiveSlotName, ctx.CurrentPricePerKwh, haBlockInfo, slotInfo, solarInfo, fcInfo);
         else
-            _logger.LogDebug(
-                "Tariff [{Slot}] {Price:F3}€/kWh — grid charge blocked ({Reason}){SlotInfo}",
-                ctx.ActiveSlotName, ctx.CurrentPricePerKwh,
-                ctx.SolarExpectedSoon ? "solar expected soon" : "price above threshold", slotInfo);
+            _logger.LogInformation(
+                "Tariff [{Slot}] {Price:F3}€/kWh — HP grid charge not favorable{SlotInfo}",
+                ctx.ActiveSlotName, ctx.CurrentPricePerKwh, slotInfo);
     }
 }
 
