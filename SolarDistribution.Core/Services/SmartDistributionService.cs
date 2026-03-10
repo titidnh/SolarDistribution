@@ -130,6 +130,13 @@ public class SmartDistributionService
     ///   1. AUTOCONSOMMATION : soleil arrive avant fin du slot ET batterie peut tenir → 0W réseau
     ///   2. URGENCE SOC : SOC critique + soleil absent → MaxChargeRateW (indépendant du tarif)
     ///   3. CHARGE INTELLIGENTE HC : puissance adaptative calculée par ComputeAdaptiveGridChargeW
+    ///
+    /// FIX Bug #4 — IdleChargeW sans surplus solaire :
+    ///   IdleChargeW est mis à 0 dès que surplusW = 0, qu'on soit en HP ou HC.
+    ///   Son rôle est d'absorber les micro-surplus résiduels du compteur P1 (bruit +-50W)
+    ///   quand la batterie est déjà à sa cible — pas de tirer du réseau.
+    ///   En HC sans surplus, c'est ComputeAdaptiveGridChargeW qui décide si une charge
+    ///   réseau est justifiée (météo, forecast J+1, heures restantes dans le slot).
     /// </summary>
     private static IList<Battery> Apply(
         IList<Battery> src,
@@ -189,14 +196,18 @@ public class SmartDistributionService
                 gridAllowedW = ComputeAdaptiveGridChargeW(
                     b, softMax, tariff, minGridChargeW, urgencyThresholdHours);
 
-            // ── FIX Bug IdleChargeW en HP ─────────────────────────────────────
-            // IdleChargeW n'est autorisé que si :
-            //   · Le tarif est favorable (HC/creuse) → charge réseau de maintien acceptable, OU
-            //   · Il y a un surplus solaire réel (surplus > 0) → les watts viennent du solaire
-            // En HP sans surplus, IdleChargeW=0 pour ne pas consommer du réseau coûteux.
-            double effectiveIdleChargeW = (tariff.IsFavorableForGrid || surplusW > 0)
-                ? b.IdleChargeW
-                : 0;
+            // ── FIX Bug #4 — IdleChargeW : surplus solaire uniquement ────────────
+            // IdleChargeW a une seule vocation : absorber les micro-surplus résiduels
+            // du compteur P1 quand la batterie est à sa cible (bruit ±50W, cycling BMS).
+            // Il ne doit JAMAIS tirer du réseau, que ce soit en HP ou en HC.
+            //
+            // En HC sans surplus, c'est ComputeAdaptiveGridChargeW qui décide si on
+            // charge (selon météo, forecast J+1, heures restantes dans le slot).
+            // Court-circuiter cette logique avec IdleChargeW en HC serait incorrect :
+            // on chargerait même quand le forecast prédit assez de solaire demain.
+            //
+            // Règle : IdleChargeW > 0 seulement si surplus solaire réel > 0.
+            double effectiveIdleChargeW = surplusW > 0 ? b.IdleChargeW : 0;
 
             return new Battery
             {
