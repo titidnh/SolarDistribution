@@ -67,7 +67,7 @@ public class SmartDistributionService
 
         if (mlReco is not null)
         {
-            effective = Apply(batteries, mlReco, tariffCtx);
+            effective = Apply(batteries, mlReco, tariffCtx, surplusW);
             decisionEngine = mlReco.ConfidenceScore >= 0.75 ? "ML" : "ML-Fallback";
             _logger.LogInformation(
                 "ML: softMax={SoftMax:F1}%, preventive={Prev:F1}%, confidence={Conf:P0} [{Engine}]",
@@ -77,7 +77,7 @@ public class SmartDistributionService
         }
         else
         {
-            effective = Apply(batteries, null, tariffCtx);
+            effective = Apply(batteries, null, tariffCtx, surplusW);
         }
 
         // ── 5. Log urgences + charge adaptative ──────────────────────────────
@@ -135,6 +135,7 @@ public class SmartDistributionService
         IList<Battery> src,
         MLRecommendation? reco,
         TariffContext tariff,
+        double surplusW,
         double minGridChargeW = 100.0,
         double urgencyThresholdHours = 1.0)
     {
@@ -188,6 +189,15 @@ public class SmartDistributionService
                 gridAllowedW = ComputeAdaptiveGridChargeW(
                     b, softMax, tariff, minGridChargeW, urgencyThresholdHours);
 
+            // ── FIX Bug IdleChargeW en HP ─────────────────────────────────────
+            // IdleChargeW n'est autorisé que si :
+            //   · Le tarif est favorable (HC/creuse) → charge réseau de maintien acceptable, OU
+            //   · Il y a un surplus solaire réel (surplus > 0) → les watts viennent du solaire
+            // En HP sans surplus, IdleChargeW=0 pour ne pas consommer du réseau coûteux.
+            double effectiveIdleChargeW = (tariff.IsFavorableForGrid || surplusW > 0)
+                ? b.IdleChargeW
+                : 0;
+
             return new Battery
             {
                 Id = b.Id,
@@ -200,7 +210,7 @@ public class SmartDistributionService
                 HardMaxPercent = b.HardMaxPercent,
                 CurrentPercent = b.CurrentPercent,
                 Priority = b.Priority,
-                IdleChargeW = b.IdleChargeW,
+                IdleChargeW = effectiveIdleChargeW,
                 // Propagation nécessaire pour que ComputeAdaptiveGridChargeW accède à l'hystérésis
                 SocHysteresisPercent = b.SocHysteresisPercent,
                 GridChargeAllowedW = gridAllowedW,

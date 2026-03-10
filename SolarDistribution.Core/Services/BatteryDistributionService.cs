@@ -25,8 +25,12 @@ namespace SolarDistribution.Core.Services;
 /// │                                                                           │
 /// │  POST-DISTRIBUTION — IdleChargeW                                          │
 /// │    Toute batterie allouée à 0 W reçoit IdleChargeW (défaut 100 W)        │
-/// │    à condition d'être encore sous HardMaxPercent.                         │
-/// │    Évite le cycling on/off du BMS et absorbe les micro-surplus résiduels. │
+/// │    à condition d'être encore sous HardMaxPercent                          │
+/// │    ET qu'il y ait un surplus solaire réel (surplusW > 0).                │
+/// │    FIX Bug #4 : IdleChargeW est désactivé quand surplusW = 0 et que la   │
+/// │    batterie a IdleChargeW = 0 (forcé par SmartDistributionService en HP). │
+/// │    Cela évite d'envoyer 100 W depuis le réseau en tarif HP               │
+/// │    uniquement pour "maintenir" une batterie déjà à sa cible.             │
 /// └───────────────────────────────────────────────────────────────────────────┘
 /// </summary>
 public class BatteryDistributionService : IBatteryDistributionService
@@ -36,8 +40,8 @@ public class BatteryDistributionService : IBatteryDistributionService
     {
         var batteryList = batteries.ToList();
 
-        var allocated  = batteryList.ToDictionary(b => b.Id, _ => 0.0);
-        var gridAlloc  = batteryList.ToDictionary(b => b.Id, _ => 0.0);
+        var allocated = batteryList.ToDictionary(b => b.Id, _ => 0.0);
+        var gridAlloc = batteryList.ToDictionary(b => b.Id, _ => 0.0);
         var currentPct = batteryList.ToDictionary(b => b.Id, b => b.CurrentPercent);
 
         double remaining = surplusW;
@@ -85,10 +89,19 @@ public class BatteryDistributionService : IBatteryDistributionService
         // ── POST-DISTRIBUTION : IdleChargeW ──────────────────────────────────
         // Toute batterie à 0 W (cible atteinte ou pas de surplus) mais encore sous
         // HardMaxPercent reçoit IdleChargeW pour maintenir le BMS actif.
+        //
+        // FIX Bug #4 : IdleChargeW est mis à 0 par SmartDistributionService en tarif HP
+        // (via Apply()), ce qui empêche d'envoyer 100 W depuis le réseau quand
+        // surplusW = 0 et que la batterie est déjà à sa cible.
+        // Ici on vérifie en plus surplusW > 0 comme garde supplémentaire : sans solaire,
+        // IdleChargeW n'a aucun sens (rien à "absorber") et deviendrait de la charge réseau.
         foreach (var b in batteryList)
         {
             double total = allocated[b.Id] + gridAlloc[b.Id];
-            if (total <= 0.01 && currentPct[b.Id] < b.HardMaxPercent - 0.1 && b.IdleChargeW > 0)
+            if (total <= 0.01
+                && currentPct[b.Id] < b.HardMaxPercent - 0.1
+                && b.IdleChargeW > 0
+                && surplusW > 0)   // FIX Bug #4 : pas d'IdleCharge sans surplus solaire
             {
                 // On ajoute IdleChargeW dans allocated (surplus) pour que le bilan soit cohérent
                 // On NE modifie PAS currentPct car c'est une consigne symbolique, pas de l'énergie
@@ -99,9 +112,9 @@ public class BatteryDistributionService : IBatteryDistributionService
         // ── Résultats finaux ──────────────────────────────────────────────────
         var results = batteryList.Select(b =>
         {
-            double solar   = allocated[b.Id];
-            double grid    = gridAlloc[b.Id];
-            double total   = solar + grid;
+            double solar = allocated[b.Id];
+            double grid = gridAlloc[b.Id];
+            double total = solar + grid;
 
             // idle = la batterie est à sa cible et reçoit juste la consigne de maintien
             bool isIdle = grid <= 0.01
@@ -121,25 +134,25 @@ public class BatteryDistributionService : IBatteryDistributionService
                 0.0, b.HardMaxPercent);
 
             return new BatteryChargeResult(
-                BatteryId:             b.Id,
-                AllocatedW:            Math.Round(total, 2),
-                PreviousPercent:       Math.Round(b.CurrentPercent, 2),
-                NewPercent:            Math.Round(projectedPct, 2),
-                WasUrgent:             b.IsUrgent,
-                IsGridCharge:          grid > 0.01,
+                BatteryId: b.Id,
+                AllocatedW: Math.Round(total, 2),
+                PreviousPercent: Math.Round(b.CurrentPercent, 2),
+                NewPercent: Math.Round(projectedPct, 2),
+                WasUrgent: b.IsUrgent,
+                IsGridCharge: grid > 0.01,
                 IsEmergencyGridCharge: b.IsEmergencyGridCharge && grid > 0.01,
-                Reason:                BuildReason(b, solar, grid, projectedPct, isIdle)
+                Reason: BuildReason(b, solar, grid, projectedPct, isIdle)
             );
         }).ToList();
 
         double totalSolar = Math.Round(surplusW - Math.Max(0, remaining), 2);
 
         return new DistributionResult(
-            SurplusInputW:   surplusW,
+            SurplusInputW: surplusW,
             TotalAllocatedW: totalSolar,
-            UnusedSurplusW:  Math.Round(Math.Max(0, remaining), 2),
-            GridChargedW:    Math.Round(gridCharged, 2),
-            Allocations:     results
+            UnusedSurplusW: Math.Round(Math.Max(0, remaining), 2),
+            GridChargedW: Math.Round(gridCharged, 2),
+            Allocations: results
         );
     }
 
@@ -170,16 +183,16 @@ public class BatteryDistributionService : IBatteryDistributionService
 
             foreach (var b in active)
             {
-                double weight   = spaces[b.Id] / totalSpace;
-                double share    = remaining * weight;
+                double weight = spaces[b.Id] / totalSpace;
+                double share = remaining * weight;
                 double rateLeft = b.MaxChargeRateW - allocated[b.Id] - gridAlloc[b.Id];
-                double cap      = spaces[b.Id];
-                double give     = Math.Min(share, Math.Max(0, rateLeft));
-                give            = Math.Min(give, cap);
+                double cap = spaces[b.Id];
+                double give = Math.Min(share, Math.Max(0, rateLeft));
+                give = Math.Min(give, cap);
 
-                allocated[b.Id]  += give;
+                allocated[b.Id] += give;
                 currentPct[b.Id] += give / b.CapacityWh * 100.0;
-                given            += give;
+                given += give;
 
                 if (give >= cap - 0.01 || rateLeft - give <= 0.01)
                     capped.Add(b);
@@ -206,13 +219,13 @@ public class BatteryDistributionService : IBatteryDistributionService
         {
             var budgets = active.ToDictionary(b => b.Id, b =>
             {
-                double gridTarget    = b.IsEmergencyGridCharge && b.EmergencyGridChargeTargetPercent.HasValue
+                double gridTarget = b.IsEmergencyGridCharge && b.EmergencyGridChargeTargetPercent.HasValue
                     ? b.EmergencyGridChargeTargetPercent.Value
                     : b.SoftMaxPercent;
                 double spaceToTarget = Math.Max(0,
                     (gridTarget - currentPct[b.Id]) / 100.0 * b.CapacityWh);
-                double rateUsed      = solarAllocated[b.Id] + gridAllocated[b.Id];
-                double gridLeft      = Math.Max(0, b.GridChargeAllowedW - rateUsed);
+                double rateUsed = solarAllocated[b.Id] + gridAllocated[b.Id];
+                double gridLeft = Math.Max(0, b.GridChargeAllowedW - rateUsed);
                 return Math.Min(spaceToTarget, gridLeft);
             });
 
@@ -227,8 +240,8 @@ public class BatteryDistributionService : IBatteryDistributionService
                 if (give <= 0.01) { capped.Add(b); continue; }
 
                 gridAllocated[b.Id] += give;
-                currentPct[b.Id]    += give / b.CapacityWh * 100.0;
-                totalConsumed       += give;
+                currentPct[b.Id] += give / b.CapacityWh * 100.0;
+                totalConsumed += give;
                 capped.Add(b);
             }
 
@@ -242,7 +255,7 @@ public class BatteryDistributionService : IBatteryDistributionService
     private static string BuildReason(Battery b, double solar, double grid, double newPct, bool isIdle)
     {
         string prefix = b.IsUrgent ? $"[URGENT <{b.MinPercent}%] " : string.Empty;
-        double total  = solar + grid;
+        double total = solar + grid;
 
         if (isIdle)
             return $"{prefix}Idle hold {b.IdleChargeW:F0}W (target reached)";
