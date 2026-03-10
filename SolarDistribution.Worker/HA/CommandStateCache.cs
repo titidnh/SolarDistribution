@@ -61,6 +61,13 @@ public class CommandStateCache
         Save();
     }
 
+    public void UpdateZoneOnly(int batteryId, bool wasZero)
+    {
+        _data.LastWasZero[batteryId] = wasZero;
+        _data.LastUpdatedUtc = DateTime.UtcNow;
+        Save();
+    }
+
     // ── Persistence ───────────────────────────────────────────────────────────
 
     private void Load()

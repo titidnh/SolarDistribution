@@ -8,14 +8,22 @@ namespace SolarDistribution.Worker.HA;
 /// Envoie les commandes de recharge vers HA après chaque calcul de distribution.
 ///
 /// Pour chaque batterie :
-///   1. Si AllocatedW > 0 → exécute NonZeroWActions (ex: désactiver self-powered EcoFlow)
-///   2. Si ChargeSwitch configuré et AllocatedW > 0 → turn_on le switch
-///   3. Appelle number.set_value avec la puissance calculée (× ValueMultiplier)
-///   4. Si AllocatedW == 0 et ChargeSwitch configuré → turn_off le switch
-///   5. Si AllocatedW == 0 → exécute ZeroWActions (ex: activer self-powered EcoFlow)
+///   1. Détecte le changement de zone 0W ↔ >0W (AVANT le delta check sur la puissance)
+///   2. Si zone 0W→>0W : exécute NonZeroWActions (ex: désactiver self-powered EcoFlow)
+///   3. Si zone >0W→0W : exécute ZeroWActions   (ex: activer self-powered EcoFlow)
+///   4. Met à jour le cache de zone immédiatement (indépendamment du delta check)
+///   5. Delta check sur la puissance W : si le changement est trop faible → skip l'envoi HA
+///   6. Si ChargeSwitch configuré → turn_on / turn_off selon AllocatedW
+///   7. Appelle number.set_value avec la puissance calculée (× ValueMultiplier)
+///
+/// Fix Bug : le delta check (étape 5) ne doit PAS bloquer les actions conditionnelles
+/// de transition de zone (étapes 2-3). Avant ce fix, si rawValue ne changeait pas
+/// suffisamment (ex: batterie déjà à 0W depuis plusieurs cycles), le delta check
+/// retournait false avant que zoneChanged soit évalué → les ZeroWActions / NonZeroWActions
+/// n'étaient jamais déclenchées sur la batterie dont le SOC stagnait.
 ///
 /// DryRun : log les commandes sans les envoyer.
-/// MinChangeTriggerW : ignore les changements inférieurs au seuil (évite le flooding HA).
+/// MinChangeTriggerW : ignore les changements de puissance inférieurs au seuil (évite le flooding HA).
 ///
 /// État persistant : last sent values + zones sont sauvegardés sur disque via CommandStateCache
 /// pour survivre aux redémarrages Docker / reboot host.
@@ -41,7 +49,9 @@ public class HomeAssistantCommandSender
 
     /// <summary>
     /// Envoie les commandes de recharge pour toutes les batteries.
-    /// Retourne le nombre de commandes effectivement envoyées.
+    /// Retourne le nombre de commandes de puissance effectivement envoyées à HA.
+    /// Note : les actions conditionnelles de zone peuvent être exécutées même si ce compteur
+    /// n'augmente pas (delta check sur la puissance ignoré pour les transitions de zone).
     /// </summary>
     public async Task<int> SendCommandsAsync(
         IEnumerable<BatteryChargeResult> allocations,
@@ -73,23 +83,10 @@ public class HomeAssistantCommandSender
         double rawValue = alloc.AllocatedW * battConfig.Entities.ValueMultiplier;
         rawValue = Math.Round(rawValue, 2);
 
-        // ── Delta check : évite d'envoyer si la valeur n'a pas assez changé ──
-        double? lastValue = _cache.GetLastSentValue(battConfig.Id);
-        if (lastValue.HasValue)
-        {
-            double delta = Math.Abs(rawValue - lastValue.Value);
-            if (delta < _config.Polling.MinChangeTriggerW * battConfig.Entities.ValueMultiplier)
-            {
-                _logger.LogDebug(
-                    "Battery {Id} ({Name}): change {Delta:F2}{Unit} < threshold {Threshold:F2} — skipping",
-                    battConfig.Id, battConfig.Name, delta, battConfig.Entities.ValueUnit,
-                    _config.Polling.MinChangeTriggerW);
-                return false;
-            }
-        }
-
         // ── Détection de changement de zone 0W ↔ charge active ──────────────
-        // "charge active" = surplus solaire alloué OU recharge réseau d'urgence
+        // Évaluée EN PREMIER, avant le delta check sur la puissance W.
+        // "charge active" = surplus solaire alloué OU recharge réseau d'urgence.
+        // Fix : le delta check ne doit pas empêcher les actions de transition de zone.
         bool currentIsZero = alloc.AllocatedW == 0;
         bool? prevWasZero = _cache.GetLastWasZero(battConfig.Id);
         bool zoneChanged = prevWasZero is null || prevWasZero.Value != currentIsZero;
@@ -110,16 +107,57 @@ public class HomeAssistantCommandSender
             return true;
         }
 
-        // ── 1. NonZeroWActions : avant d'activer la charge ────────────────────
-        //    Déclenchées UNIQUEMENT si on passe de 0W → >0W (changement de zone)
-        if (!currentIsZero && zoneChanged && battConfig.Entities.NonZeroWActions.Count > 0)
+        // ── 1. Actions de transition de zone — AVANT le delta check ──────────
+        //
+        // Ces actions doivent se déclencher dès la transition, quelle que soit
+        // la variation de puissance W. Si on les plaçait après le delta check,
+        // une batterie dont le SOC stagne (rawValue inchangé) ne déclencherait
+        // jamais ses ZeroWActions / NonZeroWActions.
+
+        if (zoneChanged)
         {
-            _logger.LogDebug("Battery {Id} ({Name}): zone 0W→>0W — executing {Count} NonZeroW action(s)",
-                battConfig.Id, battConfig.Name, battConfig.Entities.NonZeroWActions.Count);
-            await ExecuteConditionalActionsAsync(battConfig.Entities.NonZeroWActions, battConfig, ct);
+            // 1a. NonZeroWActions : passage de 0W → >0W (avant d'activer la charge)
+            if (!currentIsZero && battConfig.Entities.NonZeroWActions.Count > 0)
+            {
+                _logger.LogDebug(
+                    "Battery {Id} ({Name}): zone 0W→>0W — executing {Count} NonZeroW action(s)",
+                    battConfig.Id, battConfig.Name, battConfig.Entities.NonZeroWActions.Count);
+                await ExecuteConditionalActionsAsync(battConfig.Entities.NonZeroWActions, battConfig, ct);
+            }
+
+            // 1b. ZeroWActions : passage de >0W → 0W (avant d'écrire la puissance 0W)
+            if (currentIsZero && battConfig.Entities.ZeroWActions.Count > 0)
+            {
+                _logger.LogDebug(
+                    "Battery {Id} ({Name}): zone >0W→0W — executing {Count} ZeroW action(s)",
+                    battConfig.Id, battConfig.Name, battConfig.Entities.ZeroWActions.Count);
+                await ExecuteConditionalActionsAsync(battConfig.Entities.ZeroWActions, battConfig, ct);
+            }
+
+            // Persiste immédiatement le nouvel état de zone, indépendamment de l'envoi W.
+            // Sans ce UpdateZoneOnly, si le delta check skippait l'envoi au cycle suivant,
+            // zoneChanged resterait true indéfiniment → actions exécutées en boucle.
+            _cache.UpdateZoneOnly(battConfig.Id, currentIsZero);
         }
 
-        // ── 2. Activer le switch si nécessaire ────────────────────────────────
+        // ── 2. Delta check sur la puissance W ─────────────────────────────────
+        // Placé APRÈS les actions de zone : n'affecte que l'envoi de la valeur à HA,
+        // pas les transitions de zone déjà traitées ci-dessus.
+        double? lastValue = _cache.GetLastSentValue(battConfig.Id);
+        if (lastValue.HasValue)
+        {
+            double delta = Math.Abs(rawValue - lastValue.Value);
+            if (delta < _config.Polling.MinChangeTriggerW * battConfig.Entities.ValueMultiplier)
+            {
+                _logger.LogDebug(
+                    "Battery {Id} ({Name}): change {Delta:F2}{Unit} < threshold {Threshold:F2} — skipping power write",
+                    battConfig.Id, battConfig.Name, delta, battConfig.Entities.ValueUnit,
+                    _config.Polling.MinChangeTriggerW);
+                return false;
+            }
+        }
+
+        // ── 3. Activer / désactiver le ChargeSwitch ───────────────────────────
         if (battConfig.Entities.ChargeSwitch is not null)
         {
             if (alloc.AllocatedW > 0)
@@ -136,12 +174,14 @@ public class HomeAssistantCommandSender
             }
         }
 
-        // ── 3. Écrire la puissance ─────────────────────────────────────────
+        // ── 4. Écrire la puissance ─────────────────────────────────────────────
         bool success = await _client.SetNumberValueAsync(
             battConfig.Entities.ChargePower, rawValue, ct);
 
         if (success)
         {
+            // Update complet : valeur W + zone (redondant pour la zone si déjà fait via
+            // UpdateZoneOnly, mais garantit la cohérence de lastSentValue)
             _cache.Update(battConfig.Id, rawValue, currentIsZero);
 
             _logger.LogInformation(
@@ -157,15 +197,6 @@ public class HomeAssistantCommandSender
             _logger.LogError(
                 "Battery {Id} ({Name}): FAILED to set charge power to {Value}{Unit}",
                 battConfig.Id, battConfig.Name, rawValue, battConfig.Entities.ValueUnit);
-        }
-
-        // ── 4. ZeroWActions : après avoir envoyé 0W ───────────────────────────
-        //    Déclenchées UNIQUEMENT si on passe de >0W → 0W (changement de zone)
-        if (currentIsZero && zoneChanged && battConfig.Entities.ZeroWActions.Count > 0)
-        {
-            _logger.LogDebug("Battery {Id} ({Name}): zone >0W→0W — executing {Count} ZeroW action(s)",
-                battConfig.Id, battConfig.Name, battConfig.Entities.ZeroWActions.Count);
-            await ExecuteConditionalActionsAsync(battConfig.Entities.ZeroWActions, battConfig, ct);
         }
 
         return success;
