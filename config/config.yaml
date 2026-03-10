@@ -16,8 +16,10 @@ polling:
   dry_run: true           # ← mettre false en production
   min_change_trigger_w: 10
 
-  # ── Buffer de sécurité surplus ────────────────────────────────────────────
+  # ── Buffer de sécurité surplus — SEUIL DE DÉMARRAGE ──────────────────────
+  #
   # Puissance (W) soustraite du surplus brut AVANT distribution aux batteries.
+  # C'est aussi le SEUIL AU-DESSUS DUQUEL la charge solaire démarre.
   #
   # POURQUOI : la consommation maison fluctue en permanence. Sans buffer,
   # envoyer 100 % du surplus aux batteries provoque un import momentané depuis
@@ -35,6 +37,45 @@ polling:
   # Mettre à 0 pour désactiver (tout le surplus va aux batteries).
   # Valeur recommandée : 150 à 250 W selon la variabilité de votre consommation.
   surplus_buffer_w: 200
+
+  # ── Seuil d'arrêt de la charge solaire (anti-oscillation) ────────────────
+  #
+  # Puissance (W) EN DESSOUS DE LAQUELLE la charge solaire est STOPPÉE.
+  #
+  # POURQUOI : sans ce seuil, quand la production solaire oscille autour du
+  # seuil de démarrage (surplus_buffer_w), la charge s'active et se coupe
+  # toutes les 5 minutes — ce qui génère des dizaines de ON/OFF inutiles sur
+  # le self-powered EcoFlow ou tout switch de charge.
+  #
+  # LOGIQUE double-seuil (hystérésis) :
+  #   · Démarrage : surplus > surplus_buffer_w       (ex: 200 W)
+  #   · Arrêt     : surplus < surplus_stop_buffer_w  (ex: 80 W)
+  #   · Zone [80W–200W] : on MAINTIENT l'état précédent (ni démarrage, ni arrêt)
+  #
+  # EXEMPLE — matin nuageux, surplus fluctuant entre 50 W et 250 W :
+  #   Sans hystérésis : ON / OFF / ON / OFF toutes les 5 min
+  #   Avec hystérésis : ON dès 201W, reste ON jusqu'à < 80W → stabilité totale
+  #
+  # Doit être strictement inférieur à surplus_buffer_w.
+  # Valeur recommandée : 30 à 100 W (≈ 40% du surplus_buffer_w).
+  # Mettre à 0 pour désactiver (comportement original sans hystérésis).
+  surplus_stop_buffer_w: 80
+
+  # ── Durée minimale de charge avant autorisation d'arrêt ──────────────────
+  #
+  # Nombre de cycles consécutifs en charge MINIMUM avant qu'un arrêt soit autorisé.
+  #
+  # POURQUOI : un passage nuageux de 5 minutes peut faire chuter le surplus
+  # sous surplus_stop_buffer_w. Sans ce garde-fou, la charge s'arrête, le
+  # self-powered s'active, puis le soleil revient et ça redémarre — inutile.
+  #
+  # CALCUL : min_charge_duration_cycles × interval_seconds = durée minimale
+  #   Exemple : 3 cycles × 60 s  = 3 minutes minimum de charge avant tout arrêt
+  #   Exemple : 3 cycles × 300 s = 15 minutes minimum
+  #
+  # Valeur recommandée : 3 (bon compromis réactivité / stabilité).
+  # Mettre à 0 pour désactiver.
+  min_charge_duration_cycles: 3
 
 # ── Météo Open-Meteo ────────────────────────────────────────────────────────────
 #
@@ -171,6 +212,25 @@ batteries:
     # Défaut : 100 W. Mettre à 0 pour comportement standard (coupe à la cible).
     idle_charge_w: 100
 
+    # ── Zone morte SOC autour de la cible (anti micro-charges BMS) ───────────
+    #
+    # POURQUOI : une fois la cible atteinte (ex: 80%), certains systèmes comme
+    # l'EcoFlow en self-powered continuent de se décharger légèrement (~1-2%/h).
+    # Sans hystérésis, au cycle suivant SOC = 79.9% → énergie résiduelle = 1 Wh
+    # → puissance cible = 0.2 W → clampée à idle_charge_w (100 W) → mais l'espace
+    # physique restant (1 Wh) gagne le Math.Min → commande finale = 1 W.
+    # Résultat : 50+ micro-commandes par nuit, ignorées par le BMS mais enregistrées
+    # comme cycles de charge → usure prématurée.
+    #
+    # AVEC soc_hysteresis_percent = 2 :
+    #   · Seuil de rechargement = soft_max_percent - 2%  (ex: 80% - 2% = 78%)
+    #   · Entre 78% et 80% : aucune charge réseau (zone morte, auto-décharge acceptée)
+    #   · SOC descend à 77.9% → recharge réseau normale ≥ idle_charge_w (efficace)
+    #
+    # La batterie oscille donc entre 78% et 80% au lieu de générer des micro-commandes.
+    # Valeur recommandée : 2.0 (%). Mettre à 0 pour désactiver (comportement original).
+    soc_hysteresis_percent: 2.0
+
     entities:
       soc: "sensor.battery_main_state_of_charge"
       charge_power: "number.battery_main_charge_power"
@@ -283,7 +343,8 @@ batteries:
     min_percent: 20
     soft_max_percent: 80
     hard_max_percent: 100
-    idle_charge_w: 100     # Puissance de maintien quand la cible est atteinte (défaut 100 W)
+    idle_charge_w: 100
+    soc_hysteresis_percent: 2.0  # Zone morte SOC — voir batterie 1 pour la doc complète
 
     entities:
       soc: "sensor.battery_secondary_state_of_charge"
@@ -433,7 +494,7 @@ tariff:
   # │      price_per_kwh: 0.12                                                  │
   # │      start_time: "00:00"                                                  │
   # │      end_time:   "00:00"    # toute la journée                            │
-  # │      days_of_week: [6, 7]   # 6=Samedi + 7=Dimanche                           │
+  # │      days_of_week: [6, 7]   # 6=Samedi + 7=Dimanche                      │
   # │                                                                           │
   # │    - name: "Jour semaine"                                                 │
   # │      price_per_kwh: 0.30                                                  │
