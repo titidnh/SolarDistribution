@@ -37,6 +37,12 @@ public class SmartDistributionService
         WeatherData? weatherSnapshot = null,
         double? forecastTodayWh = null,
         double? forecastTomorrowWh = null,
+        double? estimatedConsumptionNextHoursWh = null,
+        double? measuredConsumptionW = null,
+        double? forecastThisHourWh = null,
+        double? forecastNextHourWh = null,
+        double? forecastRemainingTodayWh = null,
+        double? forecastTodayWhAtStartOfDay = null,
         CancellationToken ct = default)
     {
         // ── 1. Météo ──────────────────────────────────────────────────────────
@@ -48,7 +54,13 @@ public class SmartDistributionService
         var localNow = DateTime.Now;
         var radForecast = wx?.RadiationForecast12h ?? Array.Empty<double>();
         var tariffCtx = _tariff.EvaluateContext(
-            localNow, radForecast, forecastTodayWh, forecastTomorrowWh);
+            localNow, radForecast,
+            forecastTodayWh, forecastTomorrowWh,
+            estimatedConsumptionNextHoursWh,
+            forecastThisHourWh, forecastNextHourWh, forecastRemainingTodayWh,
+            totalBatteryCapacityWh: batteries.Sum(b => b.CapacityWh),
+            avgBatterySocPercent: batteries.Any() ? batteries.Average(b => b.CurrentPercent) : 0,
+            avgBatterySoftMaxPercent: batteries.Any() ? batteries.Average(b => b.SoftMaxPercent) : 80);
 
         LogTariffContext(tariffCtx, surplusW);
 
@@ -128,7 +140,8 @@ public class SmartDistributionService
                 result.GridChargedW, tariffCtx.ActiveSlotName, tariffCtx.CurrentPricePerKwh);
 
         // ── 7. Persistance ────────────────────────────────────────────────────
-        var session = _sessionFactory.Build(result, wx, mlReco, decisionEngine, batteries, tariffCtx);
+        var session = _sessionFactory.Build(result, wx, mlReco, decisionEngine, batteries, tariffCtx,
+            measuredConsumptionW, forecastTodayWhAtStartOfDay);
         await _repo.SaveSessionAsync(session, ct);
 
         _logger.LogInformation(
@@ -321,21 +334,58 @@ public class SmartDistributionService
         // ── Énergie solaire attendue pendant les heures restantes ─────────────
         double solarExpectedWh;
 
-        if (tariff.HasHaForecast && tariff.ForecastTodayWh.HasValue)
+        if (tariff.HasIntradayForecast && tariff.SolcastHourlyCurveWh is not null)
         {
-            // Prévision HA disponible : distribution sinusoïdale sur la journée (pic à midi solaire).
-            // On intègre sin(π × t/durée) sur la fenêtre [solarStart, solarStart + solarHoursInSlot]
-            // pour obtenir une fraction énergétique réaliste (pas linéaire).
+            // ── Courbe Solcast horaire réelle (Feature 3) ─────────────────────
+            // Remplace le profil sinusoïdal simplifié : on utilise les données Wh/h
+            // réelles de Solcast pour calculer l'énergie attendue heure par heure.
+            //
+            // Avantages vs sinusoïde :
+            //   · Tient compte des nuages prévus à des heures spécifiques
+            //   · Intègre l'orientation/inclinaison réelle de l'installation
+            //   · Précision horaire vs approximation journalière
+            //
+            // On intègre la courbe Solcast sur la fenêtre [now, now + hoursRemaining],
+            // en pondérant la fraction d'heure pour la dernière tranche partielle.
+            double solarStartH = tariff.HoursUntilSolar.HasValue
+                                 && tariff.HoursUntilSolar.Value < double.MaxValue
+                ? tariff.HoursUntilSolar.Value : 0.0;
+
+            solarExpectedWh = 0;
+            var curve = tariff.SolcastHourlyCurveWh;
+
+            for (int h = 0; h < curve.Length && h < Math.Ceiling(hoursRemaining); h++)
+            {
+                if (h < solarStartH) continue;
+                double hourFraction = Math.Min(1.0, hoursRemaining - h);
+                solarExpectedWh += curve[h] * hourFraction;
+            }
+
+            // Si la courbe ne couvre pas tout l'horizon (ex: seulement 3h alors qu'il reste 6h),
+            // on extrapole via le fallback sinusoïdal avec ForecastTodayWh pour les heures manquantes.
+            if (curve.Length < hoursRemaining && tariff.ForecastTodayWh.HasValue)
+            {
+                double coveredH = curve.Length;
+                double remainingUncoveredH = hoursRemaining - coveredH;
+                double sunriseH = solarStartH;
+                double sunsetH  = sunriseH + 12.0;
+
+                double fallbackFraction = SolarFractionBetweenHours(
+                    coveredH, coveredH + remainingUncoveredH, sunriseH, sunsetH);
+                solarExpectedWh += tariff.ForecastTodayWh.Value * fallbackFraction;
+            }
+        }
+        else if (tariff.HasHaForecast && tariff.ForecastTodayWh.HasValue)
+        {
+            // Profil sinusoïdal avec ForecastTodayWh (pas d'entités intraday configurées)
             double solarStartH = tariff.HoursUntilSolar.HasValue
                                  && tariff.HoursUntilSolar.Value < double.MaxValue
                 ? tariff.HoursUntilSolar.Value : 24.0;
 
             double solarHoursInSlot = Math.Max(0, hoursRemaining - solarStartH);
 
-            // Sunrise/sunset en heures absolues depuis maintenant
-            // On utilise le forecast 12h pour estimer l'heure de lever résiduelle
-            double sunriseH = solarStartH;  // heure relative depuis maintenant
-            double sunsetH = sunriseH + 12.0; // estimation conservative (journée ~12h de prod)
+            double sunriseH = solarStartH;
+            double sunsetH = sunriseH + 12.0;
 
             double solarFraction = SolarFractionBetweenHours(
                 sunriseH, sunriseH + solarHoursInSlot, sunriseH, sunsetH);
@@ -370,10 +420,57 @@ public class SmartDistributionService
 
         double netEnergyNeededWh = Math.Max(0, energyNeededWh - solarExpectedWh);
 
+        // ── Ajustement consommation maison estimée ────────────────────────────
+        // Le surplus solaire estimé alimentera d'abord la consommation maison avant les batteries.
+        // Si la consommation prévue dépasse le solaire attendu, les batteries ne seront pas
+        // rechargées par le solaire → on augmente la charge réseau en conséquence.
+        //
+        // Exemple : solar attendu = 800Wh, conso estimée = 600Wh, déficit batterie = 500Wh
+        //   → solar net pour batteries = max(0, 800 - 600) = 200Wh
+        //   → netEnergyNeededWh = max(0, 500 - 200) = 300Wh (réseau nécessaire)
+        //
+        // Sans ce correctif : netEnergyNeededWh = max(0, 500 - 800) = 0Wh (trop optimiste)
+        // → les batteries arrivent vides à la HP car le solaire a été absorbé par la conso maison.
+        if (tariff.EstimatedConsumptionNextHoursWh.HasValue && solarExpectedWh > 0)
+        {
+            double consumptionLoad = tariff.EstimatedConsumptionNextHoursWh.Value;
+            double solarForBatteries = Math.Max(0, solarExpectedWh - consumptionLoad);
+            netEnergyNeededWh = Math.Max(0, energyNeededWh - solarForBatteries);
+        }
+
         if (netEnergyNeededWh <= 0)
             return 0;
 
-        // ── Lazy Charging ────────────────────────────────────────────────────
+        // ── Réduction charge réseau si solaire arrive dans < 2h (Feature 3) ──
+        // Si les prévisions Solcast intraday montrent une production significative
+        // dans les prochaines heures, on réduit la charge réseau proportionnellement.
+        // L'idée : ne pas charger 1000W depuis le réseau si 800Wh arrivent dans 1h30.
+        //
+        // Réduction proportionnelle : targetW × max(0, 1 - solarCoverage)
+        //   où solarCoverage = ForecastNext3HoursWh / netEnergyNeededWh (clampé à 1)
+        //
+        // Exemple : netEnergyNeeded = 500Wh, next3h = 400Wh
+        //   → solarCoverage = 0.80 → réduction = 80% → charge réseau = 20% de targetW
+        //
+        // La réduction ne s'applique QUE si les entités intraday sont configurées
+        // ET si le solaire prévu dépasse le seuil MinSolarNext3HoursWhForGridReduction.
+        // En urgence (hoursRemaining ≤ urgencyThresholdHours), pas de réduction.
+        double intradaySolarReductionFactor = 1.0;
+
+        if (tariff.HasIntradayForecast
+            && tariff.ForecastNext3HoursWh.HasValue
+            && tariff.ForecastNext3HoursWh.Value > 0
+            && hoursRemaining > urgencyThresholdHours)
+        {
+            double next3hWh = tariff.ForecastNext3HoursWh.Value;
+
+            if (next3hWh > 0 && netEnergyNeededWh > 0)
+            {
+                double solarCoverage = Math.Min(1.0, next3hWh / netEnergyNeededWh);
+                // Réduction douce : on garde au minimum 30% de la charge pour l'urgence
+                intradaySolarReductionFactor = Math.Max(0.30, 1.0 - solarCoverage * 0.7);
+            }
+        }
         // Calcule la durée minimale nécessaire pour charger à MaxChargeRateW,
         // puis vérifie si on a encore le temps d'attendre avant de démarrer.
         //
@@ -402,6 +499,10 @@ public class SmartDistributionService
         // C'est l'heure de démarrer : puissance adaptative sur le temps qui reste
         double hoursToCharge = Math.Max(hoursNeeded, urgencyThresholdHours);
         double targetW = netEnergyNeededWh / hoursToCharge;
+
+        // Appliquer la réduction intraday si le solaire arrive bientôt
+        targetW *= intradaySolarReductionFactor;
+
         return Math.Clamp(targetW, minGridChargeW, b.MaxChargeRateW);
     }
 
@@ -551,20 +652,26 @@ public class SmartDistributionService
         string eveningBoostInfo = ctx.HasLowForecastTomorrow && ctx.IsFavorableForGrid
             ? $" | ⚡ softmax boost +{ctx.EveningBoostPercent:F0}% (low tmrw forecast + favorable tariff)"
             : string.Empty;
+        string intradayInfo = ctx.HasIntradayForecast
+            ? $" | Solcast next3h={ctx.ForecastNext3HoursWh:F0}Wh (rem={ctx.ForecastRemainingTodayWh:F0}Wh)"
+            : string.Empty;
+        string balanceInfo = ctx.EnergyDeficitTodayWh.HasValue
+            ? $" | deficit={ctx.EnergyDeficitTodayWh:F0}Wh"
+            : string.Empty;
+        string balanceBlockInfo = ctx.GridChargeBlockedBySolarSufficiency
+            ? " [BLOCKED: solar sufficient today]" : string.Empty;
 
         if (ctx.GridChargeAllowed)
             _logger.LogInformation(
-                "Tariff [{Slot}] {Price:F3}€/kWh — GRID CHARGE ALLOWED{SlotInfo}{SolarInfo}{FcInfo}{EveningBoost} " +
+                "Tariff [{Slot}] {Price:F3}€/kWh — GRID CHARGE ALLOWED{SlotInfo}{SolarInfo}{FcInfo}{EveningBoost}{Intraday}{Balance} " +
                 "(surplus={S:F0}W, savings={Sav:F3}€/kWh)",
                 ctx.ActiveSlotName, ctx.CurrentPricePerKwh, slotInfo, solarInfo, fcInfo, eveningBoostInfo,
-                surplusW, ctx.MaxSavingsPerKwh);
+                intradayInfo, balanceInfo, surplusW, ctx.MaxSavingsPerKwh);
         else if (ctx.IsFavorableForGrid)
-            // ── FIX Bug #2 : log explicite du motif de blocage ───────────────
-            // Avant : le motif passait silencieusement en LogDebug — invisible en prod.
-            // Maintenant : LogInformation avec la raison précise, visible dans les logs.
             _logger.LogInformation(
-                "Tariff [{Slot}] {Price:F3}€/kWh — GRID CHARGE BLOCKED{HaBlock}{SlotInfo}{SolarInfo}{FcInfo}",
-                ctx.ActiveSlotName, ctx.CurrentPricePerKwh, haBlockInfo, slotInfo, solarInfo, fcInfo);
+                "Tariff [{Slot}] {Price:F3}€/kWh — GRID CHARGE BLOCKED{HaBlock}{BalanceBlock}{SlotInfo}{SolarInfo}{FcInfo}{Intraday}{Balance}",
+                ctx.ActiveSlotName, ctx.CurrentPricePerKwh, haBlockInfo, balanceBlockInfo,
+                slotInfo, solarInfo, fcInfo, intradayInfo, balanceInfo);
         else
             _logger.LogInformation(
                 "Tariff [{Slot}] {Price:F3}€/kWh — HP grid charge not favorable{SlotInfo}",

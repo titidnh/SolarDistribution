@@ -14,7 +14,9 @@ public static class DistributionSessionMapper
         MLRecommendation?   mlReco,
         string              decisionEngine,
         IList<Battery>      originalBatteries,
-        TariffContext       tariff)
+        TariffContext       tariff,
+        double?             measuredConsumptionW = null,
+        double?             forecastTodayWhAtStartOfDay = null)
     {
         var session = new DistributionSession
         {
@@ -44,6 +46,20 @@ public static class DistributionSessionMapper
             // Prévisions HA installation-spécifiques (ML-8)
             ForecastTodayWh            = tariff.ForecastTodayWh,
             ForecastTomorrowWh         = tariff.ForecastTomorrowWh,
+
+            // Load forecasting
+            EstimatedConsumptionNextHoursWh = tariff.EstimatedConsumptionNextHoursWh,
+            MeasuredConsumptionW            = measuredConsumptionW,
+
+            // Intraday + bilan journalier (Feature 3 & 4)
+            ForecastRemainingTodayWh        = tariff.ForecastRemainingTodayWh,
+            EnergyDeficitTodayWh            = tariff.EnergyDeficitTodayWh,
+            // DailySolarConsumedWh = ForecastToday(début journée) − ForecastRemainingToday
+            // forecastTodayWhAtStartOfDay est la valeur lue en début de journée (stockée par le worker)
+            DailySolarConsumedWh            =
+                forecastTodayWhAtStartOfDay.HasValue && tariff.ForecastRemainingTodayWh.HasValue
+                    ? Math.Max(0, forecastTodayWhAtStartOfDay.Value - tariff.ForecastRemainingTodayWh.Value)
+                    : null,
         };
 
         session.BatterySnapshots = result.Allocations.Select(alloc =>

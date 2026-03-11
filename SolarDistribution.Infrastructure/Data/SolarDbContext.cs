@@ -48,6 +48,15 @@ public class SolarDbContext : DbContext
             e.Property(x => x.ForecastTodayWh).HasColumnName("forecast_today_wh").HasPrecision(10, 2);
             e.Property(x => x.ForecastTomorrowWh).HasColumnName("forecast_tomorrow_wh").HasPrecision(10, 2);
 
+            // Load forecasting
+            e.Property(x => x.MeasuredConsumptionW).HasColumnName("measured_consumption_w").HasPrecision(10, 2);
+            e.Property(x => x.EstimatedConsumptionNextHoursWh).HasColumnName("estimated_consumption_next_hours_wh").HasPrecision(10, 2);
+
+            // Intraday + bilan journalier (Feature 3 & 4)
+            e.Property(x => x.ForecastRemainingTodayWh).HasColumnName("forecast_remaining_today_wh").HasPrecision(10, 2);
+            e.Property(x => x.EnergyDeficitTodayWh).HasColumnName("energy_deficit_today_wh").HasPrecision(10, 2);
+            e.Property(x => x.DailySolarConsumedWh).HasColumnName("daily_solar_consumed_wh").HasPrecision(10, 2);
+
             // Indexes
             e.HasIndex(x => x.RequestedAt).HasDatabaseName("idx_session_requested_at");
             e.HasIndex(x => x.DecisionEngine).HasDatabaseName("idx_session_engine");

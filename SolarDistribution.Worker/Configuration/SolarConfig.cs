@@ -88,7 +88,50 @@ public class SolarConfig_Solar
     public string SurplusMode { get; set; } = "direct";
     public string SurplusEntity { get; set; } = string.Empty;
     public string? ProductionEntity { get; set; }
+
+    /// <summary>
+    /// [OPTIONNEL] Entité HA représentant la consommation totale du foyer (W).
+    /// Ex: "sensor.power_consumption" ou "sensor.shellyem_channel_1_power"
+    /// Utilisée pour calculer la moyenne roulante de consommation servant à projeter
+    /// EstimatedConsumptionNextHoursWh dans TariffContext.
+    /// </summary>
     public string? ConsumptionEntity { get; set; }
+
+    /// <summary>
+    /// [OPTIONNEL] Entités HA de consommation par zone/appareil (W).
+    /// Permet de lire la conso de zones spécifiques (four, EV, chauffe-eau…)
+    /// quand une entité de consommation globale n'est pas disponible ou pour
+    /// affiner la projection de charge future.
+    ///
+    /// Ex:
+    ///   - "sensor.ev_charger_power"
+    ///   - "sensor.oven_power"
+    ///   - "sensor.water_heater_power"
+    ///
+    /// Les valeurs sont sommées pour estimer la consommation totale du foyer
+    /// quand ConsumptionEntity est absent. Si ConsumptionEntity EST configuré,
+    /// les zones sont ignorées (redondance évitée).
+    /// </summary>
+    public List<string> ZoneConsumptionEntities { get; set; } = new();
+
+    /// <summary>
+    /// Nombre de cycles récents utilisés pour calculer la moyenne roulante de
+    /// consommation depuis MariaDB. Cette moyenne projette la charge future dans
+    /// ComputeAdaptiveGridChargeW pour affiner la décision de charge réseau.
+    ///
+    /// Ex: 12 cycles × 60s = 10 min de rolling average
+    /// Défaut: 12 cycles. Mettre à 0 pour désactiver (utilise uniquement la lecture HA live).
+    /// </summary>
+    public int ConsumptionRollingWindowCycles { get; set; } = 12;
+
+    /// <summary>
+    /// Horizon de projection de la consommation estimée (en heures).
+    /// EstimatedConsumptionNextHoursWh = avgConsumptionW × ConsumptionProjectionHours
+    /// Cette valeur est soustraite de l'énergie solaire attendue dans le calcul
+    /// de la charge réseau adaptative (ComputeAdaptiveGridChargeW).
+    /// Défaut: 4h (correspond à SolarForecastHorizonHours).
+    /// </summary>
+    public double ConsumptionProjectionHours { get; set; } = 4.0;
 
     /// <summary>
     /// [OPTIONNEL — FORTEMENT RECOMMANDÉ]
@@ -103,6 +146,34 @@ public class SolarConfig_Solar
     /// Ex: "sensor.solcast_pv_forecast_forecast_tomorrow"
     /// </summary>
     public string? ForecastTomorrowEntity { get; set; }
+
+    // ── Prévisions Solcast intra-journalières ──────────────────────────────────
+    // Ces trois entités fournissent la courbe horaire réelle de production.
+    // Elles remplacent le profil sinusoïdal simplifié dans ComputeAdaptiveGridChargeW
+    // et permettent de savoir QUAND le solaire va monter, pas seulement COMBIEN.
+
+    /// <summary>
+    /// [OPTIONNEL] Entité HA : production solaire estimée CETTE HEURE (Wh).
+    /// Ex: "sensor.solcast_pv_forecast_forecast_this_hour"
+    /// Permet de savoir si le solaire monte EN CE MOMENT (ex: 09h, nuage partiel).
+    /// </summary>
+    public string? ForecastThisHourEntity { get; set; }
+
+    /// <summary>
+    /// [OPTIONNEL] Entité HA : production solaire estimée L'HEURE SUIVANTE (Wh).
+    /// Ex: "sensor.solcast_pv_forecast_forecast_next_hour"
+    /// Si cette valeur est élevée → inutile de charger depuis le réseau maintenant,
+    /// le solaire prend le relais dans &lt; 1h.
+    /// </summary>
+    public string? ForecastNextHourEntity { get; set; }
+
+    /// <summary>
+    /// [OPTIONNEL] Entité HA : production solaire restante AUJOURD'HUI (Wh).
+    /// Ex: "sensor.solcast_pv_forecast_forecast_remaining_today"
+    /// Utilisé dans le calcul du bilan énergétique journalier (Feature 4) :
+    /// si le solaire restant couvre le déficit batterie → pas besoin de charger du réseau.
+    /// </summary>
+    public string? ForecastRemainingTodayEntity { get; set; }
 }
 
 public class BatteryConfig

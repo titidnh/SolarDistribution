@@ -17,5 +17,7 @@ public interface IDistributionSessionFactory
         MLRecommendation?   mlRecommendation,
         string              decisionEngine,
         IList<Battery>      originalBatteries,
-        TariffContext       tariff);
+        TariffContext       tariff,
+        double?             measuredConsumptionW = null,
+        double?             forecastTodayWhAtStartOfDay = null);
 }

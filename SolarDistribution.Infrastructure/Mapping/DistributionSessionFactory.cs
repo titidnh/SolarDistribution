@@ -18,7 +18,10 @@ public class DistributionSessionFactory : IDistributionSessionFactory
         MLRecommendation?   mlRecommendation,
         string              decisionEngine,
         IList<Battery>      originalBatteries,
-        TariffContext       tariff)
+        TariffContext       tariff,
+        double?             measuredConsumptionW = null,
+        double?             forecastTodayWhAtStartOfDay = null)
         => DistributionSessionMapper.ToEntity(result, weather, mlRecommendation,
-                                              decisionEngine, originalBatteries, tariff);
+                                              decisionEngine, originalBatteries, tariff,
+                                              measuredConsumptionW, forecastTodayWhAtStartOfDay);
 }

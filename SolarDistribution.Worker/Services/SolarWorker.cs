@@ -25,6 +25,12 @@ public class SolarWorker : BackgroundService
     private bool _isChargingFromSurplus = false;
     private int _consecutiveChargeCycles = 0;
 
+    // ── Bilan énergétique journalier (Feature 4) ──────────────────────────────
+    // On retient la valeur ForecastTodayWh lue en début de journée pour calculer
+    // DailySolarConsumedWh = ForecastToday(début) − ForecastRemainingToday(maintenant).
+    private double? _forecastTodayWhAtStartOfDay = null;
+    private int     _lastDayOfYear = -1;
+
     // ── Hystérésis IdleCharge par batterie ────────────────────────────────────
     // Délégué à IdleChargeHysteresis pour être testable indépendamment.
     private readonly IdleChargeHysteresis _idleHysteresis;
@@ -177,6 +183,20 @@ public class SolarWorker : BackgroundService
 
         var wxSnapshot = _weatherCache.GetCurrent();
 
+        // ── Bilan énergétique journalier : tracker ForecastTodayWh au lever du jour ──
+        // On mémorise la première valeur de ForecastTodayWh de la journée pour calculer
+        // DailySolarConsumedWh = forecastAtStartOfDay − forecastRemainingNow.
+        int todayDoy = DateTime.Now.DayOfYear;
+        if (todayDoy != _lastDayOfYear)
+        {
+            _forecastTodayWhAtStartOfDay = snapshot.ForecastTodayWh;
+            _lastDayOfYear = todayDoy;
+            if (_forecastTodayWhAtStartOfDay.HasValue)
+                _logger.LogInformation(
+                    "New day — ForecastTodayWh reference set to {V:F0}Wh for daily solar consumption tracking",
+                    _forecastTodayWhAtStartOfDay.Value);
+        }
+
         var result = await _smartService.DistributeAsync(
             surplusW: effectiveSurplus,
             batteries: batteries,
@@ -185,6 +205,12 @@ public class SolarWorker : BackgroundService
             weatherSnapshot: wxSnapshot,
             forecastTodayWh: snapshot.ForecastTodayWh,
             forecastTomorrowWh: snapshot.ForecastTomorrowWh,
+            estimatedConsumptionNextHoursWh: snapshot.EstimatedConsumptionNextHoursWh,
+            measuredConsumptionW: snapshot.ConsumptionW,
+            forecastThisHourWh: snapshot.ForecastThisHourWh,
+            forecastNextHourWh: snapshot.ForecastNextHourWh,
+            forecastRemainingTodayWh: snapshot.ForecastRemainingTodayWh,
+            forecastTodayWhAtStartOfDay: _forecastTodayWhAtStartOfDay,
             ct: ct);
 
         _logger.LogInformation(

@@ -110,4 +110,25 @@ public class DistributionRepository : IDistributionRepository
     public async Task<int> CountValidFeedbacksAsync(CancellationToken ct = default)
         => await _db.SessionFeedbacks
             .CountAsync(f => f.Status == FeedbackStatus.Valid, ct);
+
+    /// <summary>
+    /// Moyenne roulante de consommation maison sur les N derniers cycles persistés
+    /// qui ont une valeur MeasuredConsumptionW non nulle.
+    /// Retourne null si aucune donnée de consommation n'est encore disponible.
+    /// </summary>
+    public async Task<double?> GetRecentConsumptionAvgWAsync(int lastNCycles, CancellationToken ct = default)
+    {
+        if (lastNCycles <= 0) return null;
+
+        var values = await _db.DistributionSessions
+            .Where(s => s.MeasuredConsumptionW != null)
+            .OrderByDescending(s => s.RequestedAt)
+            .Take(lastNCycles)
+            .Select(s => s.MeasuredConsumptionW!.Value)
+            .ToListAsync(ct);
+
+        if (values.Count == 0) return null;
+
+        return values.Average();
+    }
 }

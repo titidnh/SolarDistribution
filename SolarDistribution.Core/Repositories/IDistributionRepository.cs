@@ -22,4 +22,11 @@ public interface IDistributionRepository
     Task UpdateMLScoreAsync(long sessionId, double efficiencyScore, CancellationToken ct = default);
     Task<int> CountSessionsAsync(CancellationToken ct = default);
     Task<int> CountValidFeedbacksAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Retourne la moyenne de consommation maison (W) sur les N derniers cycles persistés.
+    /// Null si aucun cycle avec consommation mesurée n'existe encore.
+    /// Utilisé pour projeter EstimatedConsumptionNextHoursWh.
+    /// </summary>
+    Task<double?> GetRecentConsumptionAvgWAsync(int lastNCycles, CancellationToken ct = default);
 }

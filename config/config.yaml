@@ -149,6 +149,49 @@ solar:
   # consumption_entity: "sensor.home_consumption_power"
 
   # ┌────────────────────────────────────────────────────────────────────────────┐
+  # │  PRÉVISION DE CHARGE (LOAD FORECASTING) — OPTIONNEL                       │
+  # ├────────────────────────────────────────────────────────────────────────────┤
+  # │  PROBLÈME SANS CES RÉGLAGES :                                              │
+  # │    À 14h, le worker voit 300W de surplus et estime que le solaire          │
+  # │    couvrira les batteries jusqu'à 18h. Sauf que le four s'allume à 17h     │
+  # │    et absorbe 2000W → plus rien pour les batteries → import réseau en HP.  │
+  # │                                                                            │
+  # │  SOLUTION :                                                                │
+  # │    Le worker projette la consommation maison sur les prochaines heures     │
+  # │    (rolling average des N derniers cycles × horizon).                      │
+  # │    Si la conso estimée dépasse le solaire attendu → la charge réseau       │
+  # │    est augmentée en conséquence (ComputeAdaptiveGridChargeW).              │
+  # │                                                                            │
+  # │  DEUX MODES DE CONFIGURATION :                                             │
+  # │                                                                            │
+  # │    1. consumption_entity (une seule entité globale) :                      │
+  # │         → décommenter ci-dessus                                            │
+  # │         → ex: sensor.home_consumption_power                                │
+  # │                                                                            │
+  # │    2. zone_consumption_entities (somme de plusieurs appareils) :           │
+  # │         → utile si vous n'avez pas de sensor de conso globale              │
+  # │         → les valeurs sont sommées pour estimer la conso totale            │
+  # │         → ignoré si consumption_entity est déjà configuré                 │
+  # └────────────────────────────────────────────────────────────────────────────┘
+
+  # Entités HA de consommation par zone/appareil (W) — décommenter et adapter.
+  # Somme automatique si consumption_entity est absent.
+  # zone_consumption_entities:
+  #   - "sensor.ev_charger_power"        # Chargeur voiture électrique
+  #   - "sensor.water_heater_power"      # Chauffe-eau
+  #   - "sensor.oven_power"              # Four
+
+  # Nombre de cycles récents utilisés pour la moyenne roulante de consommation.
+  # 12 cycles × 60s = 10 min de rolling average (recommandé)
+  # Mettre à 0 pour désactiver (utilise uniquement la lecture live).
+  consumption_rolling_window_cycles: 12
+
+  # Horizon de projection de la consommation estimée (en heures).
+  # EstimatedConsumptionNextHoursWh = avg_consumption_W × horizon
+  # Aligner avec tariff.solar_forecast_horizon_hours (défaut 4h).
+  consumption_projection_hours: 4.0
+
+  # ┌────────────────────────────────────────────────────────────────────────────┐
   # │  PRÉVISIONS SOLAIRES HA — OPTIONNEL MAIS FORTEMENT RECOMMANDÉ             │
   # ├────────────────────────────────────────────────────────────────────────────┤
   # │  Ces deux entités exposent la production estimée (en Wh) pour AUJOURD'HUI │
@@ -188,6 +231,43 @@ solar:
 
   # Production solaire estimée DEMAIN (Wh) — décommenter et adapter
   # forecast_tomorrow_entity: "sensor.solcast_pv_forecast_forecast_tomorrow"
+
+  # ┌────────────────────────────────────────────────────────────────────────────┐
+  # │  PRÉVISIONS SOLCAST INTRA-JOURNALIÈRES — OPTIONNEL                        │
+  # ├────────────────────────────────────────────────────────────────────────────┤
+  # │  PROBLÈME SANS CES RÉGLAGES :                                              │
+  # │    L'algo connaît la production totale J (ex: 8000 Wh) mais pas QUAND.    │
+  # │    À 2h du matin, il ne sait pas si le soleil arrive dans 4h ou 8h.       │
+  # │    Il applique un profil sinusoïdal générique (pic à midi) et peut         │
+  # │    charger 600W depuis le réseau alors que 1000Wh arrivent dès 9h.        │
+  # │                                                                            │
+  # │  SOLUTION (3 entités Solcast) :                                            │
+  # │    • forecast_this_hour  : production de l'heure courante (Wh)            │
+  # │    • forecast_next_hour  : production de l'heure suivante (Wh)            │
+  # │    • forecast_remaining_today : solaire restant aujourd'hui (Wh)           │
+  # │                                                                            │
+  # │  CE QUE ÇA AMÉLIORE :                                                      │
+  # │    • Si next_hour élevé → réduction proportionnelle de la charge réseau    │
+  # │      (on attend le solaire plutôt que de charger du réseau inutilement)    │
+  # │    • Bilan journalier précis : capacity × (softMax − SOC) − remaining     │
+  # │      → bloque la charge réseau si le solaire restant couvre le déficit     │
+  # │    • Courbe horaire réelle remplace le profil sinusoïdal simplifié         │
+  # │                                                                            │
+  # │  ENTITÉS SOLCAST STANDARD (intégration Home Assistant) :                  │
+  # │    sensor.solcast_pv_forecast_forecast_this_hour                           │
+  # │    sensor.solcast_pv_forecast_forecast_next_hour                           │
+  # │    sensor.solcast_pv_forecast_forecast_remaining_today                     │
+  # └────────────────────────────────────────────────────────────────────────────┘
+
+  # Production Solcast CETTE HEURE (Wh) — décommenter et adapter
+  # forecast_this_hour_entity: "sensor.solcast_pv_forecast_forecast_this_hour"
+
+  # Production Solcast HEURE SUIVANTE (Wh) — décommenter et adapter
+  # forecast_next_hour_entity: "sensor.solcast_pv_forecast_forecast_next_hour"
+
+  # Production Solcast RESTANTE AUJOURD'HUI (Wh) — décommenter et adapter
+  # Requis pour le bilan énergétique journalier (Feature 4).
+  # forecast_remaining_today_entity: "sensor.solcast_pv_forecast_forecast_remaining_today"
 
 # ── Batteries ──────────────────────────────────────────────────────────────────
 batteries:

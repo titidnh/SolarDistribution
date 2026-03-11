@@ -36,6 +36,39 @@ public class DistributionSession
     /// <summary>Production solaire estimée demain depuis HA (Wh). Null si non configuré.</summary>
     public double? ForecastTomorrowWh         { get; set; }
 
+    // Load forecasting (consommation estimée)
+    /// <summary>
+    /// Consommation maison mesurée au moment de la session (W).
+    /// Null si ConsumptionEntity et ZoneConsumptionEntities ne sont pas configurés.
+    /// </summary>
+    public double? MeasuredConsumptionW       { get; set; }
+    /// <summary>
+    /// Consommation estimée sur les prochaines heures (Wh) — moyenne roulante × horizon.
+    /// Nulle si insuffisamment de cycles historiques ou entités non configurées.
+    /// Utilisée par ComputeAdaptiveGridChargeW pour affiner la charge réseau.
+    /// </summary>
+    public double? EstimatedConsumptionNextHoursWh { get; set; }
+
+    // Intraday + bilan journalier (Feature 3 & 4)
+    /// <summary>
+    /// Production Solcast restante aujourd'hui (Wh) au moment de la session.
+    /// Alimente le calcul du bilan énergétique journalier et le ML model.
+    /// </summary>
+    public double? ForecastRemainingTodayWh   { get; set; }
+    /// <summary>
+    /// Déficit énergétique journalier (Wh) : capacité × (softMax - avgSOC) − solaire_restant.
+    /// Positif → charge réseau justifiée. Négatif/nul → solaire suffit → charge bloquée.
+    /// Null si ForecastRemainingTodayWh absent.
+    /// </summary>
+    public double? EnergyDeficitTodayWh       { get; set; }
+    /// <summary>
+    /// Énergie solaire réellement consommée (autoconsommation) depuis minuit (Wh).
+    /// Calculé via : ForecastTodayWh(début_journée) − ForecastRemainingTodayWh(maintenant).
+    /// Feature ML : permet d'apprendre l'écart entre le forecast et la réalité de consommation.
+    /// Null si ForecastRemainingTodayWh ou ForecastTodayWh sont absents.
+    /// </summary>
+    public double? DailySolarConsumedWh       { get; set; }
+
     public ICollection<BatterySnapshot> BatterySnapshots { get; set; } = new List<BatterySnapshot>();
     public WeatherSnapshot?  Weather      { get; set; }
     public MLPredictionLog?  MlPrediction { get; set; }

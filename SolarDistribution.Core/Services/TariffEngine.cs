@@ -54,6 +54,14 @@ public class TariffConfig
     public double LazyBufferHours { get; set; } = 0.5;
 
     public List<TariffSlot> Slots { get; set; } = new List<TariffSlot>();
+
+    /// <summary>
+    /// [Intraday] Seuil Wh sur les 3 prochaines heures au-dessus duquel la charge réseau
+    /// est réduite car le solaire arrive bientôt.
+    /// Si ForecastNext3HoursWh >= cette valeur → on réduit la charge réseau proportionnellement.
+    /// Défaut 200 Wh (= 200W moyen sur 1h ≈ une production solaire modeste).
+    /// </summary>
+    public double MinSolarNext3HoursWhForGridReduction { get; set; } = 200.0;
 }
 
 public class TariffSlot
@@ -147,7 +155,14 @@ public class TariffEngine
         DateTime localTime,
         double[] solarForecastWm2,
         double? forecastTodayWh = null,
-        double? forecastTomorrowWh = null)
+        double? forecastTomorrowWh = null,
+        double? estimatedConsumptionNextHoursWh = null,
+        double? forecastThisHourWh = null,
+        double? forecastNextHourWh = null,
+        double? forecastRemainingTodayWh = null,
+        double totalBatteryCapacityWh = 0,
+        double avgBatterySocPercent = 0,
+        double avgBatterySoftMaxPercent = 80)
     {
         var activeSlot = GetActiveSlot(localTime);
         double? price = activeSlot?.PricePerKwh;
@@ -167,7 +182,43 @@ public class TariffEngine
         // OR logique : si l'un ou l'autre signal prédit du solaire → bloquer la charge réseau
         bool solarExpected = solarExpectedFromMeteo || solarExpectedFromHa;
 
-        bool gridChargeAllowed = isFavorable && !solarExpected && _config.Slots.Any();
+        // ── Bilan énergétique journalier (Feature 4) ─────────────────────────
+        // EnergyDeficitTodayWh = énergie nécessaire pour remplir les batteries - solaire restant.
+        // Si le solaire restant couvre le déficit → bloquer la charge réseau même en HC.
+        double? energyDeficitTodayWh = null;
+        bool gridChargeBlockedBySolarSufficiency = false;
+
+        if (forecastRemainingTodayWh.HasValue && totalBatteryCapacityWh > 0)
+        {
+            double energyNeededWh = (avgBatterySoftMaxPercent - avgBatterySocPercent) / 100.0
+                                    * totalBatteryCapacityWh;
+            energyNeededWh = Math.Max(0, energyNeededWh);
+
+            energyDeficitTodayWh = energyNeededWh - forecastRemainingTodayWh.Value;
+
+            // Si le solaire restant couvre le besoin batterie → pas besoin de charger du réseau
+            if (energyDeficitTodayWh <= 0)
+            {
+                gridChargeBlockedBySolarSufficiency = true;
+                _logger.LogDebug(
+                    "Energy balance: need={Need:F0}Wh, solar_remaining={Solar:F0}Wh → deficit={Deficit:F0}Wh " +
+                    "(solar sufficient — grid charge blocked)",
+                    energyNeededWh, forecastRemainingTodayWh.Value, energyDeficitTodayWh);
+            }
+            else
+            {
+                _logger.LogDebug(
+                    "Energy balance: need={Need:F0}Wh, solar_remaining={Solar:F0}Wh → deficit={Deficit:F0}Wh " +
+                    "(grid charge needed)",
+                    energyNeededWh, forecastRemainingTodayWh.Value, energyDeficitTodayWh);
+            }
+        }
+
+        // GridChargeAllowed : bloqué aussi si le bilan journalier est positif (solaire suffisant)
+        bool gridChargeAllowed = isFavorable
+            && !solarExpected
+            && !gridChargeBlockedBySolarSufficiency
+            && _config.Slots.Any();
 
         double? maxFuture = GetMaxPriceNextHours(localTime, 24);
         double savings = (maxFuture ?? 0) - (price ?? 0);
@@ -177,6 +228,28 @@ public class TariffEngine
             hoursRemainingInSlot = ComputeHoursRemainingInSlot(activeSlot, localTime);
 
         double? hoursUntilSolar = ComputeHoursUntilSolar(localTime, solarForecastWm2);
+
+        // ── Intraday Solcast curve (Feature 3) ───────────────────────────────
+        // On construit un tableau [Wh/h] à partir des entités Solcast HA :
+        //   [0] = this_hour, [1] = next_hour, [2] = extrapolation linéaire (decay de next_hour)
+        // Cette courbe remplace SolarFractionBetweenHours() quand elle est disponible.
+        double[]? solcastHourlyCurveWh = null;
+        double? forecastNext3HoursWh   = null;
+
+        if (forecastNextHourWh.HasValue)
+        {
+            double thisH = forecastThisHourWh ?? forecastNextHourWh.Value;
+            double nextH = forecastNextHourWh.Value;
+            // Extrapolation heure+2 : moyenne pondérée (decay vers next_hour)
+            double h2 = nextH * 0.85; // légère décroissance conservative
+
+            solcastHourlyCurveWh = [thisH, nextH, h2];
+            forecastNext3HoursWh = thisH + nextH + h2;
+
+            _logger.LogDebug(
+                "Solcast intraday curve: [{H0:F0}, {H1:F0}, {H2:F0}] Wh → next3h={N3:F0}Wh",
+                thisH, nextH, h2, forecastNext3HoursWh);
+        }
 
         return new TariffContext(
             ActiveSlotName: activeSlot?.Name,
@@ -197,7 +270,15 @@ public class TariffEngine
             HasLowForecastTomorrow: forecastTomorrowWh.HasValue
                                      && forecastTomorrowWh.Value < _config.LowForecastTomorrowWh,
             EveningBoostPercent: _config.EveningBoostPercent,
-            LazyBufferHours: _config.LazyBufferHours
+            LazyBufferHours: _config.LazyBufferHours,
+            EstimatedConsumptionNextHoursWh: estimatedConsumptionNextHoursWh,
+            ForecastThisHourWh: forecastThisHourWh,
+            ForecastNextHourWh: forecastNextHourWh,
+            ForecastNext3HoursWh: forecastNext3HoursWh,
+            ForecastRemainingTodayWh: forecastRemainingTodayWh,
+            SolcastHourlyCurveWh: solcastHourlyCurveWh,
+            EnergyDeficitTodayWh: energyDeficitTodayWh,
+            GridChargeBlockedBySolarSufficiency: gridChargeBlockedBySolarSufficiency
         );
     }
 
@@ -272,7 +353,61 @@ public record TariffContext(
     /// <summary>Bonus SoftMax (%) quand demain est mauvais et qu'on est dans un créneau favorable.</summary>
     double EveningBoostPercent,
     /// <summary>Marge de sécurité en heures pour le Lazy Charging (décalage du démarrage vers la fin du slot HC).</summary>
-    double LazyBufferHours
+    double LazyBufferHours,
+    /// <summary>
+    /// Consommation maison estimée sur les prochaines heures (Wh).
+    /// Calculée par rolling average des N derniers cycles × horizon de projection.
+    /// Null si aucune entité de consommation n'est configurée ou si insuffisamment de données.
+    /// Utilisée dans ComputeAdaptiveGridChargeW pour augmenter la charge réseau en anticipation
+    /// d'une forte conso prévue (ex: four, EV) qui réduirait l'autoconsommation solaire.
+    /// </summary>
+    double? EstimatedConsumptionNextHoursWh,
+
+    // ── Intraday Solcast forecast ────────────────────────────────────────────
+    /// <summary>
+    /// Production Solcast CETTE HEURE (Wh). Null si non configuré.
+    /// Permet de savoir si le solaire monte en ce moment.
+    /// </summary>
+    double? ForecastThisHourWh,
+    /// <summary>
+    /// Production Solcast L'HEURE SUIVANTE (Wh). Null si non configuré.
+    /// Si élevé → ne pas charger depuis le réseau, le solaire arrive dans &lt; 1h.
+    /// </summary>
+    double? ForecastNextHourWh,
+    /// <summary>
+    /// Somme des 3 prochaines heures Solcast (Wh) : this_hour + next_hour + heure_après.
+    /// Construit depuis ForecastThisHourWh + ForecastNextHourWh + extrapolation linéaire.
+    /// Null si ForecastNextHourWh est absent.
+    /// </summary>
+    double? ForecastNext3HoursWh,
+    /// <summary>
+    /// Production Solcast RESTANTE AUJOURD'HUI (Wh). Null si non configuré.
+    /// Utilisé pour le bilan énergétique journalier (Feature 4).
+    /// </summary>
+    double? ForecastRemainingTodayWh,
+    /// <summary>
+    /// Courbe Solcast horaire réelle [Wh/h] reconstituée depuis les entités HA.
+    /// Index 0 = heure courante, 1 = heure suivante, etc.
+    /// Null si les entités intraday ne sont pas configurées.
+    /// Remplace SolarFractionBetweenHours() dans ComputeAdaptiveGridChargeW.
+    /// </summary>
+    double[]? SolcastHourlyCurveWh,
+
+    // ── Bilan énergétique journalier (Feature 4) ─────────────────────────────
+    /// <summary>
+    /// Déficit énergétique aujourd'hui (Wh) :
+    ///   capacity × (softMax − avgSoc) − ForecastRemainingTodayWh
+    /// Positif → les batteries ne seront pas remplies par le solaire seul → charge réseau justifiée.
+    /// Négatif/nul → le solaire restant suffit → bloquer la charge réseau même en HC.
+    /// Null si ForecastRemainingTodayWh est absent (pas de calcul possible).
+    /// </summary>
+    double? EnergyDeficitTodayWh,
+    /// <summary>
+    /// True si la charge réseau est bloquée car le solaire restant aujourd'hui
+    /// est suffisant pour couvrir le déficit batterie (EnergyDeficitTodayWh ≤ 0).
+    /// Motif de blocage plus précis que SolarExpectedSoon (qui est binaire).
+    /// </summary>
+    bool GridChargeBlockedBySolarSufficiency
 )
 {
     public double NormalizedPrice => CurrentPricePerKwh.HasValue
@@ -284,4 +419,18 @@ public record TariffContext(
     /// Quand true, l'algo utilise ForecastTodayWh/TomorrowWh plutôt que le modèle générique.
     /// </summary>
     public bool HasHaForecast => ForecastTodayWh.HasValue || ForecastTomorrowWh.HasValue;
+
+    /// <summary>
+    /// True si les entités Solcast intraday sont disponibles.
+    /// Quand true, SolcastHourlyCurveWh remplace SolarFractionBetweenHours() dans le calcul adaptatif.
+    /// </summary>
+    public bool HasIntradayForecast => SolcastHourlyCurveWh is { Length: > 0 };
+
+    /// <summary>
+    /// True si le solaire est suffisant dans les prochaines heures selon Solcast intraday.
+    /// Utilisé pour bloquer la charge réseau quand le solaire arrive dans &lt; 2h.
+    /// Seuil configurable via MinSolarNextHoursWhForGridBlock dans TariffConfig.
+    /// </summary>
+    public bool SolarSufficientSoon =>
+        ForecastNext3HoursWh.HasValue && ForecastNext3HoursWh.Value > 0;
 }
