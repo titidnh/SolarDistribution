@@ -22,11 +22,12 @@ public class SolarWorker : BackgroundService
     private const int MaxBackoffSeconds = 300;
 
     // ── État anti-oscillation surplus (Fix Bug #3) ────────────────────────────
-    // Double seuil : on démarre la charge quand surplus > SurplusBufferW,
-    // et on ne la coupe que quand surplus < SurplusStopBufferW ET qu'on a fait
-    // au moins MinChargeDurationCycles cycles. Entre les deux seuils : état maintenu.
     private bool _isChargingFromSurplus = false;
     private int _consecutiveChargeCycles = 0;
+
+    // ── Hystérésis IdleCharge par batterie ────────────────────────────────────
+    // Délégué à IdleChargeHysteresis pour être testable indépendamment.
+    private readonly IdleChargeHysteresis _idleHysteresis;
 
     public SolarWorker(
         SolarConfig config,
@@ -40,6 +41,7 @@ public class SolarWorker : BackgroundService
         _config = config; _reader = reader; _sender = sender;
         _smartService = smartService; _weatherCache = weatherCache;
         _mlService = mlService; _logger = logger;
+        _idleHysteresis = new IdleChargeHysteresis(logger);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -58,8 +60,8 @@ public class SolarWorker : BackgroundService
 
         foreach (var b in _config.Batteries)
             _logger.LogInformation(
-                "  [{Name}] maxRate={Rate}W idle={Idle}W softMax={SoftMax}% hysteresis={Hyst}%",
-                b.Name, b.MaxChargeRateW, b.IdleChargeW, b.SoftMaxPercent, b.SocHysteresisPercent);
+                "  [{Name}] maxRate={Rate}W idle={Idle}W idleStop={IdleStop}W softMax={SoftMax}% hysteresis={Hyst}%",
+                b.Name, b.MaxChargeRateW, b.IdleChargeW, b.IdleStopBufferW, b.SoftMaxPercent, b.SocHysteresisPercent);
 
         _logger.LogInformation("  ML Status      : {Status}",
             (await _mlService.GetStatusAsync(stoppingToken)).IsAvailable ? "available" : "training...");
@@ -132,8 +134,6 @@ public class SolarWorker : BackgroundService
                 "{Failed} battery(ies) could not be read — continuing with {Valid} valid batteries",
                 snapshot.Batteries.Count - validReadings.Count, validReadings.Count);
 
-        var batteries = BuildBatteries(validReadings);
-
         // ── Correction du surplus brut ─────────────────────────────────────────
         // Le surplus HA (P1 ou sensor) est déjà NET de la charge batterie actuelle.
         // Exemple : batteries chargent à 200W + 200W = 400W, P1 = -912W
@@ -170,6 +170,10 @@ public class SolarWorker : BackgroundService
                 "Surplus: raw={Raw:F0}W − buffer={Buf:F0}W = effective={Eff:F0}W " +
                 "(no current_charge_power_entity configured — correction skipped)",
                 rawSurplus, _config.Polling.SurplusBufferW, effectiveSurplus);
+
+        // BuildBatteries doit être appelé APRÈS effectiveSurplus pour que l'hystérésis
+        // IdleCharge (IdleChargeHysteresis) puisse évaluer le seuil correct.
+        var batteries = BuildBatteries(validReadings, effectiveSurplus);
 
         var wxSnapshot = _weatherCache.GetCurrent();
 
@@ -216,7 +220,7 @@ public class SolarWorker : BackgroundService
                 result.MLRecommendation.Rationale);
     }
 
-    private List<Battery> BuildBatteries(List<BatteryReading> readings)
+    private List<Battery> BuildBatteries(List<BatteryReading> readings, double effectiveSurplus)
     {
         return readings.Select(reading =>
         {
@@ -228,6 +232,9 @@ public class SolarWorker : BackgroundService
                     "Battery {Id} ({Name}): MaxChargeRate live={Live:F0}W vs static={Static:F0}W — using live",
                     bc.Id, bc.Name, reading.MaxChargeRateW, bc.MaxChargeRateW);
 
+            // ── Hystérésis IdleChargeW (Anti-oscillation IdleCharge) ─────────
+            double effectiveIdleChargeW = _idleHysteresis.Compute(bc, effectiveSurplus);
+
             return new Battery
             {
                 Id = bc.Id,
@@ -238,8 +245,9 @@ public class SolarWorker : BackgroundService
                 HardMaxPercent = bc.HardMaxPercent,
                 CurrentPercent = reading.SocPercent,
                 Priority = bc.Priority,
-                IdleChargeW = bc.IdleChargeW,
-                SocHysteresisPercent = bc.SocHysteresisPercent, // Fix Bug #1
+                HardwareMinChargeW = bc.HardwareMinChargeW,
+                IdleChargeW = effectiveIdleChargeW,
+                SocHysteresisPercent = bc.SocHysteresisPercent,
                 EmergencyGridChargeBelowPercent = bc.EmergencyGridChargeBelowPercent,
                 EmergencyGridChargeTargetPercent = bc.EmergencyGridChargeTargetPercent,
             };

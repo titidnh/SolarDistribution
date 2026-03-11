@@ -129,6 +129,23 @@ public class BatteryConfig
     /// Défaut : 100 W (override possible par batterie)
     /// Mettre à 0 pour comportement standard (coupe la charge à la cible).
     /// </summary>
+    /// <summary>
+    /// Puissance minimale en dessous de laquelle la batterie n'accepte pas la charge (W).
+    ///
+    /// Contrainte hardware : certaines batteries (ex: EcoFlow Delta) refusent ou ignorent
+    /// toute consigne inférieure à ce seuil. Envoyer 50W à une batterie dont le minimum
+    /// est 100W ne produit aucune charge réelle.
+    ///
+    /// Impact sur la distribution (surplus solaire) :
+    ///   · PASS 1/2 : si surplusW &lt; HardwareMinChargeW → batterie skippée
+    ///   · IdleCharge : même garde (remplace l'ancienne condition surplusW >= IdleChargeW)
+    ///   · Emergency grid charge : ignore ce seuil — charge toujours
+    ///   · Grid charge HC (PASS 3) : GridChargeAllowedW déjà calculé ≥ ce seuil
+    ///
+    /// Défaut 0 → désactivé. Pour EcoFlow Delta 3 : mettre à 100.
+    /// </summary>
+    public double HardwareMinChargeW { get; set; } = 0;
+
     public double IdleChargeW { get; set; } = 100;
 
     /// <summary>
@@ -142,6 +159,25 @@ public class BatteryConfig
     /// Valeur recommandée : 2.0. Mettre à 0 pour désactiver.
     /// </summary>
     public double SocHysteresisPercent { get; set; } = 0.0;
+
+    /// <summary>
+    /// Hystérésis sur le seuil d'activation/arrêt de IdleChargeW (Anti-oscillation IdleCharge).
+    ///
+    /// Problème : avec IdleChargeW=100W, si le surplus oscille autour de 100W, on obtient
+    /// un ON/OFF à chaque cycle : surplus=110W → IdleCharge ON (self-powered OFF),
+    /// surplus=90W → IdleCharge OFF (self-powered ON), etc.
+    /// Chaque transition déclenche des actions HA (ZeroWActions / NonZeroWActions)
+    /// qui peuvent stresser le BMS EcoFlow.
+    ///
+    /// Solution double-seuil :
+    ///   · Activation  : surplus >= IdleChargeW                         (ex: 100W)
+    ///   · Arrêt       : surplus &lt; IdleChargeW - IdleStopBufferW        (ex: 100 - 30 = 70W)
+    ///   · Zone morte  : [70W – 100W] → état précédent maintenu
+    ///
+    /// Valeur recommandée : 30W (≈ 30% de IdleChargeW=100W).
+    /// Mettre à 0 pour désactiver (seuil unique à IdleChargeW, comportement original Bug #5).
+    /// </summary>
+    public double IdleStopBufferW { get; set; } = 30.0;
 
     public BatteryEntitiesConfig Entities { get; set; } = new();
     public double? EmergencyGridChargeBelowPercent { get; set; }

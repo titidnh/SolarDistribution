@@ -212,6 +212,31 @@ batteries:
     # Défaut : 100 W. Mettre à 0 pour comportement standard (coupe à la cible).
     idle_charge_w: 100
 
+    # ── Puissance minimale hardware (seuil physique de la batterie) ───────────
+    # En dessous de cette valeur, la batterie ignore silencieusement la consigne.
+    # Exemple EcoFlow Delta 3 : 100W minimum.
+    # Impact :
+    #   · Surplus solaire < hardware_min_charge_w → pas de charge (PASS 1/2 skippé)
+    #   · IdleCharge : même garde (surplus doit couvrir ce seuil physique)
+    #   · Emergency grid charge : ignore ce seuil, charge toujours
+    # Mettre à 0 pour désactiver (aucun seuil minimum).
+    hardware_min_charge_w: 100
+
+    # ── Anti-oscillation IdleCharge ───────────────────────────────────────────
+    # Zone morte autour du seuil d'activation IdleChargeW.
+    #
+    # Problème sans hystérésis : surplus oscille entre 90W et 110W autour de
+    # idle_charge_w=100W → ON/OFF à chaque cycle → ZeroWActions / NonZeroWActions
+    # déclenchées en boucle → stress BMS EcoFlow sur self-powered toggle.
+    #
+    # Solution double-seuil :
+    #   · Activation  : surplus >= idle_charge_w              (100W)
+    #   · Arrêt       : surplus <  idle_charge_w - idle_stop_buffer_w  (70W)
+    #   · Zone morte  : [70W – 100W] → état précédent maintenu
+    #
+    # Valeur recommandée : 30W. Mettre à 0 pour désactiver (seuil unique, risque ON/OFF).
+    idle_stop_buffer_w: 30
+
     # ── Zone morte SOC autour de la cible (anti micro-charges BMS) ───────────
     #
     # POURQUOI : une fois la cible atteinte (ex: 80%), certains systèmes comme
@@ -344,7 +369,9 @@ batteries:
     soft_max_percent: 80
     hard_max_percent: 100
     idle_charge_w: 100
-    soc_hysteresis_percent: 2.0  # Zone morte SOC — voir batterie 1 pour la doc complète
+    hardware_min_charge_w: 100  # Seuil physique hardware — voir batterie 1 pour la doc complète
+    idle_stop_buffer_w: 30      # Zone morte IdleCharge — voir batterie 1 pour la doc complète
+    soc_hysteresis_percent: 2.0 # Zone morte SOC — voir batterie 1 pour la doc complète
 
     entities:
       soc: "sensor.battery_secondary_state_of_charge"

@@ -236,6 +236,7 @@ public class SmartDistributionService
                 HardMaxPercent = b.HardMaxPercent,
                 CurrentPercent = b.CurrentPercent,
                 Priority = b.Priority,
+                HardwareMinChargeW = b.HardwareMinChargeW,
                 IdleChargeW = effectiveIdleChargeW,
                 // Propagation nécessaire pour que ComputeAdaptiveGridChargeW accède à l'hystérésis
                 SocHysteresisPercent = b.SocHysteresisPercent,

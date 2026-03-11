@@ -24,13 +24,13 @@ namespace SolarDistribution.Core.Services;
 /// │    Limité à SoftMax — on garde de la place pour le prochain surplus       │
 /// │                                                                           │
 /// │  POST-DISTRIBUTION — IdleChargeW                                          │
-/// │    Toute batterie allouée à 0 W reçoit IdleChargeW (défaut 100 W)        │
-/// │    à condition d'être encore sous HardMaxPercent                          │
-/// │    ET qu'il y ait un surplus solaire réel (surplusW > 0).                │
-/// │    FIX Bug #4 : IdleChargeW est désactivé quand surplusW = 0 et que la   │
-/// │    batterie a IdleChargeW = 0 (forcé par SmartDistributionService en HP). │
-/// │    Cela évite d'envoyer 100 W depuis le réseau en tarif HP               │
-/// │    uniquement pour "maintenir" une batterie déjà à sa cible.             │
+/// │    Toute batterie allouée à 0 W ET à sa cible (>= SoftMax) reçoit        │
+/// │    IdleChargeW pour maintenir le BMS actif.                               │
+/// │    Conditions : total=0W, SOC >= SoftMax, SOC <= HardMax,                │
+/// │                 surplus >= IdleChargeW (Fix Bug #5).                      │
+/// │    FIX Bug #4 : IdleChargeW désactivé si surplusW = 0.                   │
+/// │    FIX Bug #5 : IdleChargeW désactivé si surplus < IdleChargeW —         │
+/// │    évite de tirer la différence depuis le réseau en silence.             │
 /// └───────────────────────────────────────────────────────────────────────────┘
 /// </summary>
 public class BatteryDistributionService : IBatteryDistributionService
@@ -95,16 +95,24 @@ public class BatteryDistributionService : IBatteryDistributionService
         // surplusW = 0 et que la batterie est déjà à sa cible.
         // Ici on vérifie en plus surplusW > 0 comme garde supplémentaire : sans solaire,
         // IdleChargeW n'a aucun sens (rien à "absorber") et deviendrait de la charge réseau.
+        //
+        // FIX Bug #5 : IdleChargeW ne doit pas être injecté si le surplus disponible
+        // est inférieur à IdleChargeW. Exemple : surplus=50W, IdleChargeW=100W →
+        // la batterie ne peut absorber que 50W, l'algo enverrait quand même 100W ce
+        // qui tire 50W depuis le réseau. On ne charge donc pas du tout dans ce cas.
+        // Exception : les batteries en emergency grid charge chargent toujours normalement
+        // via PASS 3 (DistributeGridToGroup), indépendamment de ce bloc.
         foreach (var b in batteryList)
         {
             double total = allocated[b.Id] + gridAlloc[b.Id];
             if (total <= 0.01
-                && currentPct[b.Id] < b.HardMaxPercent - 0.1
+                && currentPct[b.Id] >= b.SoftMaxPercent - 0.1  // batterie à sa cible (SoftMax atteint)
+                && currentPct[b.Id] <= b.HardMaxPercent         // mais pas au-delà du hard max
                 && b.IdleChargeW > 0
-                && surplusW > 0)   // FIX Bug #4 : pas d'IdleCharge sans surplus solaire
+                && surplusW > 0                                  // FIX Bug #4 : pas d'IdleCharge sans surplus solaire
+                && (b.HardwareMinChargeW <= 0 || surplusW >= b.HardwareMinChargeW) // seuil hardware
+                && !b.IsEmergencyGridCharge)                     // Emergency : charge déjà gérée par PASS 3
             {
-                // On ajoute IdleChargeW dans allocated (surplus) pour que le bilan soit cohérent
-                // On NE modifie PAS currentPct car c'est une consigne symbolique, pas de l'énergie
                 allocated[b.Id] = b.IdleChargeW;
             }
         }
@@ -165,7 +173,18 @@ public class BatteryDistributionService : IBatteryDistributionService
         bool useSoftMax)
     {
         double remaining = surplusW;
-        var active = group.ToList();
+
+        // ── Garde HardwareMinChargeW ──────────────────────────────────────────
+        // On exclut d'emblée les batteries dont le surplus disponible est inférieur
+        // à leur seuil minimum hardware, sauf en emergency (IsUrgent → EffectivePriority=0,
+        // la charge réseau prend le relais via PASS 3 / GridChargeAllowedW).
+        // Logique : envoyer moins que HardwareMinChargeW ne produit aucune charge réelle —
+        // la consigne est silencieusement ignorée par le hardware (ex: EcoFlow).
+        var active = group
+            .Where(b => b.HardwareMinChargeW <= 0              // pas de contrainte hardware
+                     || surplusW >= b.HardwareMinChargeW        // surplus suffisant
+                     || b.IsEmergencyGridCharge)                // emergency : toujours incluse
+            .ToList();
 
         while (remaining > 0.01 && active.Count > 0)
         {

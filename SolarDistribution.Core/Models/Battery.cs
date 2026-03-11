@@ -37,7 +37,26 @@ public class Battery
     public double IdleChargeW { get; set; } = 0;
 
     /// <summary>
-    /// Zone morte SOC (%) autour de la cible SoftMax pour la charge réseau HC (Fix Bug #1).
+    /// Puissance minimale en dessous de laquelle la batterie n'accepte pas la charge (W).
+    ///
+    /// Contrainte hardware : certaines batteries (ex: EcoFlow Delta) refusent ou ignorent
+    /// toute consigne inférieure à ce seuil. Envoyer 50W à une batterie dont le minimum
+    /// est 100W ne produit aucune charge réelle — la commande est silencieusement ignorée.
+    ///
+    /// Impact sur la distribution :
+    ///   · PASS 1/2 (surplus solaire) : si surplusW &lt; HardwareMinChargeW, la batterie
+    ///     est skippée — le surplus ne suffit pas à franchir le seuil hardware.
+    ///   · IdleCharge (POST-DISTRIBUTION) : même garde — remplace l'ancienne condition
+    ///     surplusW >= IdleChargeW (Bug #5) qui était un proxy imparfait.
+    ///   · Emergency grid charge : ignore HardwareMinChargeW — la batterie doit
+    ///     toujours charger quelle que soit la puissance disponible.
+    ///   · Grid charge HC (PASS 3) : GridChargeAllowedW est déjà calculé ≥ MinChargeRateW
+    ///     par ComputeAdaptiveGridChargeW — pas de garde supplémentaire nécessaire.
+    ///
+    /// Défaut 0 → désactivé (comportement original, aucun seuil minimum).
+    /// Configuré via BatteryConfig.HardwareMinChargeW.
+    /// </summary>
+    public double HardwareMinChargeW { get; set; } = 0;
     ///
     /// Évite les micro-commandes de 1-3W générées quand la batterie oscille juste
     /// sous sa cible par auto-décharge EcoFlow self-powered (~1-2%/h).
