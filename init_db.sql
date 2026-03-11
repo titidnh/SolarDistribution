@@ -32,11 +32,21 @@ CREATE TABLE IF NOT EXISTS distribution_sessions (
     forecast_today_wh           DECIMAL(10,2)   NULL    COMMENT 'Production solaire estimée aujourd hui - HA (Wh)',
     forecast_tomorrow_wh        DECIMAL(10,2)   NULL    COMMENT 'Production solaire estimée demain - HA (Wh)',
 
+    -- v4 : Load Forecasting
+    measured_consumption_w              DECIMAL(10,2) NULL COMMENT 'Consommation maison mesurée au cycle (W)',
+    estimated_consumption_next_hours_wh DECIMAL(10,2) NULL COMMENT 'Consommation estimée prochaines heures (Wh) — rolling avg × horizon',
+
+    -- v5 : Intraday Solcast + Bilan journalier
+    forecast_remaining_today_wh DECIMAL(10,2) NULL COMMENT 'Solaire Solcast restant aujourd hui (Wh)',
+    energy_deficit_today_wh     DECIMAL(10,2) NULL COMMENT 'Déficit énergétique journalier (Wh) : besoin − solaire_restant. Négatif = solaire suffisant',
+    daily_solar_consumed_wh     DECIMAL(10,2) NULL COMMENT 'Autoconsommation solaire depuis minuit (Wh) : forecast_today_début − remaining_now',
+
     PRIMARY KEY (id),
     INDEX idx_session_requested_at  (requested_at),
     INDEX idx_session_engine        (decision_engine),
     INDEX idx_session_tariff        (tariff_slot_name),
-    INDEX idx_session_has_forecast  (forecast_today_wh, forecast_tomorrow_wh)
+    INDEX idx_session_has_forecast  (forecast_today_wh, forecast_tomorrow_wh),
+    INDEX idx_session_energy_balance (energy_deficit_today_wh, forecast_remaining_today_wh, daily_solar_consumed_wh)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ── battery_snapshots ─────────────────────────────────────────────────────────
