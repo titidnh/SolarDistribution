@@ -449,6 +449,25 @@ tariff:
   #   Défaut 10% → SoftMax 80% devient 90% pendant le créneau favorable.
   evening_boost_percent: 10.0
 
+  # ── Lazy Charging ──────────────────────────────────────────────────────────
+  # Marge de sécurité (heures) pour décaler la charge réseau HC vers la fin du slot.
+  #
+  # Principe : plutôt que de charger dès l'ouverture du slot HC à faible puissance,
+  # le worker attend et ne démarre qu'à l'heure limite :
+  #   heure de démarrage = fin_du_slot - hoursNeeded - lazy_buffer_hours
+  #
+  # Exemple : slot HC 22h→7h (9h), batterie à 78% (besoin ~0.07h à 1000W), buffer=0.5h
+  #   → charge démarrée vers 06h25 au lieu de 22h00
+  #   → les batteries restent en self-powered toute la nuit (consommation locale)
+  #
+  # Log attendu pendant l'attente :
+  #   ⏳ Lazy charge — Battery 1: SOC 78.4% (target 85%), waiting for end of [HC Nuit] slot (8.4h remaining)
+  #
+  # Valeur recommandée : 0.5 (30 min de marge).
+  # Augmenter si le SOC dérive ou si les batteries arrivent souvent à vide en fin de nuit.
+  # Mettre à 0 pour désactiver (comportement original : charge immédiate en début de slot HC).
+  lazy_buffer_hours: 0.5
+
   # Horizon en heures pour évaluer la prévision solaire avant de décider.
   # 4h = "est-ce qu'il y aura du soleil dans les 4 prochaines heures ?"
   solar_forecast_horizon_hours: 4

@@ -72,6 +72,29 @@ Every N seconds (configurable):
 3. **Sends** `number.set_value` to HA for each battery
 4. **Persists** the session to MariaDB with Open-Meteo weather data
 
+### Grid Charge Strategy (HC slots)
+
+When off-peak tariff slots are active, the worker uses **Lazy Charging** to defer the charge toward the *end* of the cheap slot rather than starting immediately:
+
+```
+Start time = end_of_slot - hours_needed - lazy_buffer_hours
+```
+
+**Example** — slot HC 22:00→07:00 (9h), battery at 78% (target 85%, 1024Wh, 1000W max):
+- Energy needed ≈ 72Wh → `hours_needed` ≈ 0.07h
+- With `lazy_buffer_hours: 0.5` → charge starts at ~06:25
+- Between 22:00 and 06:25, batteries stay in **self-powered mode** (consuming their own stored energy)
+
+Benefits: maximises self-consumption, reduces BMS partial-charge cycles, lower grid draw during night.
+
+Log signatures:
+```
+⏳ Lazy charge — Battery 1: SOC 78.4% (target 85%), waiting for end of [HC Nuit] slot (8.4h remaining) — will charge later
+🔋 Smart grid charge — Battery 1: SOC 78.4%→85%, 1000W/1000W (100% of max) over 0.6h [HC Nuit] [HA forecast]
+```
+
+Configure via `tariff.lazy_buffer_hours` (default `0.5`). Set to `0` to revert to the original eager-charge behaviour.
+
 ## HA Entity Configuration
 
 ### Finding Your entity_ids

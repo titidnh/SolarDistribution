@@ -34,6 +34,25 @@ public class TariffConfig
     /// </summary>
     public double EveningBoostPercent { get; set; } = 10.0;
 
+    /// <summary>
+    /// Lazy Charging — marge de sécurité (en heures) ajoutée à la durée de charge estimée
+    /// pour calculer l'heure de démarrage optimale en HC.
+    ///
+    /// Principe : plutôt que de charger dès l'ouverture du slot HC à faible puissance,
+    /// le worker attend l'heure la plus tardive possible, puis charge à pleine puissance
+    /// juste avant la fin du slot (maximise le temps en self-powered, réduit les cycles BMS).
+    ///
+    ///   heure de démarrage = fin_du_slot - hoursNeeded - lazy_buffer_hours
+    ///
+    /// Exemple : slot HC 22h→7h (9h), besoin de 0.5h à 1000W, buffer=0.5h
+    ///   → démarrage à 06h00 (9h - 0.5h - 0.5h = 8h d'attente depuis 22h)
+    ///
+    /// Valeur recommandée : 0.5 (30 min).
+    /// Augmenter si les batteries décrochent souvent (SOC surestime ou dérive).
+    /// Mettre à 0 pour désactiver le lazy charging (comportement original).
+    /// </summary>
+    public double LazyBufferHours { get; set; } = 0.5;
+
     public List<TariffSlot> Slots { get; set; } = new List<TariffSlot>();
 }
 
@@ -177,7 +196,8 @@ public class TariffEngine
             ForecastTomorrowWh: forecastTomorrowWh,
             HasLowForecastTomorrow: forecastTomorrowWh.HasValue
                                      && forecastTomorrowWh.Value < _config.LowForecastTomorrowWh,
-            EveningBoostPercent: _config.EveningBoostPercent
+            EveningBoostPercent: _config.EveningBoostPercent,
+            LazyBufferHours: _config.LazyBufferHours
         );
     }
 
@@ -250,7 +270,9 @@ public record TariffContext(
     /// <summary>True si demain est prévu sous le seuil LowForecastTomorrowWh → boost SoftMax en HC.</summary>
     bool HasLowForecastTomorrow,
     /// <summary>Bonus SoftMax (%) quand demain est mauvais et qu'on est dans un créneau favorable.</summary>
-    double EveningBoostPercent
+    double EveningBoostPercent,
+    /// <summary>Marge de sécurité en heures pour le Lazy Charging (décalage du démarrage vers la fin du slot HC).</summary>
+    double LazyBufferHours
 )
 {
     public double NormalizedPrice => CurrentPricePerKwh.HasValue

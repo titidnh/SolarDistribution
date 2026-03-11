@@ -104,6 +104,21 @@ public class SmartDistributionService
                 tariffCtx.HasHaForecast ? " [HA forecast]" : " [Open-Meteo]");
         }
 
+        // Log lazy charge : batteries éligibles mais en attente (GridChargeAllowedW == 0 en HC)
+        if (tariffCtx.GridChargeAllowed)
+        {
+            foreach (var b in effective.Where(b => b.GridChargeAllowedW == 0
+                && !b.IsEmergencyGridCharge
+                && b.CurrentPercent < b.SoftMaxPercent - b.SocHysteresisPercent))
+            {
+                _logger.LogInformation(
+                    "⏳ Lazy charge — Battery {Id}: SOC {Soc:F1}% (target {SoftMax:F0}%), " +
+                    "waiting for end of [{Slot}] slot ({H:F1}h remaining) — will charge later",
+                    b.Id, b.CurrentPercent, b.SoftMaxPercent,
+                    tariffCtx.ActiveSlotName, tariffCtx.HoursRemainingInSlot ?? 0);
+            }
+        }
+
         // ── 6. Distribution ───────────────────────────────────────────────────
         var result = _algo.Distribute(surplusW, effective);
 
@@ -194,7 +209,7 @@ public class SmartDistributionService
                 gridAllowedW = 0;
             else if (tariff.GridChargeAllowed)
                 gridAllowedW = ComputeAdaptiveGridChargeW(
-                    b, softMax, tariff, minGridChargeW, urgencyThresholdHours);
+                    b, softMax, tariff, minGridChargeW, urgencyThresholdHours, lazyBufferHours: tariff.LazyBufferHours);
 
             // ── FIX Bug #4 — IdleChargeW : surplus solaire uniquement ────────────
             // IdleChargeW a une seule vocation : absorber les micro-surplus résiduels
@@ -233,7 +248,22 @@ public class SmartDistributionService
     }
 
     /// <summary>
-    /// Puissance de charge réseau adaptative en HC.
+    /// Puissance de charge réseau adaptative en HC — avec Lazy Charging.
+    ///
+    /// Principe du Lazy Charging :
+    ///   Plutôt que de charger dès l'ouverture du créneau HC à faible puissance,
+    ///   on calcule l'heure limite à partir de laquelle il FAUT démarrer pour
+    ///   atteindre la cible avant la fin du slot, puis on attend jusque-là.
+    ///
+    ///   hoursNeeded = energyNeeded / MaxChargeRateW
+    ///   hoursBeforeStart = hoursRemaining - hoursNeeded - lazyBuffer
+    ///   → Si hoursBeforeStart > 0 : trop tôt, retourner 0 (attendre)
+    ///   → Sinon : démarrer à pleine puissance adaptative
+    ///
+    /// Avantages :
+    ///   - Maximise le temps de décharge sur batterie (self-powered) avant de charger
+    ///   - La charge se fait en fin de nuit, juste avant le retour en HP (6h-7h)
+    ///   - Puissance plus élevée sur une courte durée = moins de cycles partiels BMS
     ///
     /// Si des prévisions HA sont disponibles (ForecastTodayWh), elles remplacent
     /// le calcul générique Open-Meteo × 0.15 pour l'estimation de l'énergie solaire
@@ -245,7 +275,7 @@ public class SmartDistributionService
     ///     - si HA forecast dispo → proratisation de ForecastTodayWh sur les heures restantes
     ///     - sinon → Σ forecast[h] × solarEfficiencyFactor
     ///   énergie nette = max(0, brute - solaire)
-    ///   puissance = clamp(nette / hoursRemaining, minGridChargeW, MaxChargeRateW)
+    ///   puissance = clamp(nette / hoursNeeded, minGridChargeW, MaxChargeRateW)
     /// </summary>
     private static double ComputeAdaptiveGridChargeW(
         Battery b,
@@ -253,7 +283,8 @@ public class SmartDistributionService
         TariffContext tariff,
         double minGridChargeW,
         double urgencyThresholdHours,
-        double solarEfficiencyFactor = 0.15)
+        double solarEfficiencyFactor = 0.15,
+        double lazyBufferHours = 0.5)
     {
         double hoursRemaining = tariff.HoursRemainingInSlot ?? 0;
 
@@ -341,7 +372,35 @@ public class SmartDistributionService
         if (netEnergyNeededWh <= 0)
             return 0;
 
-        double targetW = netEnergyNeededWh / hoursRemaining;
+        // ── Lazy Charging ────────────────────────────────────────────────────
+        // Calcule la durée minimale nécessaire pour charger à MaxChargeRateW,
+        // puis vérifie si on a encore le temps d'attendre avant de démarrer.
+        //
+        // hoursNeeded   = énergie nette / puissance max
+        // hoursBeforeStart = heures restantes - hoursNeeded - lazyBuffer
+        //
+        // Si hoursBeforeStart > 0 → on est encore trop tôt → retourner 0 (veille)
+        // Si hoursBeforeStart ≤ 0 → il est temps de démarrer → puissance adaptative
+        //
+        // Exemple : slot HC 22h→7h (9h), batterie a besoin de 0.5h à 1000W.
+        //   À 22h00 : hoursRemaining=9h, hoursNeeded=0.5h, lazyBuffer=0.5h
+        //             → hoursBeforeStart = 9 - 0.5 - 0.5 = 8h → on attend
+        //   À 06h00 : hoursRemaining=1h → ≤ urgencyThreshold → charge max (cas traité plus haut)
+        //   À 05h30 : hoursRemaining=1.5h, hoursNeeded=0.5h, lazyBuffer=0.5h
+        //             → hoursBeforeStart = 1.5 - 0.5 - 0.5 = 0.5h → encore positif → on attend
+        //   À 06h00 : urgencyThreshold → charge max
+        //
+        // Le lazyBuffer est une marge de sécurité pour absorber les incertitudes
+        // (SOC qui dérive, cycle BMS, légère sous-estimation de l'énergie nécessaire).
+        double hoursNeeded = netEnergyNeededWh / b.MaxChargeRateW;
+        double hoursBeforeStart = hoursRemaining - hoursNeeded - lazyBufferHours;
+
+        if (hoursBeforeStart > 0)
+            return 0; // Trop tôt — on attend, les batteries travaillent en self-powered
+
+        // C'est l'heure de démarrer : puissance adaptative sur le temps qui reste
+        double hoursToCharge = Math.Max(hoursNeeded, urgencyThresholdHours);
+        double targetW = netEnergyNeededWh / hoursToCharge;
         return Math.Clamp(targetW, minGridChargeW, b.MaxChargeRateW);
     }
 
