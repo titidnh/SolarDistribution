@@ -148,6 +148,9 @@ var host = Host.CreateDefaultBuilder(args)
         // ── Daily Summary (Feature 6) ──────────────────────────────────────────
         services.AddSingleton<DailySummaryService>();
 
+        // ── Live status (Feature 10) — expose small in-memory status for API / HA templates
+        services.AddSingleton<SolarDistribution.Core.Services.IStatusService, SolarDistribution.Core.Services.StatusService>();
+
         // ── Workers ───────────────────────────────────────────────────────────
         services.AddHostedService<SolarWorker>();
         services.AddHostedService<WeatherCacheService>(sp =>

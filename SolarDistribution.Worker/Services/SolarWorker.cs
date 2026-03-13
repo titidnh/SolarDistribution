@@ -40,6 +40,7 @@ public class SolarWorker : BackgroundService
     // ── Hystérésis IdleCharge par batterie ────────────────────────────────────
     // Délégué à IdleChargeHysteresis pour être testable indépendamment.
     private readonly IdleChargeHysteresis _idleHysteresis;
+    private readonly SolarDistribution.Core.Services.IStatusService _statusService;
     // ── Surplus anomaly detection (Item 9) ─────────────────────────────────
     private int _consecutiveSurplusAnomalies = 0;
 
@@ -50,12 +51,14 @@ public class SolarWorker : BackgroundService
         SmartDistributionService smartService,
         WeatherCacheService weatherCache,
         IDistributionMLService mlService,
-        ILogger<SolarWorker> logger)
+        ILogger<SolarWorker> logger,
+        SolarDistribution.Core.Services.IStatusService statusService)
     {
         _config = config; _reader = reader; _sender = sender;
         _smartService = smartService; _weatherCache = weatherCache;
         _mlService = mlService; _logger = logger;
         _idleHysteresis = new IdleChargeHysteresis(logger);
+        _statusService = statusService;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -311,6 +314,33 @@ public class SolarWorker : BackgroundService
             forecastRemainingTodayWh: snapshot.ForecastRemainingTodayWh,
             forecastTodayWhAtStartOfDay: _forecastTodayWhAtStartOfDay,
             ct: ct);
+
+        // ── Feature 10 — update live status for HA templates / API
+        try
+        {
+            bool gridAllowed = result.Tariff?.GridChargeAllowed ?? false;
+            DateTime? nextGridStart = null;
+            if (result.Tariff is not null)
+            {
+                if (gridAllowed && result.Tariff.HoursRemainingInSlot.HasValue)
+                    nextGridStart = DateTime.UtcNow.AddHours(result.Tariff.HoursRemainingInSlot.Value);
+                else if (result.Tariff.HoursToNextFavorable.HasValue)
+                    nextGridStart = DateTime.UtcNow.AddHours(result.Tariff.HoursToNextFavorable.Value);
+            }
+
+            string decision;
+            if (result.Distribution.TotalAllocatedW > 0)
+                decision = $"Charging {result.Distribution.TotalAllocatedW:F0}W solar" +
+                    (result.Distribution.GridChargedW > 0 ? $", grid {result.Distribution.GridChargedW:F0}W" : "");
+            else
+                decision = $"No charge — unused {result.Distribution.UnusedSurplusW:F0}W";
+
+            _statusService.Update(decision, effectiveSurplus, gridAllowed, nextGridStart);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to update live status");
+        }
 
         _logger.LogInformation(
             "Distribution [{Engine}]: P1={Raw:F0}W batNow={BatNow:F0}W buf={Buf:F0}W eff={Eff:F0}W " +

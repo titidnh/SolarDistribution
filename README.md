@@ -72,6 +72,45 @@ Every N seconds (configurable):
 3. **Sends** `number.set_value` to HA for each battery
 4. **Persists** the session to MariaDB with Open-Meteo weather data
 
+## Home Assistant — Dashboard templates (example)
+
+You can expose the worker live status inside Home Assistant using the API endpoint `GET /api/distribution/status/live`.
+
+Example using the `rest` sensor to fetch JSON and create template sensors:
+
+```yaml
+# Fetch the whole JSON object once
+sensor:
+  - platform: rest
+    name: solar_worker_status_raw
+    resource: "http://<worker_host>:<port>/api/distribution/status/live"
+    method: GET
+    # Polling interval in seconds. Recommend >= worker polling interval (default 60s).
+    scan_interval: 60
+    value_template: "{{ value_json.lastDecision }}"
+    json_attributes:
+      - effectiveSurplusW
+      - gridChargeAllowed
+      - nextGridChargeStartUtc
+
+# Expose individual sensors using templates reading attributes
+template:
+  - sensor:
+      - name: "solar_worker_last_decision"
+        state: "{{ states('sensor.solar_worker_status_raw') }}"
+      - name: "solar_worker_effective_surplus"
+        state: "{{ state_attr('sensor.solar_worker_status_raw', 'effectiveSurplusW') | float }}"
+        unit_of_measurement: "W"
+      - name: "solar_worker_grid_charge_allowed"
+        state: "{{ state_attr('sensor.solar_worker_status_raw', 'gridChargeAllowed') }}"
+      - name: "solar_worker_next_grid_charge_start"
+        state: "{{ state_attr('sensor.solar_worker_status_raw', 'nextGridChargeStartUtc') }}"
+```
+
+Notes:
+- Replace `<worker_host>:<port>` with your API host/port (e.g. `192.168.1.50:5000`).
+- Secure access to the API (CORS, firewall, or API key) if you expose it on your LAN.
+ - `scan_interval`: set this to at least the worker `polling.interval_seconds` (default 60s). Avoid very low values (<15s) to prevent overloading the worker or HA API.
 ### Grid Charge Strategy (HC slots)
 
 When off-peak tariff slots are active, the worker uses **Lazy Charging** to defer the charge toward the *end* of the cheap slot rather than starting immediately:

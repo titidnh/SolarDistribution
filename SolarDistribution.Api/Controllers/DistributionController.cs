@@ -51,6 +51,24 @@ public class DistributionController : ControllerBase
     }
 
     /// <summary>
+    /// Live status for HA dashboard and quick checks.
+    /// </summary>
+    [HttpGet("status/live")]
+    [ProducesResponseType(typeof(SolarDistribution.Api.Models.LiveStatusDto), StatusCodes.Status200OK)]
+    public ActionResult<SolarDistribution.Api.Models.LiveStatusDto> GetLiveStatus([FromServices] SolarDistribution.Core.Services.IStatusService status)
+    {
+        var dto = new SolarDistribution.Api.Models.LiveStatusDto
+        {
+            LastDecision = status.LastDecision,
+            EffectiveSurplusW = status.EffectiveSurplusW,
+            GridChargeAllowed = status.GridChargeAllowed,
+            NextGridChargeStartUtc = status.NextGridChargeStartUtc
+        };
+
+        return Ok(dto);
+    }
+
+    /// <summary>
     /// Distributes solar surplus among batteries with ML + weather assistance.
     /// </summary>
     /// <remarks>

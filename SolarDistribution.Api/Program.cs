@@ -52,6 +52,9 @@ builder.Services.AddHttpClient<IWeatherService, OpenMeteoWeatherService>(client 
     client.DefaultRequestHeaders.Add("User-Agent", "SolarDistribution/1.0");
 });
 
+// ── Live status service (Feature 10) — provides a small in-memory snapshot for the API
+builder.Services.AddSingleton<SolarDistribution.Core.Services.IStatusService, SolarDistribution.Core.Services.StatusService>();
+
 // ── Swagger ───────────────────────────────────────────────────────────────────
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>

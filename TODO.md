@@ -172,6 +172,9 @@ You must read Docker logs to understand decisions.
   - `sensor.solar_worker_next_grid_charge_start` (datetime)
 - [ ] Expose these values via `GET /api/status/live`
 - [ ] Document the YAML templates in the README
+ - [x] Create HA template sensors (documented) exposing the four sensors above
+ - [x] Expose these values via `GET /api/status/live` (see `DistributionController.GetLiveStatus`)
+ - [x] Document the YAML templates in the README
 
 **Files**: `DistributionController.cs`, `README.md`
 
