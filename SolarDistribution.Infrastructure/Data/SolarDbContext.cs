@@ -8,10 +8,11 @@ public class SolarDbContext : DbContext
     public SolarDbContext(DbContextOptions<SolarDbContext> options) : base(options) { }
 
     public DbSet<DistributionSession> DistributionSessions => Set<DistributionSession>();
-    public DbSet<BatterySnapshot>     BatterySnapshots     => Set<BatterySnapshot>();
-    public DbSet<WeatherSnapshot>     WeatherSnapshots     => Set<WeatherSnapshot>();
-    public DbSet<MLPredictionLog>     MLPredictionLogs     => Set<MLPredictionLog>();
-    public DbSet<SessionFeedback>     SessionFeedbacks     => Set<SessionFeedback>();
+    public DbSet<BatterySnapshot> BatterySnapshots => Set<BatterySnapshot>();
+    public DbSet<WeatherSnapshot> WeatherSnapshots => Set<WeatherSnapshot>();
+    public DbSet<MLPredictionLog> MLPredictionLogs => Set<MLPredictionLog>();
+    public DbSet<SessionFeedback> SessionFeedbacks => Set<SessionFeedback>();
+    public DbSet<DailySummary> DailySummaries => Set<DailySummary>();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
@@ -156,6 +157,30 @@ public class SolarDbContext : DbContext
             e.Property(x => x.InvalidReason).HasColumnName("invalid_reason").HasMaxLength(200);
             e.HasIndex(x => x.Status).HasDatabaseName("idx_feedback_status");
             e.HasIndex(x => x.CollectedAt).HasDatabaseName("idx_feedback_collected");
+        });
+
+        // ── DailySummary ──────────────────────────────────────────────────────
+        // Une ligne par date calendaire UTC. Upsert via UpsertDailySummaryAsync.
+        model.Entity<DailySummary>(e =>
+        {
+            e.ToTable("daily_summaries");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id").ValueGeneratedOnAdd();
+            e.Property(x => x.Date).HasColumnName("date").IsRequired();
+            e.Property(x => x.SolarConsumedWh).HasColumnName("solar_consumed_wh").HasPrecision(12, 2);
+            e.Property(x => x.GridConsumedWh).HasColumnName("grid_consumed_wh").HasPrecision(12, 2);
+            e.Property(x => x.GridChargedWh).HasColumnName("grid_charged_wh").HasPrecision(12, 2);
+            e.Property(x => x.SolarAllocatedWh).HasColumnName("solar_allocated_wh").HasPrecision(12, 2);
+            e.Property(x => x.UnusedSurplusWh).HasColumnName("unused_surplus_wh").HasPrecision(12, 2);
+            e.Property(x => x.EstimatedSavingsEur).HasColumnName("estimated_savings_eur").HasPrecision(8, 4);
+            e.Property(x => x.SelfSufficiencyPct).HasColumnName("self_sufficiency_pct").HasPrecision(5, 2);
+            e.Property(x => x.SessionCount).HasColumnName("session_count");
+            e.Property(x => x.ComputedAt).HasColumnName("computed_at");
+
+            // Contrainte unique sur la date (clé métier)
+            e.HasIndex(x => x.Date).IsUnique().HasDatabaseName("uq_daily_summary_date");
+            // Index pour les requêtes de plage (GET /api/summary/daily?from=&to=)
+            e.HasIndex(x => x.Date).HasDatabaseName("idx_daily_summary_date");
         });
     }
 }

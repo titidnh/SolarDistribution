@@ -26,24 +26,27 @@ namespace SolarDistribution.Worker.Services;
 /// </summary>
 public class MlRetrainScheduler : BackgroundService
 {
-    private readonly FeedbackEvaluator           _feedbackEvaluator;
-    private readonly IDistributionMLService      _mlService;
-    private readonly MlConfig                    _mlConfig;
+    private readonly FeedbackEvaluator _feedbackEvaluator;
+    private readonly IDistributionMLService _mlService;
+    private readonly MlConfig _mlConfig;
+    private readonly DailySummaryService _dailySummaryService;
     private readonly ILogger<MlRetrainScheduler> _logger;
 
     // Dernier retrain effectué — évite les doublons si le scheduler est redémarré
     private DateTime _lastRetrainAt = DateTime.MinValue;
 
     public MlRetrainScheduler(
-        FeedbackEvaluator           feedbackEvaluator,
-        IDistributionMLService      mlService,
-        MlConfig                    mlConfig,
+        FeedbackEvaluator feedbackEvaluator,
+        IDistributionMLService mlService,
+        MlConfig mlConfig,
+        DailySummaryService dailySummaryService,
         ILogger<MlRetrainScheduler> logger)
     {
         _feedbackEvaluator = feedbackEvaluator;
-        _mlService         = mlService;
-        _mlConfig          = mlConfig;
-        _logger            = logger;
+        _mlService = mlService;
+        _mlConfig = mlConfig;
+        _dailySummaryService = dailySummaryService;
+        _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -59,6 +62,18 @@ public class MlRetrainScheduler : BackgroundService
         while (!stoppingToken.IsCancellationRequested)
         {
             var now = DateTime.UtcNow;
+
+            // ── 0. Bilan énergétique journalier (Feature 6) ──────────────────
+            // Calculé en premier pour que YesterdaySelfSufficiencyPct soit disponible
+            // dans BuildFeatures() dès le premier cycle du nouveau jour.
+            try
+            {
+                await _dailySummaryService.CheckAndComputeYesterdayAsync(stoppingToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Daily summary computation failed");
+            }
 
             // ── 1. Collecte de feedback ───────────────────────────────────────
             try

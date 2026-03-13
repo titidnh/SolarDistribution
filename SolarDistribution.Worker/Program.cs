@@ -145,6 +145,9 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddSingleton<CommandStateCache>();
         services.AddSingleton<HomeAssistantCommandSender>();
 
+        // ── Daily Summary (Feature 6) ──────────────────────────────────────────
+        services.AddSingleton<DailySummaryService>();
+
         // ── Workers ───────────────────────────────────────────────────────────
         services.AddHostedService<SolarWorker>();
         services.AddHostedService<WeatherCacheService>(sp =>

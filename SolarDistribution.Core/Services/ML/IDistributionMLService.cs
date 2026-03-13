@@ -109,6 +109,18 @@ public class DistributionFeatures
     /// </summary>
     [LoadColumn(39)] public float SolarBlockedByHaForecast { get; set; }
 
+    // ── Feature 6 — Bilan J-1 ────────────────────────────────────────────────
+    /// <summary>
+    /// Taux d'autosuffisance de la journée précédente (0–100), normalisé /100.
+    /// 0 si aucune donnée disponible (Solcast non configuré ou première journée).
+    ///
+    /// SIGNAL RÉTROSPECTIF pour le ML :
+    ///   - J-1 à 90% → batteries bien gérées hier → contexte favorable pour aujourd'hui
+    ///   - J-1 à 30% → algo trop conservateur → pousser SoftMax à la hausse
+    /// Complète ForecastRatioTomorrowVsToday (prospectif) avec la réalité observée.
+    /// </summary>
+    [LoadColumn(42)] public float YesterdaySelfSufficiencyPct { get; set; }
+
     // ── Labels ───────────────────────────────────────────────────────────────
     [LoadColumn(40)] public float OptimalSoftMaxPercent { get; set; }
     [LoadColumn(41)] public float OptimalPreventiveThreshold { get; set; }

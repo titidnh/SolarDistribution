@@ -145,3 +145,43 @@ public class DistributionResponseDto
     public MLRecommendationDto? MLRecommendation { get; set; }
 }
 
+
+/// <summary>
+/// Bilan énergétique journalier — une ligne par date calendaire.
+/// Retourné par GET /api/distribution/summary/daily
+/// </summary>
+public class DailySummaryDto
+{
+    /// <summary>Date du bilan (UTC, sans heure).</summary>
+    public DateTime Date { get; set; }
+
+    /// <summary>Énergie solaire autoconsommée (Wh). Null si Solcast non configuré.</summary>
+    public double? SolarConsumedWh { get; set; }
+
+    /// <summary>Énergie totale soutirée depuis le réseau sur la journée (Wh).</summary>
+    public double GridConsumedWh { get; set; }
+
+    /// <summary>Énergie chargée dans les batteries depuis le réseau (Wh).</summary>
+    public double GridChargedWh { get; set; }
+
+    /// <summary>Énergie distribuée aux batteries depuis le surplus solaire (Wh).</summary>
+    public double SolarAllocatedWh { get; set; }
+
+    /// <summary>Surplus solaire non utilisé (batteries pleines) (Wh).</summary>
+    public double UnusedSurplusWh { get; set; }
+
+    /// <summary>Économies estimées en € grâce à la charge en heures creuses. Null si pas de contexte tarifaire.</summary>
+    public double? EstimatedSavingsEur { get; set; }
+
+    /// <summary>
+    /// Taux d'autosuffisance (%) = solaire / (solaire + réseau) × 100.
+    /// Null si Solcast non configuré.
+    /// </summary>
+    public double? SelfSufficiencyPct { get; set; }
+
+    /// <summary>Nombre de sessions de distribution sur cette journée.</summary>
+    public int SessionCount { get; set; }
+
+    /// <summary>Timestamp UTC du dernier calcul de ce bilan.</summary>
+    public DateTime ComputedAt { get; set; }
+}

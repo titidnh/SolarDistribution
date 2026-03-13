@@ -29,4 +29,27 @@ public interface IDistributionRepository
     /// Utilisé pour projeter EstimatedConsumptionNextHoursWh.
     /// </summary>
     Task<double?> GetRecentConsumptionAvgWAsync(int lastNCycles, CancellationToken ct = default);
+
+    // ── Feature 6 — Bilan énergétique journalier ──────────────────────────────
+
+    /// <summary>
+    /// Crée ou met à jour le bilan journalier pour une date donnée (upsert par Date).
+    /// Calcule les agrégats à partir des sessions de la journée : Wh solar, grid,
+    /// surplus non utilisé, économies estimées, taux d'autosuffisance.
+    /// </summary>
+    Task UpsertDailySummaryAsync(DateTime date, CancellationToken ct = default);
+
+    /// <summary>
+    /// Retourne les bilans journaliers sur une plage de dates (incluses).
+    /// Utilisé par GET /api/summary/daily?from=&amp;to=
+    /// </summary>
+    Task<List<DailySummary>> GetDailySummariesAsync(
+        DateTime from, DateTime to, CancellationToken ct = default);
+
+    /// <summary>
+    /// Taux d'autosuffisance de la journée précédente (%).
+    /// Null si aucune donnée Solcast n'est disponible pour hier.
+    /// Feature ML YesterdaySelfSufficiencyPct.
+    /// </summary>
+    Task<double?> GetYesterdaySelfSufficiencyAsync(CancellationToken ct = default);
 }

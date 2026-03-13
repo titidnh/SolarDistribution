@@ -6,6 +6,7 @@ using NUnit.Framework;
 using SolarDistribution.Api.Controllers;
 using SolarDistribution.Api.Models;
 using SolarDistribution.Core.Models;
+using SolarDistribution.Core.Repositories;
 using SolarDistribution.Core.Services;
 
 namespace SolarDistribution.Tests.Unit;
@@ -22,6 +23,7 @@ public class DistributionControllerTests
 {
     private IBatteryDistributionService _serviceMock = null!;
     private ILogger<DistributionController> _loggerMock = null!;
+    private IDistributionRepository _repoMock = null!;
     private DistributionController _sut = null!;
 
     [SetUp]
@@ -29,7 +31,8 @@ public class DistributionControllerTests
     {
         _serviceMock = Substitute.For<IBatteryDistributionService>();
         _loggerMock  = Substitute.For<ILogger<DistributionController>>();
-        _sut         = new DistributionController(_serviceMock, _loggerMock);
+        _repoMock    = Substitute.For<IDistributionRepository>();
+        _sut         = new DistributionController(_serviceMock, _repoMock, _loggerMock);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -212,7 +215,7 @@ public class DistributionControllerTests
         var request = new DistributionRequestDto
         {
             SurplusW  = 500,
-            Batteries = [ Dto(1, min: 85, softMax: 80) ]
+            Batteries = new List<BatteryInputDto> { Dto(1, min: 85, softMax: 80) }
         };
 
         var result = await _sut.Calculate(request);

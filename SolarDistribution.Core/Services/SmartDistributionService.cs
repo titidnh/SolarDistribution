@@ -15,6 +15,13 @@ public class SmartDistributionService
     private readonly IDistributionSessionFactory _sessionFactory;
     private readonly ILogger<SmartDistributionService> _logger;
 
+    // ── Feature 6 — Cache autosuffisance J-1 ─────────────────────────────────
+    // Rechargé une fois par jour (changement de date UTC) pour éviter une requête
+    // DB à chaque cycle de distribution (~1 min). Null = pas encore chargé ou
+    // Solcast non configuré.
+    private double? _cachedYesterdaySelfSufficiency;
+    private int _cachedYesterdayDoy = -1;
+
     public SmartDistributionService(
         IBatteryDistributionService algo,
         IDistributionMLService ml,
@@ -64,13 +71,26 @@ public class SmartDistributionService
 
         LogTariffContext(tariffCtx, surplusW);
 
+        // ── 2b. Feature 6 — Autosuffisance J-1 (cache quotidien) ─────────────
+        int todayDoy = DateTime.UtcNow.DayOfYear;
+        if (todayDoy != _cachedYesterdayDoy)
+        {
+            _cachedYesterdaySelfSufficiency = await _repo.GetYesterdaySelfSufficiencyAsync(ct);
+            _cachedYesterdayDoy = todayDoy;
+            _logger.LogDebug(
+                "Feature 6: YesterdaySelfSufficiency refreshed → {Pct}%",
+                _cachedYesterdaySelfSufficiency?.ToString("F1") ?? "n/a");
+        }
+
         // ── 3. Features ML ────────────────────────────────────────────────────
         MLRecommendation? mlReco = null;
         string decisionEngine = "Deterministic";
 
         if (wx is not null)
         {
-            var features = BuildFeatures(surplusW, batteries, wx, tariffCtx);
+            var features = BuildFeatures(
+                surplusW, batteries, wx, tariffCtx,
+                _cachedYesterdaySelfSufficiency);
             mlReco = await _ml.PredictAsync(features, ct);
         }
 
@@ -508,7 +528,8 @@ public class SmartDistributionService
 
     private static DistributionFeatures BuildFeatures(
         double surplusW, IList<Battery> batteries,
-        WeatherData wx, TariffContext tariff)
+        WeatherData wx, TariffContext tariff,
+        double? yesterdaySelfSufficiencyPct = null)
     {
         var now = DateTime.UtcNow;
 
@@ -593,6 +614,12 @@ public class SmartDistributionService
             // ML-9: signal explicite "le blocage de la charge réseau vient du forecast HA"
             // Permet au ML de différencier "soleil Open-Meteo" vs "soleil Solcast précis"
             SolarBlockedByHaForecast = tariff.SolarExpectedFromHa ? 1f : 0f,
+
+            // Feature 6 — Autosuffisance J-1, normalisée [0–1]
+            // 0.0 si aucune donnée (Solcast non configuré ou première journée)
+            YesterdaySelfSufficiencyPct = yesterdaySelfSufficiencyPct.HasValue
+                ? (float)Math.Clamp(yesterdaySelfSufficiencyPct.Value / 100.0, 0, 1)
+                : 0f,
 
             OptimalSoftMaxPercent = 80,
             OptimalPreventiveThreshold = 20,

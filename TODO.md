@@ -100,16 +100,16 @@ It cannot tell whether solar will ramp up in 1 hour or 6 hours.
 **Problem**: individual sessions are stored in DB but there is no daily aggregated view.  
 No way to know "how much did I save this month" or to detect drifts over time.
 
-- [ ] Add a `daily_summary` table: date, solar_consumed_wh, grid_consumed_wh, grid_charged_wh, estimated_savings_eur  
-  → **Not implemented.** No `DailySummary` entity, no EF mapping, and no corresponding SQL migration exist in the codebase.
-- [ ] Compute and insert a summary each night (CRON or end-of-solar-day trigger)  
-  → **Not implemented.** `MlRetrainScheduler` handles only the retraining CRON; no end-of-day aggregation job exists.
-- [ ] Expose a `GET /api/summary/daily?from=&to=` endpoint  
-  → **Not implemented.** `DistributionController` exposes no summary route; `IDistributionRepository` has no `GetDailySummariesAsync()` method.
-- [ ] Use the previous-day balance as an additional ML feature (`YesterdaySelfSufficiencyPct`)  
-  → **Not implemented.** `DistributionFeatures` has no such field; `BuildFeatures()` in `SmartDistributionService` does not query any daily aggregate.
+- [x] Add a `daily_summary` table: date, solar_consumed_wh, grid_consumed_wh, grid_charged_wh, estimated_savings_eur  
+  → `DailySummary` entity added to `DistributionEntities.cs` (8 fields: `Date`, `SolarConsumedWh`, `GridConsumedWh`, `GridChargedWh`, `SolarAllocatedWh`, `UnusedSurplusWh`, `EstimatedSavingsEur`, `SelfSufficiencyPct`, `SessionCount`, `ComputedAt`). Full EF mapping in `SolarDbContext` (`daily_summaries` table, `DECIMAL` precisions, unique index on `date`). SQL migration in `migrations/migration_daily_summary.sql` (idempotent `CREATE TABLE IF NOT EXISTS`).
+- [x] Compute and insert a summary each night (CRON or end-of-solar-day trigger)  
+  → `DailySummaryService` (new singleton) exposes `CheckAndComputeYesterdayAsync()` (idempotent, daily date guard) and `ComputeForDateAsync()` (backfill). Aggregation logic in `DistributionRepository.UpsertDailySummaryAsync()`: loads all sessions for the target day, estimates cycle duration from inter-session gaps (capped at 10 min), integrates W×h for `SolarAllocatedWh`, `GridChargedWh`, `UnusedSurplusWh`, `EstimatedSavingsEur`, and reads `DailySolarConsumedWh` from the last session with Solcast data. Computes `SelfSufficiencyPct = solar / (solar + grid) × 100`. `MlRetrainScheduler` calls `CheckAndComputeYesterdayAsync()` as step 0 of its hourly loop (before feedback collection).
+- [x] Expose a `GET /api/summary/daily?from=&to=` endpoint  
+  → `DistributionController.GetDailySummaries()` added. `from`/`to` default to last 30 days / yesterday. Validates `from ≤ to` and range ≤ 366 days. Returns `List<DailySummaryDto>` (mapped from `DailySummary`). `IDistributionRepository` extended with `GetDailySummariesAsync(from, to)` and `GetYesterdaySelfSufficiencyAsync()`. `IDistributionRepository` now injected into `DistributionController`.
+- [x] Use the previous-day balance as an additional ML feature (`YesterdaySelfSufficiencyPct`)  
+  → `DistributionFeatures` has new field `[LoadColumn(42)] float YesterdaySelfSufficiencyPct` (normalized /100 → [0–1], 0 if no data). `SmartDistributionService` caches the value in `_cachedYesterdaySelfSufficiency` (refreshed once per UTC day via `_cachedYesterdayDoy` guard). `BuildFeatures()` receives it as optional parameter and maps it.
 
-**Files**: `DistributionEntities.cs`, `IDistributionRepository.cs`, `DistributionController.cs`
+**Files**: `DistributionEntities.cs`, `SolarDbContext.cs`, `IDistributionRepository.cs`, `DistributionRepository.cs`, `DailySummaryService.cs` (new), `MlRetrainScheduler.cs`, `IDistributionMLService.cs`, `SmartDistributionService.cs`, `DistributionDtos.cs`, `DistributionController.cs`, `Program.cs`, `migrations/migration_daily_summary.sql` (new)
 
 ---
 
