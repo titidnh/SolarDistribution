@@ -334,4 +334,21 @@ public class LoggingConfig
 {
     public string Level { get; set; } = "Information";
     public string? FilePath { get; set; } = "/data/logs/solar-worker.log";
+
+    /// <summary>
+    /// [OPTIONNEL] URL de l'instance Grafana Loki vers laquelle pousser les logs en JSON.
+    /// Ex: "http://loki:3100"
+    /// Laisser null/vide pour désactiver l'envoi vers Loki.
+    /// </summary>
+    public string? LokiUrl { get; set; }
+
+    /// <summary>
+    /// Labels Loki ajoutés à chaque log stream (key=value).
+    /// Permettent de filtrer les logs dans Grafana via LogQL :
+    ///   {app="solar-worker", env="prod"}
+    /// </summary>
+    public Dictionary<string, string> LokiLabels { get; set; } = new()
+    {
+        ["app"] = "solar-worker"
+    };
 }

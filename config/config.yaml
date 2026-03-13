@@ -767,6 +767,63 @@ ml:
   min_feedback_for_retrain: 50
 
 # ── Logging ────────────────────────────────────────────────────────────────────
+#
+# Trois destinations disponibles (toutes indépendantes, combinables) :
+#
+#   1. Console   — toujours actif (docker logs / stdout)
+#                  Format lisible : [HH:mm:ss INF] Message...
+#
+#   2. Fichier   — rolling daily, conserve 14 jours
+#                  Format : JSON structuré (JsonFormatter)
+#                  → chaque ligne = 1 objet JSON avec Timestamp, Level,
+#                    RenderedMessage, Properties (SourceContext, etc.)
+#
+#   3. Loki      — push HTTP batch vers Grafana Loki
+#                  Format : JSON structuré (même formatter que fichier)
+#                  → visible dans Grafana via LogQL :
+#                      {app="solar-worker"} | json | level="Error"
+#
+# ── Niveau global ──────────────────────────────────────────────────────────────
+#   Debug | Information | Warning | Error
+#   Note : Microsoft.*, EntityFrameworkCore, Polly sont silencés en Warning
+#          quel que soit ce réglage (évite le bruit HTTP interne).
 logging:
   level: "Information"
+
+  # ── Fichier rolling (JSON structuré) ─────────────────────────────────────
+  # Laisser vide ou commenter pour désactiver.
+  # Le fichier tourne chaque jour et conserve 14 jours d'historique.
+  # Exemple JSON d'un log :
+  #   {
+  #     "Timestamp": "2025-06-15T08:32:11.453+02:00",
+  #     "Level": "Information",
+  #     "MessageTemplate": "Cycle #{Cycle} — surplus {SurplusW} W",
+  #     "RenderedMessage": "Cycle #42 — surplus 712 W",
+  #     "Properties": { "Cycle": 42, "SurplusW": 712, "SourceContext": "SolarWorker" }
+  #   }
   file_path: "/data/logs/solar-worker.log"
+
+  # ── Loki — push JSON structuré ────────────────────────────────────────────
+  # URL de base de votre instance Loki (sans chemin, sans trailing slash).
+  # Le sink utilise l'endpoint POST /loki/api/v1/push automatiquement.
+  #
+  # Exemples :
+  #   Docker Compose  : "http://loki:3100"
+  #   Réseau local    : "http://192.168.1.50:3100"
+  #   Grafana Cloud   : "https://<user>:<token>@logs-prod-xxx.grafana.net"
+  #
+  # Laisser vide ou commenter pour désactiver.
+  loki_url: "http://loki:3100"
+
+  # ── Labels Loki ───────────────────────────────────────────────────────────
+  # Paires clé/valeur attachées à chaque log stream Loki.
+  # Permettent de filtrer dans Grafana via LogQL :
+  #   {app="solar-worker"}                     → tous les logs
+  #   {app="solar-worker", env="prod"}          → prod uniquement
+  #   {app="solar-worker"} | json | level="Error"  → erreurs seulement
+  #
+  # IMPORTANT : Loki indexe ces labels — gardez-en peu (< 10) et à cardinalité
+  # faible (pas de timestamp ou d'ID dans les labels !).
+  loki_labels:
+    app: "solar-worker"
+    env: "prod"               # ← adapter : dev | staging | prod
