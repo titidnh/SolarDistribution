@@ -25,11 +25,17 @@ public class SolarWorker : BackgroundService
     private bool _isChargingFromSurplus = false;
     private int _consecutiveChargeCycles = 0;
 
+    // ── Rolling-window surplus smoother (Item 2 — P1 correction) ─────────────
+    // Moyenne mobile sur les 3 derniers cycles pour filtrer les pics P1 bruités.
+    // Un pic soudain (ex: chauffe-eau qui démarre) est lissé avant d'être distribué.
+    private readonly Queue<double> _surplusWindow = new();
+    private const int SurplusSmootherWindowSize = 3;
+
     // ── Bilan énergétique journalier (Feature 4) ──────────────────────────────
     // On retient la valeur ForecastTodayWh lue en début de journée pour calculer
     // DailySolarConsumedWh = ForecastToday(début) − ForecastRemainingToday(maintenant).
     private double? _forecastTodayWhAtStartOfDay = null;
-    private int     _lastDayOfYear = -1;
+    private int _lastDayOfYear = -1;
 
     // ── Hystérésis IdleCharge par batterie ────────────────────────────────────
     // Délégué à IdleChargeHysteresis pour être testable indépendamment.
@@ -68,6 +74,16 @@ public class SolarWorker : BackgroundService
             _logger.LogInformation(
                 "  [{Name}] maxRate={Rate}W idle={Idle}W idleStop={IdleStop}W softMax={SoftMax}% hysteresis={Hyst}%",
                 b.Name, b.MaxChargeRateW, b.IdleChargeW, b.IdleStopBufferW, b.SoftMaxPercent, b.SocHysteresisPercent);
+
+        // ── Item 2 — Warning si current_charge_power_entity absent ───────────
+        // Sans cette entité le surplus brut P1 n'est pas corrigé : le Worker
+        // sous-estime le disponible et envoie moins de puissance aux batteries.
+        foreach (var b in _config.Batteries.Where(b => b.Entities.CurrentChargePowerEntity is null))
+            _logger.LogWarning(
+                "⚠️  Battery [{Name}]: 'current_charge_power_entity' is not configured. " +
+                "Surplus correction will be skipped for this battery — the worker may under-charge " +
+                "when batteries are already charging. Configure the entity in config.yaml for accurate P1 correction.",
+                b.Name);
 
         _logger.LogInformation("  ML Status      : {Status}",
             (await _mlService.GetStatusAsync(stoppingToken)).IsAvailable ? "available" : "training...");
@@ -159,23 +175,60 @@ public class SolarWorker : BackgroundService
         double rawSurplus = snapshot.SurplusW;
         double correctedSurplus = rawSurplus + currentBatteriesChargeW;
 
+        // ── Item 2c — Warning si surplus négatif après correction ─────────────
+        // Un surplus négatif après ajout de la charge batterie signale une
+        // misconfiguration : soit le signe de current_charge_power_multiplier est
+        // inversé, soit l'entité surplus_entity retourne de l'import au lieu de
+        // l'export. On log et on clamp à 0 pour ne pas envoyer de commandes aberrantes.
+        if (correctedSurplus < 0)
+        {
+            _logger.LogWarning(
+                "⚠️  Surplus négatif après correction : P1={Raw:F0}W + batteries_now={Bat:F0}W = {Corrected:F0}W. " +
+                "Vérifier le signe de 'current_charge_power_multiplier' ou le mode 'surplus_mode'. " +
+                "Surplus forcé à 0 pour ce cycle.",
+                rawSurplus, currentBatteriesChargeW, correctedSurplus);
+            correctedSurplus = 0;
+        }
+
+        // ── Item 2b — Rolling-window surplus smoother (moyenne mobile 3 cycles) ─
+        // Filtre les pics P1 soudains (latence ~10s, pic de consommation brusque)
+        // avant de distribuer. La décision est prise sur la moyenne des N derniers
+        // cycles plutôt que sur la valeur instantanée, ce qui évite d'envoyer
+        // 3000W aux batteries lors d'un spike d'une seule lecture.
+        _surplusWindow.Enqueue(correctedSurplus);
+        if (_surplusWindow.Count > SurplusSmootherWindowSize)
+            _surplusWindow.Dequeue();
+        double smoothedSurplus = _surplusWindow.Average();
+
+        if (_surplusWindow.Count == SurplusSmootherWindowSize
+            && Math.Abs(smoothedSurplus - correctedSurplus) > 50)
+        {
+            _logger.LogDebug(
+                "Surplus smoother: raw={Raw:F0}W corrected={Corr:F0}W smoothed={Smooth:F0}W " +
+                "(window={Win} cycles) — delta={Delta:F0}W filtered",
+                rawSurplus, correctedSurplus, smoothedSurplus,
+                SurplusSmootherWindowSize, correctedSurplus - smoothedSurplus);
+        }
+
         // ── Fix Bug #3 : double seuil anti-oscillation ─────────────────────────
         // Remplace l'ancien : effectiveSurplus = Max(0, corrected - bufferW)
         // qui causait des ON/OFF toutes les 5 min quand le soleil fluctue autour
         // du seuil (ex: nuages passagers). Voir ComputeEffectiveSurplus().
-        double effectiveSurplus = ComputeEffectiveSurplus(correctedSurplus);
+        // Le smoothedSurplus (moyenne mobile) est passé à la place du correctedSurplus
+        // brut pour absorber les pics P1 avant l'hystérésis de démarrage/arrêt.
+        double effectiveSurplus = ComputeEffectiveSurplus(smoothedSurplus);
 
         if (currentBatteriesChargeW > 0)
             _logger.LogInformation(
                 "Surplus correction: P1={Raw:F0}W + batteries_now={BatNow:F0}W = real={Corrected:F0}W " +
-                "− buffer={Buf:F0}W = effective={Eff:F0}W",
+                "smoothed={Smooth:F0}W − buffer={Buf:F0}W = effective={Eff:F0}W",
                 rawSurplus, currentBatteriesChargeW, correctedSurplus,
-                _config.Polling.SurplusBufferW, effectiveSurplus);
+                smoothedSurplus, _config.Polling.SurplusBufferW, effectiveSurplus);
         else if (_config.Polling.SurplusBufferW > 0 && rawSurplus > 0)
             _logger.LogDebug(
-                "Surplus: raw={Raw:F0}W − buffer={Buf:F0}W = effective={Eff:F0}W " +
+                "Surplus: raw={Raw:F0}W smoothed={Smooth:F0}W − buffer={Buf:F0}W = effective={Eff:F0}W " +
                 "(no current_charge_power_entity configured — correction skipped)",
-                rawSurplus, _config.Polling.SurplusBufferW, effectiveSurplus);
+                rawSurplus, smoothedSurplus, _config.Polling.SurplusBufferW, effectiveSurplus);
 
         // BuildBatteries doit être appelé APRÈS effectiveSurplus pour que l'hystérésis
         // IdleCharge (IdleChargeHysteresis) puisse évaluer le seuil correct.

@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using SolarDistribution.Core.Repositories;
+using SolarDistribution.Core.Services;
 using SolarDistribution.Worker.Configuration;
 
 namespace SolarDistribution.Worker.HA;
@@ -39,9 +40,9 @@ public record HaSnapshot(
 );
 
 public record BatteryReading(
-    int     BatteryId,
-    string  Name,
-    double  SocPercent,
+    int BatteryId,
+    string Name,
+    double SocPercent,
     double? MaxChargeRateW,
     /// <summary>
     /// Puissance de charge réelle actuelle lue depuis HA (W).
@@ -49,26 +50,29 @@ public record BatteryReading(
     /// Utilisée pour corriger le surplus brut : surplus_réel = surplus_HA + Σ CurrentChargeW.
     /// </summary>
     double? CurrentChargeW,
-    bool    ReadSuccess
+    bool ReadSuccess
 );
 
 public class HomeAssistantDataReader
 {
     private readonly IHomeAssistantClient _client;
-    private readonly SolarConfig          _config;
+    private readonly SolarConfig _config;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly TariffEngine _tariffEngine;
     private readonly ILogger<HomeAssistantDataReader> _logger;
 
     public HomeAssistantDataReader(
         IHomeAssistantClient client,
         SolarConfig config,
         IServiceScopeFactory scopeFactory,
+        TariffEngine tariffEngine,
         ILogger<HomeAssistantDataReader> logger)
     {
-        _client       = client;
-        _config       = config;
+        _client = client;
+        _config = config;
         _scopeFactory = scopeFactory;
-        _logger       = logger;
+        _tariffEngine = tariffEngine;
+        _logger = logger;
     }
 
     public async Task<HaSnapshot?> ReadAllAsync(CancellationToken ct = default)
@@ -91,7 +95,7 @@ public class HomeAssistantDataReader
             rawSurplus.Value, _config.Solar.SurplusMode, surplusW);
 
         // ── Optionnels production + conso ─────────────────────────────────────
-        double? productionW  = null;
+        double? productionW = null;
         double? consumptionW = null;
 
         if (_config.Solar.ProductionEntity is not null)
@@ -172,10 +176,10 @@ public class HomeAssistantDataReader
         }
 
         // ── Prévisions solaires HA (optionnelles — chaudement recommandées) ───
-        double? forecastTodayWh    = null;
+        double? forecastTodayWh = null;
         double? forecastTomorrowWh = null;
-        double? forecastThisHourWh    = null;
-        double? forecastNextHourWh    = null;
+        double? forecastThisHourWh = null;
+        double? forecastNextHourWh = null;
         double? forecastRemainingTodayWh = null;
 
         if (_config.Solar.ForecastTodayEntity is not null)
@@ -315,6 +319,31 @@ public class HomeAssistantDataReader
                     ? $"{r.Name}:{r.SocPercent:F1}%{(r.MaxChargeRateW.HasValue ? $"/{r.MaxChargeRateW:F0}W" : "")}{(r.CurrentChargeW.HasValue ? $" now={r.CurrentChargeW:F0}W" : "")}"
                     : $"{r.Name}:ERR")));
 
+        // ── Prix spot dynamique (Feature 5) ──────────────────────────────────
+        // Si current_price_entity est configuré dans tariff, on lit le prix live HA
+        // et on l'injecte dans TariffEngine pour remplacer la lecture du créneau YAML.
+        // L'historique rolling 24h est géré dans TariffEngine.UpdateSpotPrice().
+        if (_config.Tariff.CurrentPriceEntity is not null)
+        {
+            double? spotPrice = await _client.GetNumericStateAsync(
+                _config.Tariff.CurrentPriceEntity, ct);
+
+            if (spotPrice is not null)
+            {
+                _tariffEngine.UpdateSpotPrice(spotPrice.Value);
+                _logger.LogDebug(
+                    "Spot price read: {Price:F4} €/kWh (from HA entity '{Entity}')",
+                    spotPrice.Value, _config.Tariff.CurrentPriceEntity);
+            }
+            else
+            {
+                _tariffEngine.UpdateSpotPrice(null);
+                _logger.LogWarning(
+                    "⚠️  Spot price entity '{Entity}' unreadable — falling back to YAML tariff slots for this cycle.",
+                    _config.Tariff.CurrentPriceEntity);
+            }
+        }
+
         return new HaSnapshot(surplusW, productionW, consumptionW,
             forecastTodayWh, forecastTomorrowWh,
             forecastThisHourWh, forecastNextHourWh, forecastRemainingTodayWh,
@@ -326,6 +355,6 @@ public class HomeAssistantDataReader
         mode.ToLowerInvariant() switch
         {
             "p1_invert" => Math.Max(0, -rawValue),
-            _           => Math.Max(0,  rawValue),
+            _ => Math.Max(0, rawValue),
         };
 }

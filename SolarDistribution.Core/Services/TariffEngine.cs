@@ -53,6 +53,33 @@ public class TariffConfig
     /// </summary>
     public double LazyBufferHours { get; set; } = 0.5;
 
+    /// <summary>
+    /// [OPTIONNEL] Entité HA exposant le prix spot courant en €/kWh.
+    /// Ex : "sensor.tibber_current_price", "sensor.eneco_current_price",
+    ///      "sensor.belpower_current_price", "sensor.epex_current_price"
+    ///
+    /// Quand cette entité est configurée ET lisible, son prix remplace la
+    /// lecture du créneau YAML actif dans GetCurrentPricePerKwh().
+    /// Les créneaux YAML restent utilisés comme fallback si la lecture échoue.
+    ///
+    /// Laisser null (ou commenter dans config.yaml) pour désactiver le mode dynamique.
+    /// </summary>
+    public string? CurrentPriceEntity { get; set; }
+
+    /// <summary>
+    /// Facteur multiplicateur pour le seuil de charge réseau en mode dynamique.
+    /// grid_charge_threshold = moyenne_24h × DynamicThresholdFactor
+    ///
+    /// Exemple : prix moyen 24h = 0.20 €/kWh, factor = 0.8
+    ///   → seuil dynamique = 0.16 €/kWh
+    ///   → autorise la charge quand le prix est 20% sous la moyenne journalière
+    ///
+    /// Valeur recommandée : 0.8 (charge quand prix < 80% de la moyenne).
+    /// Mettre 1.0 pour charger dès que le prix est sous la moyenne.
+    /// Ignoré si CurrentPriceEntity est null.
+    /// </summary>
+    public double DynamicThresholdFactor { get; set; } = 0.8;
+
     public List<TariffSlot> Slots { get; set; } = new List<TariffSlot>();
 
     /// <summary>
@@ -100,10 +127,51 @@ public class TariffEngine
     private readonly TariffConfig _config;
     private readonly ILogger<TariffEngine> _logger;
 
+    // ── Prix spot dynamique (Feature 5) ──────────────────────────────────────
+    // Alimenté par HomeAssistantDataReader à chaque cycle si CurrentPriceEntity
+    // est configuré. Null = pas de prix spot disponible → fallback sur les slots YAML.
+    private double? _liveSpotPrice;
+
+    // Rolling 24h des prix spot pour calculer le seuil dynamique.
+    // Chaque entrée = (timestamp UTC, prix €/kWh). On conserve max 24h de données.
+    private readonly List<(DateTime Ts, double Price)> _spotPriceHistory = new();
+    private const int SpotHistoryMaxHours = 24;
+
     public TariffEngine(TariffConfig config, ILogger<TariffEngine>? logger = null)
     {
         _config = config;
         _logger = logger ?? NullLogger<TariffEngine>.Instance;
+    }
+
+    /// <summary>
+    /// Met à jour le prix spot live venant de HA.
+    /// Appelé par HomeAssistantDataReader après chaque lecture réussie.
+    /// Alimente aussi l'historique rolling 24h pour le calcul du seuil dynamique.
+    /// </summary>
+    public void UpdateSpotPrice(double? pricePerKwh)
+    {
+        _liveSpotPrice = pricePerKwh;
+
+        if (pricePerKwh.HasValue)
+        {
+            var now = DateTime.UtcNow;
+            _spotPriceHistory.Add((now, pricePerKwh.Value));
+
+            // Purge des entrées > 24h
+            var cutoff = now.AddHours(-SpotHistoryMaxHours);
+            _spotPriceHistory.RemoveAll(e => e.Ts < cutoff);
+        }
+    }
+
+    /// <summary>
+    /// Calcule le seuil de charge réseau dynamique = moyenne_24h × DynamicThresholdFactor.
+    /// Retourne null si moins de 3 points d'historique (fallback sur seuil statique YAML).
+    /// </summary>
+    public double? ComputeDynamicThreshold()
+    {
+        if (_spotPriceHistory.Count < 3) return null;
+        double avg24h = _spotPriceHistory.Average(e => e.Price);
+        return avg24h * _config.DynamicThresholdFactor;
     }
 
     public TariffSlot? GetActiveSlot(DateTime localTime)
@@ -130,14 +198,52 @@ public class TariffEngine
 
     public string? LastSlotConflict { get; private set; }
 
+    /// <summary>
+    /// Prix courant en €/kWh.
+    /// Priorité : prix spot live HA (si CurrentPriceEntity configuré ET lecture OK)
+    ///            → fallback : créneau YAML actif → null si aucun créneau actif.
+    /// </summary>
     public double? GetCurrentPricePerKwh(DateTime localTime)
-        => GetActiveSlot(localTime)?.PricePerKwh;
+    {
+        if (_config.CurrentPriceEntity is not null && _liveSpotPrice.HasValue)
+            return _liveSpotPrice.Value;
 
+        return GetActiveSlot(localTime)?.PricePerKwh;
+    }
+
+    /// <summary>
+    /// True si le tarif courant est favorable pour charger depuis le réseau.
+    /// En mode dynamique : prix spot &lt; seuil_dynamique (rolling 24h × factor).
+    ///   → Log du seuil utilisé pour traçabilité de la décision.
+    /// En mode statique  : prix actuel &lt; GridChargeThresholdPerKwh (YAML).
+    /// </summary>
     public bool IsGridChargeFavorable(DateTime localTime)
     {
         if (_config.GridChargeThresholdPerKwh <= 0) return false;
+
         var price = GetCurrentPricePerKwh(localTime);
-        return price.HasValue && price.Value < _config.GridChargeThresholdPerKwh;
+        if (!price.HasValue) return false;
+
+        bool isDynamic = _config.CurrentPriceEntity is not null && _liveSpotPrice.HasValue;
+
+        if (isDynamic)
+        {
+            double threshold = ComputeDynamicThreshold() ?? _config.GridChargeThresholdPerKwh;
+            bool favorable = price.Value < threshold;
+
+            _logger.LogDebug(
+                "Dynamic tariff: spot={Spot:F4}€/kWh threshold={Thr:F4}€/kWh " +
+                "(avg24h={Avg:F4} × {Factor}) → {Result}",
+                price.Value,
+                threshold,
+                _spotPriceHistory.Count >= 3 ? _spotPriceHistory.Average(e => e.Price) : 0,
+                _config.DynamicThresholdFactor,
+                favorable ? "FAVORABLE" : "not favorable");
+
+            return favorable;
+        }
+
+        return price.Value < _config.GridChargeThresholdPerKwh;
     }
 
     public double? HoursUntilNextFavorableTariff(DateTime localTime)
@@ -234,7 +340,7 @@ public class TariffEngine
         //   [0] = this_hour, [1] = next_hour, [2] = extrapolation linéaire (decay de next_hour)
         // Cette courbe remplace SolarFractionBetweenHours() quand elle est disponible.
         double[]? solcastHourlyCurveWh = null;
-        double? forecastNext3HoursWh   = null;
+        double? forecastNext3HoursWh = null;
 
         if (forecastNextHourWh.HasValue)
         {
@@ -278,7 +384,11 @@ public class TariffEngine
             ForecastRemainingTodayWh: forecastRemainingTodayWh,
             SolcastHourlyCurveWh: solcastHourlyCurveWh,
             EnergyDeficitTodayWh: energyDeficitTodayWh,
-            GridChargeBlockedBySolarSufficiency: gridChargeBlockedBySolarSufficiency
+            GridChargeBlockedBySolarSufficiency: gridChargeBlockedBySolarSufficiency,
+            // Feature 5 — Dynamic tariff
+            IsDynamicTariff: _config.CurrentPriceEntity is not null && _liveSpotPrice.HasValue,
+            SpotPricePerKwh: _liveSpotPrice,
+            DynamicThresholdPerKwh: ComputeDynamicThreshold()
         );
     }
 
@@ -407,7 +517,25 @@ public record TariffContext(
     /// est suffisant pour couvrir le déficit batterie (EnergyDeficitTodayWh ≤ 0).
     /// Motif de blocage plus précis que SolarExpectedSoon (qui est binaire).
     /// </summary>
-    bool GridChargeBlockedBySolarSufficiency
+    bool GridChargeBlockedBySolarSufficiency,
+
+    // ── Tarif dynamique SPOT (Feature 5) ─────────────────────────────────────
+    /// <summary>
+    /// True si le prix provient d'une entité HA live (mode dynamique SPOT).
+    /// False = mode statique YAML (créneaux HC/HP codés en dur).
+    /// </summary>
+    bool IsDynamicTariff,
+    /// <summary>
+    /// Prix spot courant lu depuis HA (€/kWh). Null si non configuré ou lecture échouée.
+    /// En mode dynamique, ce prix remplace le créneau YAML dans toutes les décisions.
+    /// </summary>
+    double? SpotPricePerKwh,
+    /// <summary>
+    /// Seuil de charge réseau calculé dynamiquement = moyenne_24h × DynamicThresholdFactor.
+    /// Null si moins de 3 points d'historique (fallback sur GridChargeThresholdPerKwh YAML).
+    /// Affiché dans les logs pour traçabilité de la décision de charge réseau.
+    /// </summary>
+    double? DynamicThresholdPerKwh
 )
 {
     public double NormalizedPrice => CurrentPricePerKwh.HasValue

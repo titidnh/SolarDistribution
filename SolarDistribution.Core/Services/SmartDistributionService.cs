@@ -368,7 +368,7 @@ public class SmartDistributionService
                 double coveredH = curve.Length;
                 double remainingUncoveredH = hoursRemaining - coveredH;
                 double sunriseH = solarStartH;
-                double sunsetH  = sunriseH + 12.0;
+                double sunsetH = sunriseH + 12.0;
 
                 double fallbackFraction = SolarFractionBetweenHours(
                     coveredH, coveredH + remainingUncoveredH, sunriseH, sunsetH);
@@ -661,21 +661,26 @@ public class SmartDistributionService
         string balanceBlockInfo = ctx.GridChargeBlockedBySolarSufficiency
             ? " [BLOCKED: solar sufficient today]" : string.Empty;
 
+        // ── Feature 5 — Prix et mode tarifaire utilisé ───────────────────────
+        string tariffModeInfo = ctx.IsDynamicTariff
+            ? $" [SPOT {ctx.SpotPricePerKwh:F4}€/kWh | seuil={ctx.DynamicThresholdPerKwh:F4}€/kWh dyn]"
+            : $" [slot '{ctx.ActiveSlotName}' YAML]";
+
         if (ctx.GridChargeAllowed)
             _logger.LogInformation(
-                "Tariff [{Slot}] {Price:F3}€/kWh — GRID CHARGE ALLOWED{SlotInfo}{SolarInfo}{FcInfo}{EveningBoost}{Intraday}{Balance} " +
+                "Tariff {TariffMode} {Price:F4}€/kWh — GRID CHARGE ALLOWED{SlotInfo}{SolarInfo}{FcInfo}{EveningBoost}{Intraday}{Balance} " +
                 "(surplus={S:F0}W, savings={Sav:F3}€/kWh)",
-                ctx.ActiveSlotName, ctx.CurrentPricePerKwh, slotInfo, solarInfo, fcInfo, eveningBoostInfo,
+                tariffModeInfo, ctx.CurrentPricePerKwh, slotInfo, solarInfo, fcInfo, eveningBoostInfo,
                 intradayInfo, balanceInfo, surplusW, ctx.MaxSavingsPerKwh);
         else if (ctx.IsFavorableForGrid)
             _logger.LogInformation(
-                "Tariff [{Slot}] {Price:F3}€/kWh — GRID CHARGE BLOCKED{HaBlock}{BalanceBlock}{SlotInfo}{SolarInfo}{FcInfo}{Intraday}{Balance}",
-                ctx.ActiveSlotName, ctx.CurrentPricePerKwh, haBlockInfo, balanceBlockInfo,
+                "Tariff {TariffMode} {Price:F4}€/kWh — GRID CHARGE BLOCKED{HaBlock}{BalanceBlock}{SlotInfo}{SolarInfo}{FcInfo}{Intraday}{Balance}",
+                tariffModeInfo, ctx.CurrentPricePerKwh, haBlockInfo, balanceBlockInfo,
                 slotInfo, solarInfo, fcInfo, intradayInfo, balanceInfo);
         else
             _logger.LogInformation(
-                "Tariff [{Slot}] {Price:F3}€/kWh — HP grid charge not favorable{SlotInfo}",
-                ctx.ActiveSlotName, ctx.CurrentPricePerKwh, slotInfo);
+                "Tariff {TariffMode} {Price:F4}€/kWh — grid charge not favorable{SlotInfo}",
+                tariffModeInfo, ctx.CurrentPricePerKwh, slotInfo);
     }
 }
 

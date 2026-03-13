@@ -515,7 +515,49 @@ tariff:
   # 0 si vous n'êtes pas rémunéré pour l'injection réseau.
   export_price_per_kwh: 0.08
 
+  # ┌────────────────────────────────────────────────────────────────────────────┐
+  # │  TARIF DYNAMIQUE SPOT (OPTIONNEL) — Tibber, Eneco Variable, Belpower...   │
+  # ├────────────────────────────────────────────────────────────────────────────┤
+  # │  PROBLÈME SANS CES RÉGLAGES :                                              │
+  # │    Les créneaux HC/HP sont codés en dur en YAML. Si vous avez un contrat  │
+  # │    à prix variable (Tibber, Eneco variable, Belpower SPOT...), le Worker  │
+  # │    ignore le prix réel et charge au mauvais moment.                       │
+  # │                                                                            │
+  # │  SOLUTION :                                                                │
+  # │    current_price_entity expose le prix live en €/kWh depuis HA.           │
+  # │    Quand configuré, le Worker remplace la lecture des créneaux YAML        │
+  # │    par le prix HA en temps réel.                                           │
+  # │                                                                            │
+  # │  SEUIL DYNAMIQUE :                                                         │
+  # │    Le seuil grid_charge_threshold_per_kwh devient la base fixe,           │
+  # │    MAIS si dynamic_threshold_factor est configuré, le seuil effectif      │
+  # │    est recalculé automatiquement = moyenne_24h_des_prix × factor.         │
+  # │    Ex : moyenne 24h = 0.20 €/kWh, factor = 0.80                           │
+  # │      → seuil = 0.16 €/kWh (charge quand 20% sous la moyenne)              │
+  # │                                                                            │
+  # │  ENTITÉS HA COMPATIBLES :                                                  │
+  # │    Tibber          : sensor.tibber_price_current_total                     │
+  # │    Eneco variable  : sensor.eneco_current_price                            │
+  # │    EPEX / EDF TOU  : sensor.epex_spot_price                                │
+  # │    Octopus Energy  : sensor.octopus_electricity_current_rate               │
+  # │    Générique       : Chercher "price" / "tariff" / "rate" dans HA → États  │
+  # │                                                                            │
+  # │  FALLBACK :                                                                │
+  # │    Si la lecture HA échoue → retour automatique aux créneaux YAML.        │
+  # │    Les slots ci-dessous restent donc utiles comme filet de sécurité.      │
+  # └────────────────────────────────────────────────────────────────────────────┘
+
+  # Entité HA exposant le prix spot courant (€/kWh) — décommenter et adapter.
+  # current_price_entity: "sensor.tibber_price_current_total"
+
+  # Facteur multiplicateur pour le seuil dynamique (rolling 24h × factor).
+  # 0.8 = charge quand le prix est 20% sous la moyenne journalière (recommandé).
+  # 1.0 = charge dès que le prix est sous la moyenne.
+  # Ignoré si current_price_entity est absent.
+  # dynamic_threshold_factor: 0.8
+
   # Seuil en €/kWh : en-dessous → charge réseau autorisée (si pas de soleil prévu).
+  # En mode dynamique, ce seuil sert de FALLBACK si le rolling 24h a < 3 points.
   # Exemple : 0.15 autorise la charge en heures creuses à 0.10 €/kWh.
   # Mettre 0 pour désactiver complètement la charge depuis le réseau.
   grid_charge_threshold_per_kwh: 0.15
