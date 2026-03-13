@@ -349,6 +349,6 @@ public class LoggingConfig
     /// </summary>
     public Dictionary<string, string> LokiLabels { get; set; } = new()
     {
-        ["app"] = "solar-worker"
+        ["job"] = "solar-worker"
     };
 }

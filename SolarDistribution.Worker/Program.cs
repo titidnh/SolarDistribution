@@ -1,20 +1,19 @@
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Serilog;
 using Serilog.Events;
-using System.Net.Http.Headers;
+using Serilog.Sinks.Grafana.Loki;
+using SolarDistribution.Core.Repositories;
 using SolarDistribution.Core.Services;
 using SolarDistribution.Core.Services.ML;
 using SolarDistribution.Infrastructure.Data;
+using SolarDistribution.Infrastructure.Mapping;
 using SolarDistribution.Infrastructure.Repositories;
 using SolarDistribution.Infrastructure.Services;
-using SolarDistribution.Infrastructure.Mapping;
-using SolarDistribution.Core.Repositories;
 using SolarDistribution.Worker.Configuration;
 using SolarDistribution.Worker.HA;
+using SolarDistribution.Worker.Logging;
 using SolarDistribution.Worker.Services;
-using Serilog.Sinks.GrafanaLoki;
+using System.Net.Http.Headers;
 
 // ── Chargement config YAML ────────────────────────────────────────────────────
 SolarConfig config;
@@ -62,32 +61,24 @@ if (config.Logging.FilePath is not null)
         retainedFileCountLimit: 14);
 }
 
-// ── Sink Loki (JSON via outputTemplate, push HTTP batch) ─────────────────────
-// Package : Serilog.Sinks.GrafanaLoki v1.1.2 (adeotek)
-// API     : WriteTo.GrafanaLoki(url, credentials?, labels Dictionary, outputTemplate, ...)
-// JSON    : on encode chaque champ explicitement dans le template pour que
-//           Loki reçoive une ligne JSON parseable avec | json dans LogQL.
+// ── Sink Loki (JSON structuré via LokiJsonFormatter) ─────────────────────────
+// Package : Serilog.Sinks.Grafana.Loki v8 (serilog-contrib — package officiel)
+// LokiJsonFormatter sérialise chaque LogEvent avec System.Text.Json → JSON
+// garanti valide même si le message contient ":", ",", guillemets...
 if (!string.IsNullOrWhiteSpace(config.Logging.LokiUrl))
 {
-    // Labels : Dictionary<string, string> — cardinalité faible, pas de timestamps
-    var lokiLabels = config.Logging.LokiLabels;
-
-    // Template JSON — chaque log devient une ligne JSON structurée dans Loki.
-    // LogQL : {app="solar-worker"} | json | level="Error"
-    const string lokiJsonTemplate =
-        "{\"timestamp\":\"{Timestamp:yyyy-MM-ddTHH:mm:ss.fffzzz}\"," +
-        "\"level\":\"{Level:u3}\"," +
-        "\"message\":{Message:j}," +
-        "\"source\":\"{SourceContext}\"," +
-        "\"exception\":\"{Exception}\"}\n";
+    // Convertir le Dictionary<string,string> YAML → LokiLabel[] attendu par v8
+    var lokiLabels = config.Logging.LokiLabels
+        .Select(kv => new LokiLabel { Key = kv.Key, Value = kv.Value })
+        .ToArray();
 
     loggerConfig.WriteTo.GrafanaLoki(
         config.Logging.LokiUrl,
-        credentials: null,          // null = pas d'auth Basic (Loki sans auth)
         labels: lokiLabels,
-        outputTemplate: lokiJsonTemplate,
-        logEventsInBatchLimit: 200,
-        period: TimeSpan.FromSeconds(2));
+        textFormatter: new LokiJsonFormatter(),
+        batchPostingLimit: 200,
+        period: TimeSpan.FromSeconds(2),
+        queueLimit: 10_000);
 
     Console.WriteLine($"[Serilog] Loki sink actif → {config.Logging.LokiUrl}");
 }

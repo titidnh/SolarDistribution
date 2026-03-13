@@ -825,5 +825,5 @@ logging:
   # IMPORTANT : Loki indexe ces labels — gardez-en peu (< 10) et à cardinalité
   # faible (pas de timestamp ou d'ID dans les labels !).
   loki_labels:
-    app: "solar-worker"
+    job: "solar-worker"
     env: "prod"               # ← adapter : dev | staging | prod
