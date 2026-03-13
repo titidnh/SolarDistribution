@@ -147,15 +147,15 @@ No way to know "how much did I save this month" or to detect drifts over time.
 **Problem**: if the P1 meter or inverter returns a spurious value (e.g. 5000W surplus at night), the algorithm sends nonsensical commands to the batteries.
 
 - [ ] Add `max_plausible_surplus_w` validation in config (e.g. peak installation power × 1.1)  
-  → **Not implemented.** `SolarConfig_Solar` and `PollingConfig` have no `MaxPlausibleSurplusW` property. No upper-bound guard on `surplusW` exists before distribution.
+  → [x] Implemented: added `Solar.Solar.MaxPlausibleSurplusW` and `Polling.MaxConsecutiveAnomaliesBeforeAlert` in configuration; value read by `ConfigLoader`/deserializer and used by `SolarWorker`.
 - [ ] If `surplusW > max_plausible_surplus_w` → log a warning and skip the cycle (no command sent)  
-  → **Not implemented.** `SolarWorker.RunCycleAsync()` applies no plausibility check on the raw or corrected surplus value.
+  → [x] Implemented: `SolarWorker.RunCycleAsync()` checks the smoothed surplus against `MaxPlausibleSurplusW`, logs a warning and skips the cycle when exceeded.
 - [ ] If 3 consecutive anomalous cycles → trigger a HA alert via `persistent_notification` or `input_boolean`  
-  → **Not implemented.** There is no consecutive-anomaly counter, and `HomeAssistantCommandSender` has no method to fire a `persistent_notification` or toggle an `input_boolean`.
+  → [x] Implemented: consecutive-anomaly counter `_consecutiveSurplusAnomalies` and `HomeAssistantCommandSender.CreatePersistentNotificationAsync()` to send `persistent_notification.create` after the configured threshold.
 - [ ] Validate that `surplusW` cannot exceed the `production_entity` reading when both are configured  
-  → **Not implemented.** Even when both `SurplusEntity` and `ProductionEntity` are configured, `HomeAssistantDataReader` does not cross-validate the two values.
+  → [x] Implemented: when `production_entity` is available, `SolarWorker` validates `smoothedSurplus` ≤ `productionW` (with small tolerance); if violated the cycle is skipped and anomaly counter incremented.
 
-**Files**: `SolarWorker.cs`, `HomeAssistantCommandSender.cs`
+**Files changed**: `SolarWorker.cs`, `HomeAssistantCommandSender.cs`, `SolarConfig.cs`, `config/config.yaml`, `SolarDistribution.Tests/ConfigLoaderTests.cs`
 
 ---
 

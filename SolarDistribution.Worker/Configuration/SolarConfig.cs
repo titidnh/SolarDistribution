@@ -75,6 +75,13 @@ public class PollingConfig
     /// Mettre à 0 pour désactiver.
     /// </summary>
     public int MinChargeDurationCycles { get; set; } = 3;
+
+    /// <summary>
+    /// Nombre de cycles consécutifs d'anomalie du surplus avant de déclencher
+    /// une notification persistante dans Home Assistant.
+    /// Défaut : 3
+    /// </summary>
+    public int MaxConsecutiveAnomaliesBeforeAlert { get; set; } = 3;
 }
 
 public class LocationConfig
@@ -174,6 +181,14 @@ public class SolarConfig_Solar
     /// si le solaire restant couvre le déficit batterie → pas besoin de charger du réseau.
     /// </summary>
     public string? ForecastRemainingTodayEntity { get; set; }
+
+    /// <summary>
+    /// (OPTIONNEL) Seuil de plausibilité supérieur pour le surplus (W).
+    /// Ex: peak_installation_power × 1.1. Si le surplus observé dépasse
+    /// cette valeur, le cycle est considéré comme anomal et ignoré.
+    /// Null = désactivé.
+    /// </summary>
+    public double? MaxPlausibleSurplusW { get; set; }
 }
 
 public class BatteryConfig

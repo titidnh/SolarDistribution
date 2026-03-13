@@ -40,6 +40,8 @@ public class SolarWorker : BackgroundService
     // ── Hystérésis IdleCharge par batterie ────────────────────────────────────
     // Délégué à IdleChargeHysteresis pour être testable indépendamment.
     private readonly IdleChargeHysteresis _idleHysteresis;
+    // ── Surplus anomaly detection (Item 9) ─────────────────────────────────
+    private int _consecutiveSurplusAnomalies = 0;
 
     public SolarWorker(
         SolarConfig config,
@@ -209,6 +211,50 @@ public class SolarWorker : BackgroundService
                 rawSurplus, correctedSurplus, smoothedSurplus,
                 SurplusSmootherWindowSize, correctedSurplus - smoothedSurplus);
         }
+
+        // ── Item 9 — Surplus anomaly detection (plausibility checks)
+        //  · If a configured absolute plausibility threshold is exceeded
+        //    OR if surplus > production when production is available,
+        //    mark the cycle anomalous, skip sending any commands and log.
+        //  · After N consecutive anomalies, create a persistent HA notification.
+        if (_config.Solar.MaxPlausibleSurplusW.HasValue && smoothedSurplus > _config.Solar.MaxPlausibleSurplusW.Value)
+        {
+            _consecutiveSurplusAnomalies++;
+            _logger.LogWarning(
+                "⚠️  Surplus anomaly: smoothed={Smooth:F0}W > MaxPlausible={Max:F0}W — skipping cycle ({Count}/{Limit})",
+                smoothedSurplus, _config.Solar.MaxPlausibleSurplusW.Value, _consecutiveSurplusAnomalies, _config.Polling.MaxConsecutiveAnomaliesBeforeAlert);
+
+            if (_consecutiveSurplusAnomalies >= Math.Max(1, _config.Polling.MaxConsecutiveAnomaliesBeforeAlert))
+            {
+                string msg = $"Observed surplus {smoothedSurplus:F0}W exceeds configured MaxPlausibleSurplusW {_config.Solar.MaxPlausibleSurplusW.Value:F0}W for {_consecutiveSurplusAnomalies} consecutive cycles. Raw P1={rawSurplus:F0}W, production={(snapshot.ProductionW.HasValue ? snapshot.ProductionW.Value.ToString("F0") + "W" : "n/a")}. Please check the P1 meter and inverter sensors.";
+                try { await _sender.CreatePersistentNotificationAsync("SolarWorker — surplus anomaly detected", msg, ct); }
+                catch (Exception ex) { _logger.LogWarning(ex, "Failed to send persistent notification for surplus anomaly"); }
+                _consecutiveSurplusAnomalies = 0;
+            }
+
+            return;
+        }
+
+        if (snapshot.ProductionW.HasValue && smoothedSurplus > snapshot.ProductionW.Value + 1.0)
+        {
+            _consecutiveSurplusAnomalies++;
+            _logger.LogWarning(
+                "⚠️  Surplus anomaly: smoothed={Smooth:F0}W > production={Prod:F0}W — skipping cycle ({Count}/{Limit})",
+                smoothedSurplus, snapshot.ProductionW.Value, _consecutiveSurplusAnomalies, _config.Polling.MaxConsecutiveAnomaliesBeforeAlert);
+
+            if (_consecutiveSurplusAnomalies >= Math.Max(1, _config.Polling.MaxConsecutiveAnomaliesBeforeAlert))
+            {
+                string msg = $"Observed surplus {smoothedSurplus:F0}W greater than reported production {snapshot.ProductionW.Value:F0}W for {_consecutiveSurplusAnomalies} consecutive cycles. Raw P1={rawSurplus:F0}W. Please verify sensors and config.";
+                try { await _sender.CreatePersistentNotificationAsync("SolarWorker — production/surplus mismatch", msg, ct); }
+                catch (Exception ex) { _logger.LogWarning(ex, "Failed to send persistent notification for production mismatch"); }
+                _consecutiveSurplusAnomalies = 0;
+            }
+
+            return;
+        }
+
+        // clear anomaly counter on normal cycle
+        _consecutiveSurplusAnomalies = 0;
 
         // ── Fix Bug #3 : double seuil anti-oscillation ─────────────────────────
         // Remplace l'ancien : effectiveSurplus = Max(0, corrected - bufferW)

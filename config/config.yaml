@@ -76,6 +76,9 @@ polling:
   # Valeur recommandée : 3 (bon compromis réactivité / stabilité).
   # Mettre à 0 pour désactiver.
   min_charge_duration_cycles: 3
+  # Nombre de cycles consécutifs d'anomalie du surplus avant d'envoyer une notification HA
+  # Si non configuré, défaut = 3
+  max_consecutive_anomalies_before_alert: 3
 
 # ── Météo Open-Meteo ────────────────────────────────────────────────────────────
 #
@@ -268,6 +271,12 @@ solar:
   # Production Solcast RESTANTE AUJOURD'HUI (Wh) — décommenter et adapter
   # Requis pour le bilan énergétique journalier (Feature 4).
   # forecast_remaining_today_entity: "sensor.solcast_pv_forecast_forecast_remaining_today"
+
+  # ── Seuil de plausibilité du surplus (Feature 9) ───────────────────────────
+  # Si observé, un surplus supérieur à cette valeur est considéré comme anormal
+  # (p.ex. capteur P1 ou onduleur retournant 5000W la nuit). Mettre null pour
+  # désactiver. Exemple : pour une installation 4kWc → 4400 (4kW × 1.1)
+  max_plausible_surplus_w: 5000
 
 # ── Batteries ──────────────────────────────────────────────────────────────────
 batteries:

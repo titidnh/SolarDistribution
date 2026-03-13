@@ -157,6 +157,7 @@ public class DistributionController : ControllerBase
     /// </remarks>
     /// <param name="from">Start date inclusive (ISO 8601 date, e.g. 2025-06-01). Defaults to 30 days ago.</param>
     /// <param name="to">End date inclusive (ISO 8601 date, e.g. 2025-06-30). Defaults to yesterday.</param>
+        /// <param name="ct">Cancellation token for the request.</param>
     /// <response code="200">List of daily summaries (may be empty if no sessions in range)</response>
     /// <response code="400">Date range invalid (from &gt; to, or range exceeds 366 days)</response>
     [HttpGet("summary/daily")]

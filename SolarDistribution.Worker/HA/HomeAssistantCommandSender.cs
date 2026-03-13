@@ -281,4 +281,20 @@ public class HomeAssistantCommandSender
             action.Type, action.EntityId, action.Domain, action.Service);
         return false;
     }
+
+    /// <summary>
+    /// Crée une notification persistante dans Home Assistant (service persistent_notification.create).
+    /// Utilisé pour alerter l'utilisateur si plusieurs cycles consécutifs montrent
+    /// un surplus manifestement erroné (anomalie compteur P1 / onduleur).
+    /// </summary>
+    public async Task<bool> CreatePersistentNotificationAsync(string title, string message, CancellationToken ct = default)
+    {
+        var data = new Dictionary<string, object>
+        {
+            ["title"] = title,
+            ["message"] = message
+        };
+
+        return await _client.CallServiceGenericAsync("persistent_notification", "create", data, ct);
+    }
 }

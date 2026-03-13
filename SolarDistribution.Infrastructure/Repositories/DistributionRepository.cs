@@ -120,12 +120,13 @@ public class DistributionRepository : IDistributionRepository
     {
         if (lastNCycles <= 0) return null;
 
-        var values = await _db.DistributionSessions
-            .Where(s => s.MeasuredConsumptionW != null)
+        var sessions = await _db.DistributionSessions
+            .Where(s => s.MeasuredConsumptionW.HasValue)
             .OrderByDescending(s => s.RequestedAt)
             .Take(lastNCycles)
-            .Select(s => s.MeasuredConsumptionW!.Value)
             .ToListAsync(ct);
+
+        var values = sessions.Select(s => s.MeasuredConsumptionW!.Value).ToList();
 
         if (values.Count == 0) return null;
 
@@ -190,11 +191,15 @@ public class DistributionRepository : IDistributionRepository
             unusedSurplusWh += sessions[i].UnusedSurplusW * durationH;
 
             // Économies : TariffMaxSavingsPerKwh × énergie réseau de la session
-            if (sessions[i].TariffMaxSavingsPerKwh.HasValue && sessions[i].GridChargedW > 0)
+            if (sessions[i].GridChargedW > 0)
             {
-                double sessionGridWh = sessions[i].GridChargedW * durationH;
-                savingsNumerator += sessions[i].TariffMaxSavingsPerKwh.Value * sessionGridWh;
-                savingsDenominator += sessionGridWh;
+                var tms = sessions[i].TariffMaxSavingsPerKwh;
+                if (tms.HasValue)
+                {
+                    double sessionGridWh = sessions[i].GridChargedW * durationH;
+                    savingsNumerator += tms.Value * sessionGridWh;
+                    savingsDenominator += sessionGridWh;
+                }
             }
         }
 
