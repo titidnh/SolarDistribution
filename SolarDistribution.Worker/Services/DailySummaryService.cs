@@ -83,34 +83,37 @@ public class DailySummaryService
             return;
         }
 
-        _logger.LogInformation(
-            "╔══ Daily Summary {Date:yyyy-MM-dd} ═══════════════════════════════╗",
-            dateUtc);
-        _logger.LogInformation(
-            "║  Sessions      : {Count}",
-            s.SessionCount);
-        _logger.LogInformation(
-            "║  Solar alloc   : {Solar:F0} Wh  |  Unused surplus: {Unused:F0} Wh",
-            s.SolarAllocatedWh, s.UnusedSurplusWh);
-        _logger.LogInformation(
-            "║  Grid charged  : {Grid:F0} Wh",
-            s.GridChargedWh);
+        // Build a single boxed multi-line message so the layout stays aligned
+        var contentLines = new List<string>();
+        contentLines.Add($"Daily Summary {dateUtc:yyyy-MM-dd}");
+        contentLines.Add($"Sessions      : {s.SessionCount}");
+        contentLines.Add($"Solar alloc   : {s.SolarAllocatedWh:F0} Wh  |  Unused surplus: {s.UnusedSurplusWh:F0} Wh");
+        contentLines.Add($"Grid charged  : {s.GridChargedWh:F0} Wh");
 
         if (s.SolarConsumedWh.HasValue)
-            _logger.LogInformation(
-                "║  Solar consumed: {Solar:F0} Wh  |  Self-sufficiency: {Pct:F1}%",
-                s.SolarConsumedWh.Value,
-                s.SelfSufficiencyPct ?? 0);
+            contentLines.Add($"Solar consumed: {s.SolarConsumedWh.Value:F0} Wh  |  Self-sufficiency: {s.SelfSufficiencyPct ?? 0:F1}%");
         else
-            _logger.LogInformation(
-                "║  Solar consumed: n/a (Solcast not configured)");
+            contentLines.Add("Solar consumed: n/a (Solcast not configured)");
 
         if (s.EstimatedSavingsEur.HasValue)
-            _logger.LogInformation(
-                "║  Est. savings  : {Savings:F2} €",
-                s.EstimatedSavingsEur.Value);
+            contentLines.Add($"Est. savings  : {s.EstimatedSavingsEur.Value:F2} €");
 
-        _logger.LogInformation(
-            "╚═══════════════════════════════════════════════════════════════════╝");
+        // Determine box width based on longest content line
+        int maxContentWidth = contentLines.Max(l => l.Length);
+        int innerWidth = Math.Max(maxContentWidth, 40); // minimum width
+        string top = "╔" + new string('═', innerWidth + 2) + "╗";
+        string bottom = "╚" + new string('═', innerWidth + 2) + "╝";
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine(top);
+        foreach (var line in contentLines)
+        {
+            sb.Append("║ ");
+            sb.Append(line.PadRight(innerWidth));
+            sb.AppendLine(" ║");
+        }
+        sb.Append(bottom);
+
+        _logger.LogInformation(sb.ToString());
     }
 }
