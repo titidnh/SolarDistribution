@@ -75,8 +75,55 @@ public class Battery
     public double? EmergencyGridChargeBelowPercent { get; set; }
     public bool IsEmergencyGridCharge { get; set; } = false;
 
+    // ── ML-8 : cycle de vie ───────────────────────────────────────────────────
+
+    /// <summary>
+    /// Nombre de cycles de charge complets lus depuis HA via CycleCountEntity.
+    /// 0 si l'entité n'est pas configurée ou si la lecture a échoué.
+    /// </summary>
+    public int CycleCount { get; set; } = 0;
+
+    /// <summary>
+    /// Facteur de réduction de priorité par cycle (depuis BatteryConfig.CycleAgingFactor).
+    /// 0 = désactivé (pas de pondération par cycle).
+    /// </summary>
+    public double CycleAgingFactor { get; set; } = 0.0001;
+
     // ── Computed ──────────────────────────────────────────────────────────────
-    public int EffectivePriority => CurrentPercent < MinPercent ? 0 : Priority;
+
+    /// <summary>
+    /// Priorité effective tenant compte de l'urgence SOC ET du vieillissement par cycles.
+    ///
+    /// Règle d'urgence (inchangée) :
+    ///   SOC &lt; MinPercent → EffectivePriority = 0 (URGENT, toujours premier)
+    ///
+    /// Pondération par cycles (ML-8) :
+    ///   effectivePriority = basePriority × (1 − CycleAgingFactor × CycleCount)
+    ///   clampé à [basePriority × 0.5, basePriority] pour rester dans des bornes raisonnables.
+    ///
+    /// Impact sur la distribution :
+    ///   Les batteries moins cyclées (plus neuves) ont une priorité numérique plus basse
+    ///   (rappel : tri ASC → priorité 0 = premier). Les batteries âgées, dont le
+    ///   EffectivePriority se rapproche de Priority (sans réduction), passent après.
+    ///   Effet : le surplus solaire va d'abord aux batteries les plus fraîches.
+    /// </summary>
+    public double EffectivePriority
+    {
+        get
+        {
+            if (CurrentPercent < MinPercent) return 0; // urgence toujours premier
+
+            if (CycleAgingFactor <= 0 || CycleCount <= 0)
+                return Priority;
+
+            // Réduction de priorité proportionnelle aux cycles
+            double reduction = CycleAgingFactor * CycleCount;
+            double aged = Priority * (1.0 - reduction);
+            // Clamp : max 50% de réduction pour éviter une inversion trop brutale
+            return Math.Clamp(aged, Priority * 0.5, Priority);
+        }
+    }
+
     public bool IsUrgent => CurrentPercent < MinPercent;
 
     public double SpaceToSoftMaxWh =>

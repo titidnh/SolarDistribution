@@ -9,28 +9,28 @@ namespace SolarDistribution.Core.Services;
 /// ┌───────────────────────────────────────────────────────────────────────────┐
 /// │  ALGORITHME                                                               │
 /// │                                                                           │
-/// │  Groupes : batteries triées par EffectivePriority ASC                    │
-/// │    · SOC < MinPercent → EffectivePriority = 0 (URGENT, toujours premier) │
+/// │  Groupes : batteries triées par EffectivePriority ASC                     │
+/// │    · SOC < MinPercent → EffectivePriority = 0 (URGENT, toujours premier)  │
 /// │                                                                           │
-/// │  PASS 1 — Surplus solaire → SoftMaxPercent                               │
+/// │  PASS 1 — Surplus solaire → SoftMaxPercent                                │
 /// │    Distribution PROPORTIONNELLE par espace disponible dans chaque groupe  │
 /// │    Batteries cappées par MaxChargeRateW → surplus redirigé aux autres     │
 /// │                                                                           │
-/// │  PASS 2 — Surplus restant → HardMaxPercent (100%)                        │
-/// │    Même logique, même ordre, cible = HardMax                             │
+/// │  PASS 2 — Surplus restant → HardMaxPercent (100%)                         │
+/// │    Même logique, même ordre, cible = HardMax                              │
 /// │                                                                           │
-/// │  PASS 3 — Charge réseau → SoftMaxPercent (heures creuses uniquement)     │
-/// │    Uniquement si GridChargeAllowedW > 0 (décidé par SmartDistribution)   │
+/// │  PASS 3 — Charge réseau → SoftMaxPercent (heures creuses uniquement)      │
+/// │    Uniquement si GridChargeAllowedW > 0 (décidé par SmartDistribution)    │
 /// │    Limité à SoftMax — on garde de la place pour le prochain surplus       │
 /// │                                                                           │
 /// │  POST-DISTRIBUTION — IdleChargeW                                          │
-/// │    Toute batterie allouée à 0 W ET à sa cible (>= SoftMax) reçoit        │
+/// │    Toute batterie allouée à 0 W ET à sa cible (>= SoftMax) reçoit         │
 /// │    IdleChargeW pour maintenir le BMS actif.                               │
-/// │    Conditions : total=0W, SOC >= SoftMax, SOC <= HardMax,                │
+/// │    Conditions : total=0W, SOC >= SoftMax, SOC <= HardMax,                 │
 /// │                 surplus >= IdleChargeW (Fix Bug #5).                      │
-/// │    FIX Bug #4 : IdleChargeW désactivé si surplusW = 0.                   │
-/// │    FIX Bug #5 : IdleChargeW désactivé si surplus < IdleChargeW —         │
-/// │    évite de tirer la différence depuis le réseau en silence.             │
+/// │    FIX Bug #4 : IdleChargeW désactivé si surplusW = 0.                    │
+/// │    FIX Bug #5 : IdleChargeW désactivé si surplus < IdleChargeW —          │
+/// │    évite de tirer la différence depuis le réseau en silence.              │
 /// └───────────────────────────────────────────────────────────────────────────┘
 /// </summary>
 public class BatteryDistributionService : IBatteryDistributionService
@@ -47,7 +47,7 @@ public class BatteryDistributionService : IBatteryDistributionService
         double remaining = surplusW;
 
         var groups = batteryList
-            .GroupBy(b => b.EffectivePriority)
+            .GroupBy(b => Math.Round(b.EffectivePriority, 2))
             .OrderBy(g => g.Key)
             .ToList();
 
@@ -75,7 +75,7 @@ public class BatteryDistributionService : IBatteryDistributionService
 
         var gridGroups = batteryList
             .Where(b => b.GridChargeAllowedW > 0)
-            .GroupBy(b => b.EffectivePriority)
+            .GroupBy(b => Math.Round(b.EffectivePriority, 2))
             .OrderBy(g => g.Key)
             .ToList();
 

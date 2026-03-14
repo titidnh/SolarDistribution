@@ -9,54 +9,54 @@ namespace SolarDistribution.Infrastructure.Mapping;
 public static class DistributionSessionMapper
 {
     public static DistributionSession ToEntity(
-        DistributionResult  result,
-        WeatherData?        wx,
-        MLRecommendation?   mlReco,
-        string              decisionEngine,
-        IList<Battery>      originalBatteries,
-        TariffContext       tariff,
-        double?             measuredConsumptionW = null,
-        double?             forecastTodayWhAtStartOfDay = null)
+        DistributionResult result,
+        WeatherData? wx,
+        MLRecommendation? mlReco,
+        string decisionEngine,
+        IList<Battery> originalBatteries,
+        TariffContext tariff,
+        double? measuredConsumptionW = null,
+        double? forecastTodayWhAtStartOfDay = null)
     {
         var session = new DistributionSession
         {
-            RequestedAt                = DateTime.UtcNow,
-            SurplusW                   = result.SurplusInputW,
-            TotalAllocatedW            = result.TotalAllocatedW,
-            UnusedSurplusW             = result.UnusedSurplusW,
-            GridChargedW               = result.GridChargedW,
-            DecisionEngine             = decisionEngine,
-            MlConfidenceScore          = mlReco?.ConfidenceScore,
+            RequestedAt = DateTime.UtcNow,
+            SurplusW = result.SurplusInputW,
+            TotalAllocatedW = result.TotalAllocatedW,
+            UnusedSurplusW = result.UnusedSurplusW,
+            GridChargedW = result.GridChargedW,
+            DecisionEngine = decisionEngine,
+            MlConfidenceScore = mlReco?.ConfidenceScore,
 
             // Contexte tarifaire standard
-            TariffSlotName             = tariff.ActiveSlotName,
-            TariffPricePerKwh          = tariff.CurrentPricePerKwh,
-            WasGridChargeFavorable     = tariff.IsFavorableForGrid,
-            SolarExpectedSoon          = tariff.SolarExpectedSoon,
+            TariffSlotName = tariff.ActiveSlotName,
+            TariffPricePerKwh = tariff.CurrentPricePerKwh,
+            WasGridChargeFavorable = tariff.IsFavorableForGrid,
+            SolarExpectedSoon = tariff.SolarExpectedSoon,
             HoursToNextFavorableTariff = tariff.HoursToNextFavorable,
-            AvgSolarForecastWm2        = tariff.AvgSolarForecastWm2,
-            TariffMaxSavingsPerKwh     = tariff.MaxSavingsPerKwh,
+            AvgSolarForecastWm2 = tariff.AvgSolarForecastWm2,
+            TariffMaxSavingsPerKwh = tariff.MaxSavingsPerKwh,
 
             // Contexte adaptatif étendu (ML-7)
-            HoursRemainingInSlot       = tariff.HoursRemainingInSlot,
-            HoursUntilSolar            = tariff.HoursUntilSolar.HasValue
+            HoursRemainingInSlot = tariff.HoursRemainingInSlot,
+            HoursUntilSolar = tariff.HoursUntilSolar.HasValue
                                          && tariff.HoursUntilSolar.Value < double.MaxValue
                 ? tariff.HoursUntilSolar.Value : null,
 
             // Prévisions HA installation-spécifiques (ML-8)
-            ForecastTodayWh            = tariff.ForecastTodayWh,
-            ForecastTomorrowWh         = tariff.ForecastTomorrowWh,
+            ForecastTodayWh = tariff.ForecastTodayWh,
+            ForecastTomorrowWh = tariff.ForecastTomorrowWh,
 
             // Load forecasting
             EstimatedConsumptionNextHoursWh = tariff.EstimatedConsumptionNextHoursWh,
-            MeasuredConsumptionW            = measuredConsumptionW,
+            MeasuredConsumptionW = measuredConsumptionW,
 
             // Intraday + bilan journalier (Feature 3 & 4)
-            ForecastRemainingTodayWh        = tariff.ForecastRemainingTodayWh,
-            EnergyDeficitTodayWh            = tariff.EnergyDeficitTodayWh,
+            ForecastRemainingTodayWh = tariff.ForecastRemainingTodayWh,
+            EnergyDeficitTodayWh = tariff.EnergyDeficitTodayWh,
             // DailySolarConsumedWh = ForecastToday(début journée) − ForecastRemainingToday
             // forecastTodayWhAtStartOfDay est la valeur lue en début de journée (stockée par le worker)
-            DailySolarConsumedWh            =
+            DailySolarConsumedWh =
                 forecastTodayWhAtStartOfDay.HasValue && tariff.ForecastRemainingTodayWh.HasValue
                     ? Math.Max(0, forecastTodayWhAtStartOfDay.Value - tariff.ForecastRemainingTodayWh.Value)
                     : null,
@@ -67,20 +67,22 @@ public static class DistributionSessionMapper
             var orig = originalBatteries.FirstOrDefault(b => b.Id == alloc.BatteryId);
             return new BatterySnapshot
             {
-                BatteryId             = alloc.BatteryId,
-                CapacityWh            = orig?.CapacityWh       ?? 0,
-                MaxChargeRateW        = orig?.MaxChargeRateW   ?? 0,
-                MinPercent            = orig?.MinPercent       ?? 0,
-                SoftMaxPercent        = orig?.SoftMaxPercent   ?? 80,
-                CurrentPercentBefore  = alloc.PreviousPercent,
-                CurrentPercentAfter   = alloc.NewPercent,
-                Priority              = orig?.Priority         ?? 0,
-                WasUrgent             = alloc.WasUrgent,
-                AllocatedW            = alloc.AllocatedW,
-                IsGridCharge          = alloc.IsGridCharge,
+                BatteryId = alloc.BatteryId,
+                CapacityWh = orig?.CapacityWh ?? 0,
+                MaxChargeRateW = orig?.MaxChargeRateW ?? 0,
+                MinPercent = orig?.MinPercent ?? 0,
+                SoftMaxPercent = orig?.SoftMaxPercent ?? 80,
+                CurrentPercentBefore = alloc.PreviousPercent,
+                CurrentPercentAfter = alloc.NewPercent,
+                Priority = orig?.Priority ?? 0,
+                WasUrgent = alloc.WasUrgent,
+                AllocatedW = alloc.AllocatedW,
+                IsGridCharge = alloc.IsGridCharge,
                 IsEmergencyGridCharge = alloc.IsEmergencyGridCharge,
-                GridChargeAllowedW    = orig?.GridChargeAllowedW ?? 0,
-                Reason                = alloc.Reason
+                GridChargeAllowedW = orig?.GridChargeAllowedW ?? 0,
+                Reason = alloc.Reason,
+                // ML-8 : cycle de vie — persisté pour traçabilité et recalcul ML historique
+                CycleCount = orig?.CycleCount ?? 0,
             };
         }).ToList();
 
@@ -97,18 +99,18 @@ public static class DistributionSessionMapper
         {
             session.Weather = new WeatherSnapshot
             {
-                FetchedAt                = wx.FetchedAt,
-                Latitude                 = wx.Latitude,
-                Longitude                = wx.Longitude,
-                TemperatureC             = wx.TemperatureC,
-                CloudCoverPercent        = wx.CloudCoverPercent,
-                PrecipitationMmH         = wx.PrecipitationMmH,
-                DirectRadiationWm2       = wx.DirectRadiationWm2,
-                DiffuseRadiationWm2      = wx.DiffuseRadiationWm2,
-                DaylightHours            = wx.DaylightHours,
-                HoursUntilSunset         = wx.HoursUntilSunset,
+                FetchedAt = wx.FetchedAt,
+                Latitude = wx.Latitude,
+                Longitude = wx.Longitude,
+                TemperatureC = wx.TemperatureC,
+                CloudCoverPercent = wx.CloudCoverPercent,
+                PrecipitationMmH = wx.PrecipitationMmH,
+                DirectRadiationWm2 = wx.DirectRadiationWm2,
+                DiffuseRadiationWm2 = wx.DiffuseRadiationWm2,
+                DaylightHours = wx.DaylightHours,
+                HoursUntilSunset = wx.HoursUntilSunset,
                 RadiationForecast12hJson = JsonSerializer.Serialize(wx.RadiationForecast12h),
-                CloudForecast12hJson     = JsonSerializer.Serialize(wx.CloudForecast12h)
+                CloudForecast12hJson = JsonSerializer.Serialize(wx.CloudForecast12h)
             };
         }
 
@@ -116,12 +118,12 @@ public static class DistributionSessionMapper
         {
             session.MlPrediction = new MLPredictionLog
             {
-                ModelVersion                 = mlReco.ModelVersion,
-                ConfidenceScore              = mlReco.ConfidenceScore,
-                PredictedSoftMaxJson         = JsonSerializer.Serialize(mlReco.RecommendedSoftMaxPercent),
+                ModelVersion = mlReco.ModelVersion,
+                ConfidenceScore = mlReco.ConfidenceScore,
+                PredictedSoftMaxJson = JsonSerializer.Serialize(mlReco.RecommendedSoftMaxPercent),
                 PredictedPreventiveThreshold = mlReco.RecommendedPreventiveThreshold,
-                WasApplied                   = decisionEngine != "Deterministic",
-                PredictedAt                  = DateTime.UtcNow
+                WasApplied = decisionEngine != "Deterministic",
+                PredictedAt = DateTime.UtcNow
             };
         }
 

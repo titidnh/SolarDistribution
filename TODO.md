@@ -116,30 +116,30 @@ No way to know "how much did I save this month" or to detect drifts over time.
 ### 7. Improved ML feedback (more meaningful labels)
 **Problem**: current ML labels (`OptimalSoftMaxPercent`, `OptimalPreventiveThreshold`) are derived from heuristic rules in `FeedbackEvaluator`. The model learns to mimic rules, not to optimize actual measured self-consumption.
 
-- [ ] Add `ActualSelfSufficiencyPct` as a label, measured 4h after the session (already planned via `feedback_delay_hours`)  
-  → **Not implemented.** `SessionFeedback` has no `ActualSelfSufficiencyPct` column. `FeedbackEvaluator.EvaluateSessionAsync()` computes `EnergyEfficiencyScore` and `AvailabilityScore` but not a true self-sufficiency ratio (solar consumed / total consumed).
-- [ ] Add `DidImportFromGrid` as a boolean label: did we import from the grid in the 4h following the session?  
-  → **Not implemented.** No such field in `SessionFeedback`, and `FeedbackEvaluator` does not re-read the grid import sensor from HA at feedback time.
-- [ ] Train a binary classification model `ShouldChargeFromGrid` in addition to the existing regressions  
-  → **Not implemented.** `IDistributionMLService` exposes only `PredictAsync()` returning `MLRecommendation` (two regression outputs: `RecommendedSoftMaxPercent` and `RecommendedPreventiveThreshold`). No classification head exists.
-- [ ] Weight sessions where solar was wasted (battery full, surplus unused) more heavily in training  
-  → **Not implemented.** `DistributionMLService` applies no sample weighting. Sessions with `UnusedSurplusW > 0` are not flagged or up-weighted in the training dataset.
+- [x] Add `ActualSelfSufficiencyPct` as a label, measured 4h after the session (already planned via `feedback_delay_hours`)  
+  → `SessionFeedback.ActualSelfSufficiencyPct` (nullable `double?`) added in `DistributionEntities.cs`. `FeedbackEvaluator.ComputeActualSelfSufficiencyAsync()` relit `GridImportEntity` + `ConsumptionEntity` dans HA au moment du feedback : `selfSufficiency = 1 − (import_W / consumption_W)`. Null si `GridImportEntity` non configurée. `SolarConfig_Solar` reçoit `GridImportEntity`, `GridImportEntityMultiplier` et `GridImportSignificantThresholdW`. Mappé dans `SolarDbContext` (`actual_self_sufficiency_pct DECIMAL(6,3)`). Feature `ActualSelfSufficiencyNormalized` ajoutée dans `DistributionFeatures` (LoadColumn 43).
+- [x] Add `DidImportFromGrid` as a boolean label: did we import from the grid in the 4h following the session?  
+  → `SessionFeedback.DidImportFromGrid` (nullable `bool?`) ajouté. `FeedbackEvaluator.ReadGridImportAsync()` relit `GridImportEntity` et compare à `GridImportSignificantThresholdW` (défaut 50W, filtre le bruit P1). Mappé en `did_import_from_grid TINYINT(1) NULL`. Feature `DidImportFromGrid` (float 0/1) ajoutée dans `DistributionFeatures` (LoadColumn 44).
+- [x] Train a binary classification model `ShouldChargeFromGrid` in addition to the existing regressions  
+  → `IDistributionMLService` : ajout de `GridChargePrediction` (PredictedLabel + Probability). `MLRecommendation` enrichi avec `ShouldChargeFromGridPrediction` et `GridChargeClassificationConfidence`. `DistributionMLService` : nouvelle méthode `TrainClassifier()` (FastTree binary classification, 100 arbres, `ExampleWeightColumnName = SampleWeight`). Entraîné conditionnellement si ≥ 40% des sessions ont un label binaire. `PredictAsync()` interroge le classifieur en parallèle des deux régresseurs (pool `_gcEngines`). Modèle persisté dans `ml_grid_charge_model.zip` et chargé depuis le disque au démarrage. `SessionFeedback.ShouldChargeFromGrid` calculé dans `FeedbackEvaluator.ComputeShouldChargeFromGrid()` selon 3 règles : import détecté + pas de charge réseau → true ; autosuffisance < 70% → true ; pas d'import + autosuffisance ≥ 90% → false ; sinon null.
+- [x] Weight sessions where solar was wasted (battery full, surplus unused) more heavily in training  
+  → `SessionFeedback.SurplusWasted` (bool, `UnusedSurplusW > 50W AND SOC ≥ 95%`). `SessionFeedback.TrainingWeight` calculé par `ComputeTrainingWeight()` : ×2.0 si surplus gaspillé, ×1.8 si import détecté, ×1.5 si autosuffisance < 50%, ×1.4 si session urgence, plafonné à ×3.5. `DistributionFeatures.SampleWeight` (LoadColumn 45) propage le poids vers ML.NET via `ExampleWeightColumnName` sur les deux régresseurs et le classifieur. Migration SQL `migration_v6_ml7_ml8.sql` : colonnes `actual_self_sufficiency_pct`, `did_import_from_grid`, `should_charge_from_grid`, `surplus_wasted`, `training_weight` dans `session_feedbacks`.
 
-**Files**: `FeedbackEvaluator.cs`, `IDistributionMLService.cs`, `DistributionMLService.cs`
+**Files**: `FeedbackEvaluator.cs`, `IDistributionMLService.cs`, `DistributionMLService.cs`, `DistributionEntities.cs` (Core + Infrastructure), `SolarConfig.cs`, `SolarDbContext.cs`, `migration_v6_ml7_ml8.sql`
 
 ---
 
 ### 8. Multi-battery distribution considering battery lifecycle
 **Problem**: both batteries receive identical logic. An older or more degraded battery should ideally be stressed less.
 
-- [ ] Add optional `cycle_count_entity` (HA entity exposing the BMS cycle count)  
-  → **Not implemented.** `BatteryEntitiesConfig` has no `CycleCountEntity` property. No cycle count is read from HA anywhere in the codebase.
-- [ ] Use cycle count as a weighting factor in `DistributeSurplusToGroup` (more cycles → lower effective priority)  
-  → **Not implemented.** `BatteryDistributionService.DistributeSurplusToGroup()` sorts by `EffectivePriority` only; there is no cycle-count weighting.
-- [ ] Log a warning if a battery exceeds a configurable cycle threshold (`max_recommended_cycles`)  
-  → **Not implemented.** Neither `BatteryConfig` nor `BatteryEntitiesConfig` has a `MaxRecommendedCycles` field.
+- [x] Add optional `cycle_count_entity` (HA entity exposing the BMS cycle count)  
+  → `BatteryEntitiesConfig.CycleCountEntity` (string?) ajouté dans `SolarConfig.cs`. `HomeAssistantDataReader` relit l'entité à chaque cycle dans la boucle batteries, convertit en `int` (arrondi, clamp ≥ 0) et trace un `LogDebug`. `BatteryReading` enrichi avec `CycleCount = 0` (paramètre optionnel). `SolarWorker.BuildBatteries()` propage `CycleCount` dans `Battery.CycleCount`.
+- [x] Use cycle count as a weighting factor in `DistributeSurplusToGroup` (more cycles → lower effective priority)  
+  → `Battery.CycleCount` (int) et `Battery.CycleAgingFactor` (double, défaut 0.0001) ajoutés dans `Battery.cs`. `Battery.EffectivePriority` (converti de `int` en `double`) intègre la pondération : `effectivePriority = Priority × (1 − CycleAgingFactor × CycleCount)`, clampé à `[Priority × 0.5, Priority]` pour éviter une inversion brutale. La règle urgence SOC < MinPercent → 0 reste prioritaire. `BatteryDistributionService` : les deux `GroupBy(b => b.EffectivePriority)` remplacés par `GroupBy(b => Math.Round(b.EffectivePriority, 2))` (évite les micro-groupes dus à l'arithmétique flottante). `BatteryConfig` reçoit `CycleAgingFactor` (double, défaut 0.0001). `BatterySnapshot.CycleCount` persisté en DB via le mapper, mappé dans `SolarDbContext` (`cycle_count INT DEFAULT 0`). Vue SQL `battery_lifecycle_summary` pour Grafana.
+- [x] Log a warning if a battery exceeds a configurable cycle threshold (`max_recommended_cycles`)  
+  → `BatteryConfig.MaxRecommendedCycles` (int?) ajouté. `SolarWorker.BuildBatteries()` émet un `LogWarning` à chaque cycle si `CycleCount ≥ MaxRecommendedCycles`. Une notification HA persistante (`persistent_notification.create`) est envoyée une seule fois par session du worker via `_cycleAlertSent : HashSet<int>` (guard anti-spam). Migration SQL `migration_v6_ml7_ml8.sql` : colonne `cycle_count INT NOT NULL DEFAULT 0` dans `battery_snapshots`, vue `battery_lifecycle_summary`.
 
-**Files**: `Battery.cs`, `BatteryConfig.cs`, `BatteryDistributionService.cs`
+**Files**: `Battery.cs`, `SolarConfig.cs`, `BatteryDistributionService.cs`, `HomeAssistantDataReader.cs`, `SolarWorker.cs`, `DistributionEntities.cs` (Core), `SolarDbContext.cs`, `DistributionSessionMapper.cs`, `migration_v6_ml7_ml8.sql`
 
 ---
 

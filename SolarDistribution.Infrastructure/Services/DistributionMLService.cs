@@ -23,6 +23,9 @@ public class DistributionMLService : IDistributionMLService
     private const double MIN_CONFIDENCE_TO_APPLY = 0.65;
     private const string SOFTMAX_MODEL_FILE = "ml_softmax_model.zip";
     private const string PREVENTIVE_MODEL_FILE = "ml_preventive_model.zip";
+    // ML-7c : modèle de classification binaire ShouldChargeFromGrid
+    private const string GRID_CHARGE_MODEL_FILE = "ml_grid_charge_model.zip";
+    private const double MIN_CLASSIFICATION_SAMPLES_RATIO = 0.4;
 
     private readonly MLContext _ctx;
     private readonly IDistributionRepository _repo;
@@ -31,6 +34,8 @@ public class DistributionMLService : IDistributionMLService
 
     private ITransformer? _softMaxModel;
     private ITransformer? _preventiveModel;
+    // ML-7c : modèle de classification binaire
+    private ITransformer? _gridChargeModel;
     private MLModelMeta? _meta;
 
     // ML-1: Local thread-safe pool — avoids recreating PredictionEngine each cycle.
@@ -38,9 +43,15 @@ public class DistributionMLService : IDistributionMLService
     // Without a pool: CreatePredictionEngine() costs ~5-20ms (allocation + JIT) per call.
     private ConcurrentBag<PredictionEngine<DistributionFeatures, SoftMaxPrediction>>? _smEngines;
     private ConcurrentBag<PredictionEngine<DistributionFeatures, PreventivePrediction>>? _pvEngines;
+    // ML-7c : pool pour le classifieur
+    private ConcurrentBag<PredictionEngine<DistributionFeatures, GridChargePrediction>>? _gcEngines;
 
     private record MLModelMeta(string Version, int Samples,
-        double SoftMaxR2, double PreventiveR2, DateTime TrainedAt);
+        double SoftMaxR2, double PreventiveR2, DateTime TrainedAt,
+        // ML-7c : métriques du classifieur (null si GridImportEntity non configuré)
+        double? GridChargeAccuracy = null,
+        double? GridChargeAuc = null,
+        int GridChargeSamples = 0);
 
     public DistributionMLService(
         IDistributionRepository repo,
@@ -120,13 +131,34 @@ public class DistributionMLService : IDistributionMLService
 
             double conf = (Math.Max(0, _meta.SoftMaxR2) + Math.Max(0, _meta.PreventiveR2)) / 2.0;
 
+            // ML-7c : classification ShouldChargeFromGrid (optionnelle — disponible si GridImportEntity configuré)
+            bool? shouldCharge = null;
+            double? gcConf = null;
+
+            if (_gridChargeModel is not null && _gcEngines is not null)
+            {
+                if (!_gcEngines.TryTake(out var gcEng))
+                    gcEng = _ctx.Model.CreatePredictionEngine<DistributionFeatures, GridChargePrediction>(_gridChargeModel);
+                try
+                {
+                    var gcPred = gcEng.Predict(f);
+                    shouldCharge = gcPred.PredictedShouldCharge;
+                    gcConf = gcPred.Probability;
+                    _log.LogDebug(
+                        "ML-7c classification: shouldCharge={SC}, prob={P:F2}",
+                        shouldCharge, gcConf);
+                }
+                finally { _gcEngines.Add(gcEng); }
+            }
+
             _log.LogInformation(
-                "ML prediction: softMax={SM:F1}%, prev={PV:F1}%, conf={C:F2}",
-                softMax, preventive, conf);
+                "ML prediction: softMax={SM:F1}%, prev={PV:F1}%, conf={C:F2}, shouldCharge={SC}",
+                softMax, preventive, conf, shouldCharge?.ToString() ?? "N/A");
 
             return Task.FromResult<MLRecommendation?>(new MLRecommendation(
                 softMax, preventive, conf, _meta.Version,
-                BuildRationale(f, softMax, preventive)));
+                BuildRationale(f, softMax, preventive),
+                shouldCharge, gcConf));
         }
         catch (Exception ex)
         {
@@ -171,7 +203,47 @@ public class DistributionMLService : IDistributionMLService
 
             _softMaxModel = smModel;
             _preventiveModel = pvModel;
-            _meta = new MLModelMeta(ver, features.Count, smR2, pvR2, DateTime.UtcNow);
+
+            // ML-7c : entraîner le classifieur ShouldChargeFromGrid si assez de labels
+            ITransformer? gcModel = null;
+            double? gcAcc = null;
+            double? gcAuc = null;
+            int gcCount = 0;
+
+            var classificationFeatures = features
+                .Where(f => f.DidImportFromGrid > 0 || f.ActualSelfSufficiencyNormalized > 0)
+                .ToList();
+
+            int minClassifSamples = (int)(features.Count * MIN_CLASSIFICATION_SAMPLES_RATIO);
+            if (classificationFeatures.Count >= Math.Max(20, minClassifSamples))
+            {
+                try
+                {
+                    var gcData = _ctx.Data.LoadFromEnumerable(classificationFeatures);
+                    var gcSplit = _ctx.Data.TrainTestSplit(gcData, testFraction: 0.2);
+                    (gcModel, gcAcc, gcAuc) = TrainClassifier(gcSplit.TrainSet, gcSplit.TestSet);
+                    gcCount = classificationFeatures.Count;
+                    Save(gcModel, GRID_CHARGE_MODEL_FILE, gcData.Schema);
+                    _gridChargeModel = gcModel;
+                    _log.LogInformation(
+                        "ML-7c classifier trained: N={N}, Accuracy={Acc:F3}, AUC={Auc:F3}",
+                        gcCount, gcAcc, gcAuc);
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning(ex, "ML-7c classifier training failed — classification disabled");
+                }
+            }
+            else
+            {
+                _log.LogInformation(
+                    "ML-7c classifier skipped: only {N} samples with binary label (need ≥{Min}). " +
+                    "Configure grid_import_entity in config.yaml to enable.",
+                    classificationFeatures.Count, Math.Max(20, minClassifSamples));
+            }
+
+            _meta = new MLModelMeta(ver, features.Count, smR2, pvR2, DateTime.UtcNow,
+                gcAcc, gcAuc, gcCount);
 
             // ML-1 : (re)construire les pools après chaque entraînement
             RebuildPredictionPools(data.Schema);
@@ -322,6 +394,13 @@ public class DistributionMLService : IDistributionMLService
             //   → permet au ML de pondérer sa confiance selon la qualité de la source
             nameof(DistributionFeatures.ForecastRatioTomorrowVsToday),
             nameof(DistributionFeatures.SolarBlockedByHaForecast),
+            // ML-7 : feedback réel mesuré dans HA
+            // ActualSelfSufficiencyNormalized : taux d'autosuffisance réel (0–1) mesuré N heures après
+            //   → label de régression complémentaire, plus représentatif qu'une heuristique SOC
+            // DidImportFromGrid : signal binaire — du courant a-t-il été importé depuis le réseau ?
+            //   → signal fort pour améliorer SoftMaxPercent et le classifieur ShouldChargeFromGrid
+            nameof(DistributionFeatures.ActualSelfSufficiencyNormalized),
+            nameof(DistributionFeatures.DidImportFromGrid),
         };
 
         var pipeline = _ctx.Transforms
@@ -335,12 +414,79 @@ public class DistributionMLService : IDistributionMLService
                 MinimumExampleCountPerLeaf = 5,
                 LearningRate = 0.08f,
                 LabelColumnName = "Label",
-                FeatureColumnName = "Features"
+                FeatureColumnName = "Features",
+                // ML-7d : appliquer les poids d'entraînement pour sur-pondérer
+                // les sessions avec surplus gaspillé ou import réseau non voulu
+                ExampleWeightColumnName = nameof(DistributionFeatures.SampleWeight)
             }));
 
         var model = pipeline.Fit(train);
         var metrics = _ctx.Regression.Evaluate(model.Transform(test));
         return (model, metrics.RSquared);
+    }
+
+    /// <summary>
+    /// ML-7c : entraîne le classifieur binaire ShouldChargeFromGrid (FastTree binary classification).
+    ///
+    /// Objectif : prédire si une session devrait déclencher une charge réseau,
+    /// en se basant sur les observations réelles (DidImportFromGrid, ActualSelfSufficiency).
+    ///
+    /// Ce classifieur complète les deux régresseurs existants :
+    ///   - SoftMaxRegressor → "jusqu'où charger ?"
+    ///   - PreventiveRegressor → "à partir de quand forcer ?"
+    ///   - GridChargeClassifier (nouveau) → "faut-il charger depuis le réseau ?"
+    ///
+    /// Retourne (model, accuracy, auc) ou lève une exception si échec.
+    /// </summary>
+    private (ITransformer Model, double Accuracy, double Auc) TrainClassifier(
+        IDataView train, IDataView test)
+    {
+        var featureCols = new[]
+        {
+            nameof(DistributionFeatures.HourOfDay),
+            nameof(DistributionFeatures.SinHour),
+            nameof(DistributionFeatures.CosHour),
+            nameof(DistributionFeatures.SinMonth),
+            nameof(DistributionFeatures.CosMonth),
+            nameof(DistributionFeatures.DaylightHours),
+            nameof(DistributionFeatures.CloudCoverPercent),
+            nameof(DistributionFeatures.DirectRadiationWm2),
+            nameof(DistributionFeatures.AvgForecastRadiation6h),
+            nameof(DistributionFeatures.AvgBatteryPercent),
+            nameof(DistributionFeatures.MinBatteryPercent),
+            nameof(DistributionFeatures.TotalCapacityWh),
+            nameof(DistributionFeatures.SurplusW),
+            nameof(DistributionFeatures.NormalizedTariff),
+            nameof(DistributionFeatures.IsOffPeakHour),
+            nameof(DistributionFeatures.HoursToNextFavorable),
+            nameof(DistributionFeatures.SolarExpectedSoon),
+            nameof(DistributionFeatures.HoursRemainingInSlot),
+            nameof(DistributionFeatures.HoursUntilSolarCapped),
+            nameof(DistributionFeatures.WasEmergencySession),
+            nameof(DistributionFeatures.ForecastTodayNormalized),
+            nameof(DistributionFeatures.ForecastTomorrowNormalized),
+            nameof(DistributionFeatures.HasHaForecast),
+            nameof(DistributionFeatures.ForecastRatioTomorrowVsToday),
+            nameof(DistributionFeatures.YesterdaySelfSufficiencyPct),
+            nameof(DistributionFeatures.ActualSelfSufficiencyNormalized),
+        };
+
+        var pipeline = _ctx.Transforms
+            .CopyColumns("Label", nameof(DistributionFeatures.ShouldChargeFromGrid))
+            .Append(_ctx.Transforms.Concatenate("Features", featureCols))
+            .Append(_ctx.Transforms.NormalizeMinMax("Features"))
+            .Append(_ctx.BinaryClassification.Trainers.FastTree(
+                labelColumnName: "Label",
+                featureColumnName: "Features",
+                exampleWeightColumnName: nameof(DistributionFeatures.SampleWeight),
+                numberOfTrees: 100,
+                numberOfLeaves: 20,
+                minimumExampleCountPerLeaf: 5,
+                learningRate: 0.1));
+
+        var model = pipeline.Fit(train);
+        var metrics = _ctx.BinaryClassification.Evaluate(model.Transform(test));
+        return (model, metrics.Accuracy, metrics.AreaUnderRocCurve);
     }
 
     private void Save(ITransformer model, string filename, DataViewSchema schema)
@@ -360,6 +506,22 @@ public class DistributionMLService : IDistributionMLService
             _softMaxModel = _ctx.Model.Load(sm, out var smSchema);
             _preventiveModel = _ctx.Model.Load(pv, out _);
             var ts = File.GetLastWriteTimeUtc(sm);
+
+            // ML-7c : charger le classifieur si disponible (optionnel — absent si GridImportEntity non configuré)
+            var gc = Path.Combine(_modelDir, GRID_CHARGE_MODEL_FILE);
+            if (File.Exists(gc))
+            {
+                try
+                {
+                    _gridChargeModel = _ctx.Model.Load(gc, out _);
+                    _log.LogInformation("ML-7c: GridCharge classifier loaded from disk");
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning(ex, "ML-7c: Failed to load grid charge classifier from disk — classification disabled");
+                }
+            }
+
             _meta = new MLModelMeta($"v{ts:yyyyMMdd-HHmmss}", 0, 0.7, 0.7, ts);
             // ML-1 : construire les pools dès le chargement depuis le disque
             RebuildPredictionPools(smSchema);
@@ -383,6 +545,19 @@ public class DistributionMLService : IDistributionMLService
         {
             _smEngines.Add(_ctx.Model.CreatePredictionEngine<DistributionFeatures, SoftMaxPrediction>(_softMaxModel!));
             _pvEngines.Add(_ctx.Model.CreatePredictionEngine<DistributionFeatures, PreventivePrediction>(_preventiveModel!));
+        }
+
+        // ML-7c : pré-chauffer le pool du classifieur si disponible
+        if (_gridChargeModel is not null)
+        {
+            _gcEngines = new ConcurrentBag<PredictionEngine<DistributionFeatures, GridChargePrediction>>();
+            for (int i = 0; i < 2; i++)
+                _gcEngines.Add(_ctx.Model.CreatePredictionEngine<DistributionFeatures, GridChargePrediction>(_gridChargeModel));
+            _log.LogDebug("ML-7c: GridCharge classifier pool rebuilt (2 engines pre-warmed)");
+        }
+        else
+        {
+            _gcEngines = null;
         }
 
         _log.LogDebug("ML-1: PredictionEngine pool rebuilt (2 engines pre-warmed per model)");
@@ -471,6 +646,25 @@ public class DistributionMLService : IDistributionMLService
                 ? (float)Math.Clamp(session.ForecastTomorrowWh.Value / totalCap, 0, 5) : 0f,
             HasHaForecast = (session.ForecastTodayWh.HasValue || session.ForecastTomorrowWh.HasValue)
                 ? 1f : 0f,
+
+            // ML-9 : ratio J vs J+1 + source du blocage solaire
+            ForecastRatioTomorrowVsToday = totalCap > 0
+                && session.ForecastTodayWh.HasValue && session.ForecastTodayWh.Value > 0
+                && session.ForecastTomorrowWh.HasValue
+                ? (float)Math.Clamp(session.ForecastTomorrowWh.Value / session.ForecastTodayWh.Value, 0, 3)
+                : 1f,
+            SolarBlockedByHaForecast = (session.ForecastTodayWh.HasValue && session.SolarExpectedSoon == false)
+                ? 1f : 0f,
+
+            // Bilan J-1
+            YesterdaySelfSufficiencyPct = 0f, // injecté dynamiquement par SmartDistributionService
+
+            // ML-7 : labels enrichis de feedback réel
+            ActualSelfSufficiencyNormalized = fb.ActualSelfSufficiencyPct.HasValue
+                ? (float)Math.Clamp(fb.ActualSelfSufficiencyPct.Value, 0, 1) : 0f,
+            DidImportFromGrid = fb.DidImportFromGrid == true ? 1f : 0f,
+            SampleWeight = (float)Math.Clamp(fb.TrainingWeight, 0.5, 3.5),
+            ShouldChargeFromGrid = fb.ShouldChargeFromGrid ?? false,
 
             // Labels réels — jamais d'heuristique
             OptimalSoftMaxPercent = (float)fb.ObservedOptimalSoftMax,

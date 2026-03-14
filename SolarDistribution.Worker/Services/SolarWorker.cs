@@ -43,6 +43,10 @@ public class SolarWorker : BackgroundService
     private readonly SolarDistribution.Core.Services.IStatusService _statusService;
     // ── Surplus anomaly detection (Item 9) ─────────────────────────────────
     private int _consecutiveSurplusAnomalies = 0;
+    // ── ML-8 : Cycle lifecycle alert guard ─────────────────────────────────
+    // Ensemble des batteryId pour lesquels une alerte HA de cycle a déjà été émise
+    // pendant cette session du worker. Évite le spam de notifications à chaque cycle.
+    private readonly HashSet<int> _cycleAlertSent = new();
 
     public SolarWorker(
         SolarConfig config,
@@ -283,6 +287,32 @@ public class SolarWorker : BackgroundService
         // IdleCharge (IdleChargeHysteresis) puisse évaluer le seuil correct.
         var batteries = BuildBatteries(validReadings, effectiveSurplus);
 
+        // ML-8 : notification HA persistante si une batterie dépasse MaxRecommendedCycles
+        // (une seule notification par batterie par redémarrage — guard via _cycleAlertSent)
+        foreach (var reading in validReadings.Where(r => r.CycleCount > 0))
+        {
+            var bc = _config.Batteries.First(b => b.Id == reading.BatteryId);
+            if (bc.MaxRecommendedCycles.HasValue
+                && reading.CycleCount >= bc.MaxRecommendedCycles.Value
+                && !_cycleAlertSent.Contains(reading.BatteryId))
+            {
+                _cycleAlertSent.Add(reading.BatteryId);
+                string notifMsg =
+                    $"Battery \"{bc.Name}\" (id={bc.Id}) has reached {reading.CycleCount} charge cycles " +
+                    $"(configured threshold: {bc.MaxRecommendedCycles.Value}). " +
+                    $"Consider replacing this unit or reducing its charge priority (CycleAgingFactor={bc.CycleAgingFactor:F4}).";
+                try
+                {
+                    await _sender.CreatePersistentNotificationAsync(
+                        "SolarWorker — battery lifecycle threshold reached", notifMsg, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "ML-8: Failed to send HA notification for battery {Id} cycle alert", bc.Id);
+                }
+            }
+        }
+
         var wxSnapshot = _weatherCache.GetCurrent();
 
         // ── Bilan énergétique journalier : tracker ForecastTodayWh au lever du jour ──
@@ -390,6 +420,19 @@ public class SolarWorker : BackgroundService
             // ── Hystérésis IdleChargeW (Anti-oscillation IdleCharge) ─────────
             double effectiveIdleChargeW = _idleHysteresis.Compute(bc, effectiveSurplus);
 
+            // ── ML-8 : Cycle de vie — pondération de priorité ────────────────
+            // Si CycleCountEntity est configurée, le cycle count a été lu depuis HA.
+            // On l'injecte dans Battery pour que EffectivePriority applique la pondération.
+            // L'alerte MaxRecommendedCycles est émise ici (une fois par cycle).
+            if (bc.MaxRecommendedCycles.HasValue && reading.CycleCount > 0
+                && reading.CycleCount >= bc.MaxRecommendedCycles.Value)
+            {
+                _logger.LogWarning(
+                    "⚠️  Battery {Id} ({Name}): cycle count {Cycles} ≥ MaxRecommendedCycles {Max}. " +
+                    "Consider replacing or reducing charge stress on this unit.",
+                    bc.Id, bc.Name, reading.CycleCount, bc.MaxRecommendedCycles.Value);
+            }
+
             return new Battery
             {
                 Id = bc.Id,
@@ -405,6 +448,9 @@ public class SolarWorker : BackgroundService
                 SocHysteresisPercent = bc.SocHysteresisPercent,
                 EmergencyGridChargeBelowPercent = bc.EmergencyGridChargeBelowPercent,
                 EmergencyGridChargeTargetPercent = bc.EmergencyGridChargeTargetPercent,
+                // ML-8 : lifecycle
+                CycleCount = reading.CycleCount,
+                CycleAgingFactor = bc.CycleAgingFactor,
             };
         }).ToList();
     }

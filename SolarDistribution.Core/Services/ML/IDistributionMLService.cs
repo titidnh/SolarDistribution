@@ -121,9 +121,38 @@ public class DistributionFeatures
     /// </summary>
     [LoadColumn(42)] public float YesterdaySelfSufficiencyPct { get; set; }
 
+    // ── ML-7 : labels enrichis de feedback réel ──────────────────────────────
+
+    /// <summary>
+    /// Taux d'autosuffisance réel mesuré N heures après la session (0–1), normalisé.
+    /// Calculé depuis GridImportEntity et ConsumptionEntity dans HA.
+    /// 0 si données indisponibles.
+    /// SIGNAL DIRECT pour la régression : mesure l'efficacité réelle de la décision.
+    /// </summary>
+    [LoadColumn(43)] public float ActualSelfSufficiencyNormalized { get; set; }
+
+    /// <summary>
+    /// 1.0 si du courant a été importé depuis le réseau dans les N heures suivant la session.
+    /// Signal binaire pour le modèle de classification ShouldChargeFromGrid.
+    /// 0 si pas d'import ou entité non configurée.
+    /// </summary>
+    [LoadColumn(44)] public float DidImportFromGrid { get; set; }
+
+    /// <summary>
+    /// Poids d'entraînement ML-7d. Utilisé par FastTree comme colonne de poids d'exemple.
+    /// Valeur > 1 pour les sessions avec surplus gaspillé ou import non voulu.
+    /// </summary>
+    [LoadColumn(45)] public float SampleWeight { get; set; }
+
     // ── Labels ───────────────────────────────────────────────────────────────
     [LoadColumn(40)] public float OptimalSoftMaxPercent { get; set; }
     [LoadColumn(41)] public float OptimalPreventiveThreshold { get; set; }
+
+    /// <summary>
+    /// ML-7c : label de classification binaire.
+    /// True si la session aurait dû déclencher une charge réseau.
+    /// </summary>
+    [LoadColumn(46)] public bool ShouldChargeFromGrid { get; set; }
 }
 
 public class SoftMaxPrediction
@@ -136,12 +165,27 @@ public class PreventivePrediction
     [ColumnName("Score")] public float PredictedPreventiveThreshold { get; set; }
 }
 
+/// <summary>
+/// ML-7c : sortie du modèle de classification binaire ShouldChargeFromGrid.
+/// Probabilité que la session aurait dû déclencher une charge réseau.
+/// </summary>
+public class GridChargePrediction
+{
+    [ColumnName("PredictedLabel")] public bool PredictedShouldCharge { get; set; }
+    [ColumnName("Probability")] public float Probability { get; set; }
+    [ColumnName("Score")] public float Score { get; set; }
+}
+
 public record MLRecommendation(
     double RecommendedSoftMaxPercent,
     double RecommendedPreventiveThreshold,
     double ConfidenceScore,
     string ModelVersion,
-    string Rationale
+    string Rationale,
+    /// <summary>ML-7c : true si le modèle de classification prédit qu'une charge réseau est nécessaire.</summary>
+    bool? ShouldChargeFromGridPrediction = null,
+    /// <summary>ML-7c : probabilité associée à la prédiction de classification (0–1).</summary>
+    double? GridChargeClassificationConfidence = null
 );
 
 public interface IDistributionMLService

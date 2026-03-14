@@ -50,7 +50,12 @@ public record BatteryReading(
     /// Utilisée pour corriger le surplus brut : surplus_réel = surplus_HA + Σ CurrentChargeW.
     /// </summary>
     double? CurrentChargeW,
-    bool ReadSuccess
+    bool ReadSuccess,
+    /// <summary>
+    /// ML-8 : Nombre de cycles de charge lus depuis CycleCountEntity dans HA.
+    /// 0 si l'entité n'est pas configurée ou si la lecture a échoué.
+    /// </summary>
+    int CycleCount = 0
 );
 
 public class HomeAssistantDataReader
@@ -297,7 +302,34 @@ public class HomeAssistantDataReader
                 }
             }
 
-            readings.Add(new BatteryReading(b.Id, b.Name, soc.Value, maxChargeRateW, currentChargeW, ReadSuccess: true));
+            // ML-8 : CycleCount — nombre de cycles de charge de la batterie
+            // Utilisé pour pondérer la priorité dans BatteryDistributionService :
+            // une batterie plus cyclée reçoit une priorité effective légèrement réduite,
+            // ce qui oriente le surplus vers les batteries les plus fraîches.
+            int cycleCount = 0;
+
+            if (b.Entities.CycleCountEntity is not null)
+            {
+                double? rawCycles = await _client.GetNumericStateAsync(
+                    b.Entities.CycleCountEntity, ct);
+
+                if (rawCycles is not null)
+                {
+                    cycleCount = (int)Math.Max(0, Math.Round(rawCycles.Value));
+                    _logger.LogDebug(
+                        "Battery {Id} ({Name}): cycle count = {Cycles} (raw={Raw:F1})",
+                        b.Id, b.Name, cycleCount, rawCycles);
+                }
+                else
+                {
+                    _logger.LogDebug(
+                        "Battery {Id} ({Name}): cannot read CycleCountEntity '{Entity}' — no lifecycle weighting",
+                        b.Id, b.Name, b.Entities.CycleCountEntity);
+                }
+            }
+
+            readings.Add(new BatteryReading(b.Id, b.Name, soc.Value, maxChargeRateW, currentChargeW,
+                ReadSuccess: true, CycleCount: cycleCount));
         }
 
         _logger.LogInformation(

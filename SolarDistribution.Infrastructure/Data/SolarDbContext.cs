@@ -96,6 +96,8 @@ public class SolarDbContext : DbContext
             e.Property(x => x.IsEmergencyGridCharge).HasColumnName("is_emergency_grid_charge");
             e.Property(x => x.GridChargeAllowedW).HasColumnName("grid_charge_allowed_w").HasPrecision(8, 2);
             e.Property(x => x.Reason).HasColumnName("reason").HasMaxLength(300);
+            // ML-8 : cycle de vie — nombre de cycles de charge au moment de la session
+            e.Property(x => x.CycleCount).HasColumnName("cycle_count").HasDefaultValue(0);
             e.HasIndex(x => new { x.SessionId, x.BatteryId }).HasDatabaseName("idx_snapshot_session_battery");
         });
 
@@ -155,8 +157,15 @@ public class SolarDbContext : DbContext
             e.Property(x => x.CompositeScore).HasColumnName("composite_score").HasPrecision(5, 4);
             e.Property(x => x.Status).HasColumnName("status").HasConversion<byte>();
             e.Property(x => x.InvalidReason).HasColumnName("invalid_reason").HasMaxLength(200);
+            // ML-7 : labels enrichis de feedback réel
+            e.Property(x => x.ActualSelfSufficiencyPct).HasColumnName("actual_self_sufficiency_pct").HasPrecision(6, 3);
+            e.Property(x => x.DidImportFromGrid).HasColumnName("did_import_from_grid");
+            e.Property(x => x.ShouldChargeFromGrid).HasColumnName("should_charge_from_grid");
+            e.Property(x => x.SurplusWasted).HasColumnName("surplus_wasted");
+            e.Property(x => x.TrainingWeight).HasColumnName("training_weight").HasPrecision(5, 3);
             e.HasIndex(x => x.Status).HasDatabaseName("idx_feedback_status");
             e.HasIndex(x => x.CollectedAt).HasDatabaseName("idx_feedback_collected");
+            e.HasIndex(x => x.ShouldChargeFromGrid).HasDatabaseName("idx_sf_should_charge");
         });
 
         // ── DailySummary ──────────────────────────────────────────────────────

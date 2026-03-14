@@ -189,6 +189,31 @@ public class SolarConfig_Solar
     /// Null = désactivé.
     /// </summary>
     public double? MaxPlausibleSurplusW { get; set; }
+
+    /// <summary>
+    /// [ML-7 OPTIONNEL] Entité HA exposant la puissance d'import réseau instantanée (W).
+    /// Ex: "sensor.p1_grid_import_power" ou "sensor.shellyem_channel_1_power_import"
+    ///
+    /// POURQUOI : permet au FeedbackEvaluator de détecter si du courant a été importé
+    /// depuis le réseau dans les N heures suivant une session (DidImportFromGrid).
+    /// Ce label binaire alimente le modèle de classification ShouldChargeFromGrid.
+    ///
+    /// CONVENTION : la valeur doit être positive quand on importe, nulle ou négative quand
+    /// on exporte. Utiliser GridImportEntityMultiplier = -1 si le signal est inversé.
+    /// </summary>
+    public string? GridImportEntity { get; set; }
+
+    /// <summary>
+    /// Multiplicateur appliqué à la valeur lue depuis GridImportEntity (défaut 1.0).
+    /// Mettre -1.0 si la valeur est négative quand on importe.
+    /// </summary>
+    public double GridImportEntityMultiplier { get; set; } = 1.0;
+
+    /// <summary>
+    /// Seuil en W au-dessus duquel l'import réseau est considéré significatif (défaut 50W).
+    /// Filtre le bruit du capteur (offset P1, micro-imports dus au smoothing).
+    /// </summary>
+    public double GridImportSignificantThresholdW { get; set; } = 50.0;
 }
 
 public class BatteryConfig
@@ -268,6 +293,40 @@ public class BatteryConfig
     public BatteryEntitiesConfig Entities { get; set; } = new();
     public double? EmergencyGridChargeBelowPercent { get; set; }
     public double? EmergencyGridChargeTargetPercent { get; set; }
+
+    /// <summary>
+    /// [ML-8 OPTIONNEL] Seuil de cycles au-delà duquel une alerte est émise dans HA.
+    ///
+    /// Lorsque le compteur de cycles (Entities.CycleCountEntity) dépasse cette valeur,
+    /// le Worker :
+    ///   1. Émet un LogWarning en continu à chaque cycle (visible dans Grafana/Loki)
+    ///   2. Envoie une notification persistante dans HA (persistent_notification.create)
+    ///   3. Réduit la priorité effective de la batterie via CycleAgingFactor
+    ///
+    /// Valeur recommandée selon chimie :
+    ///   LiFePO4 (EcoFlow, Pylontech) : 3000–6000 cycles selon spec constructeur
+    ///   Li-ion classique             : 500–1000 cycles
+    ///   Null = désactivé (aucune alerte)
+    /// </summary>
+    public int? MaxRecommendedCycles { get; set; }
+
+    /// <summary>
+    /// [ML-8] Facteur de réduction de priorité par cycle de vie (défaut 0.0001).
+    ///
+    /// La priorité effective est modulée comme suit :
+    ///   effectivePriority = basePriority × (1 − CycleAgingFactor × cycleCount)
+    ///   → clampé à [basePriority × 0.5, basePriority] pour éviter un écart trop grand
+    ///
+    /// Exemple avec CycleAgingFactor = 0.0001 et cycleCount = 2000 :
+    ///   réduction = 0.0001 × 2000 = 20% → priorité réduite de 20%
+    ///   Une batterie neuve (0 cycles) et une batterie à 2000 cycles de priorité 2 :
+    ///   batterie neuve   : effectivePriority = 2
+    ///   batterie âgée    : effectivePriority = 2 × (1 − 0.2) = 1.6
+    ///   → le surplus est orienté vers la batterie neuve en priorité.
+    ///
+    /// Mettre à 0 pour désactiver la pondération par cycle (égalité de traitement).
+    /// </summary>
+    public double CycleAgingFactor { get; set; } = 0.0001;
 }
 
 public class HaConditionalAction
@@ -313,6 +372,24 @@ public class BatteryEntitiesConfig
     /// Défaut 1.0 (W). Mettre -1.0 si la valeur est négative quand la batterie charge.
     /// </summary>
     public double CurrentChargePowerMultiplier { get; set; } = 1.0;
+
+    /// <summary>
+    /// [ML-8 OPTIONNEL] Entité HA exposant le nombre de cycles de charge complets de la batterie.
+    ///
+    /// POURQUOI :
+    ///   Une batterie ayant subi plus de cycles est plus dégradée et a une capacité effective
+    ///   réduite. En lisant ce compteur, l'algorithme peut moduler la priorité de charge
+    ///   pour préserver la durée de vie des batteries les plus sollicitées.
+    ///
+    /// EXEMPLES selon matériel :
+    ///   EcoFlow Delta 3     : sensor.delta3_salon_battery_cycles
+    ///   Victron BMS         : sensor.victron_battery_cycles
+    ///   Pylontech           : sensor.pylontech_cycle_count
+    ///   Générique           : Chercher "cycle" ou "cycles" dans les entités batterie HA
+    ///
+    /// Si absent → CycleCount = 0, aucune pondération par cycle.
+    /// </summary>
+    public string? CycleCountEntity { get; set; }
 
     public string? MaxChargeRateEntity { get; set; }
     public string? ChargeSwitch { get; set; }
