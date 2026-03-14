@@ -83,37 +83,26 @@ public class DailySummaryService
             return;
         }
 
-        // Build a single boxed multi-line message so the layout stays aligned
-        var contentLines = new List<string>();
-        contentLines.Add($"Daily Summary {dateUtc:yyyy-MM-dd}");
-        contentLines.Add($"Sessions      : {s.SessionCount}");
-        contentLines.Add($"Solar alloc   : {s.SolarAllocatedWh:F0} Wh  |  Unused surplus: {s.UnusedSurplusWh:F0} Wh");
-        contentLines.Add($"Grid charged  : {s.GridChargedWh:F0} Wh");
+        // Compact single-line summary
+        var parts = new List<string>
+        {
+            $"DailySummary:{dateUtc:yyyy-MM-dd}",
+            $"sessions={s.SessionCount}",
+            $"solar_alloc={s.SolarAllocatedWh:F0}Wh",
+            $"unused_surplus={s.UnusedSurplusWh:F0}Wh",
+            $"grid_charged={s.GridChargedWh:F0}Wh"
+        };
 
         if (s.SolarConsumedWh.HasValue)
-            contentLines.Add($"Solar consumed: {s.SolarConsumedWh.Value:F0} Wh  |  Self-sufficiency: {s.SelfSufficiencyPct ?? 0:F1}%");
+            parts.Add($"solar_consumed={s.SolarConsumedWh.Value:F0}Wh");
         else
-            contentLines.Add("Solar consumed: n/a (Solcast not configured)");
+            parts.Add("solar_consumed=n/a");
+
+        parts.Add($"self_sufficiency={s.SelfSufficiencyPct?.ToString("F1") ?? "0.0"}%");
 
         if (s.EstimatedSavingsEur.HasValue)
-            contentLines.Add($"Est. savings  : {s.EstimatedSavingsEur.Value:F2} €");
+            parts.Add($"est_savings={s.EstimatedSavingsEur.Value:F2}€");
 
-        // Determine box width based on longest content line
-        int maxContentWidth = contentLines.Max(l => l.Length);
-        int innerWidth = Math.Max(maxContentWidth, 40); // minimum width
-        string top = "╔" + new string('═', innerWidth + 2) + "╗";
-        string bottom = "╚" + new string('═', innerWidth + 2) + "╝";
-
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine(top);
-        foreach (var line in contentLines)
-        {
-            sb.Append("║ ");
-            sb.Append(line.PadRight(innerWidth));
-            sb.AppendLine(" ║");
-        }
-        sb.Append(bottom);
-
-        _logger.LogInformation(sb.ToString());
+        _logger.LogInformation(string.Join(" | ", parts));
     }
 }
