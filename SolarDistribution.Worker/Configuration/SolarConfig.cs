@@ -420,6 +420,61 @@ public class MlConfig
     public double FeedbackPreventiveReduction { get; set; } = 3.0;
     public double DriftDetectionR2Threshold { get; set; } = 0.15;
     public int DriftDetectionWindowSize { get; set; } = 100;
+
+    // ── Fenêtre d'entraînement et sampling calendaire ─────────────────────────
+
+    /// <summary>
+    /// Fenêtre maximale de données utilisées pour l'entraînement (jours).
+    /// 730 = 2 ans — couvre 2 cycles saisonniers complets pour les patterns météo/calendrier.
+    /// </summary>
+    public int TrainingWindowDays { get; set; } = 730;
+
+    /// <summary>
+    /// Nombre cible de sessions à charger pour l'entraînement.
+    /// Le sampling stratifié garantit une répartition uniforme sur la fenêtre,
+    /// indépendamment du volume réel en DB.
+    /// Recommandé : 15 000–25 000 pour un bon équilibre mémoire/qualité.
+    /// </summary>
+    public int TrainingTargetSamples { get; set; } = 20_000;
+
+    /// <summary>
+    /// Demi-vie du decay temporel en jours (τ pour exp(-age/τ)).
+    /// 180 = les sessions vieilles de 6 mois ont un poids ~37% d'une session récente.
+    /// Le plancher <see cref="TrainingDecayFloor"/> évite que les vieilles données
+    /// soient complètement ignorées (utile pour les patterns saisonniers rares).
+    /// </summary>
+    public double TrainingDecayHalfLifeDays { get; set; } = 180.0;
+
+    /// <summary>
+    /// Poids minimal garanti après decay (0.0–1.0).
+    /// 0.25 = même une session de 2 ans compte au moins à 25% d'une session récente.
+    /// Nécessaire pour que le ML voie les deux hivers dans la fenêtre de 2 ans.
+    /// </summary>
+    public double TrainingDecayFloor { get; set; } = 0.25;
+
+    // ── Purge et compression automatique ──────────────────────────────────────
+
+    /// <summary>
+    /// Âge à partir duquel les sessions sont éligibles à la compression (jours).
+    /// Les sessions plus récentes sont toujours conservées intégralement.
+    /// Défaut : 90 jours.
+    /// </summary>
+    public int PurgeCompressionAgeDays { get; set; } = 90;
+
+    /// <summary>
+    /// Après compression : on garde 1 session par tranche de N minutes dans les
+    /// créneaux horaires non critiques (sessions avec poids qualité normal).
+    /// Défaut : 30 min → divise environ par 30 le volume des vieilles données.
+    /// Les sessions à fort poids (surplusWasted, import réseau) sont toujours conservées.
+    /// </summary>
+    public int PurgeCompressionSlotMinutes { get; set; } = 30;
+
+    /// <summary>
+    /// Âge au-delà duquel les sessions sont supprimées définitivement (jours).
+    /// Doit être ≥ TrainingWindowDays pour ne pas perdre de données utiles au ML.
+    /// Défaut : 750 jours (~2 ans + marge).
+    /// </summary>
+    public int PurgeHardDeleteAgeDays { get; set; } = 750;
 }
 
 public class LoggingConfig

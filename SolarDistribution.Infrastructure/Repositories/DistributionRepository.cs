@@ -21,23 +21,207 @@ public class DistributionRepository : IDistributionRepository
     }
 
     /// <summary>
-    /// Charge uniquement les sessions avec un feedback VALIDE pour l'entraînement ML.
-    /// Les labels utilisés (ObservedOptimalSoftMax, ObservedOptimalPreventive)
-    /// sont issus de l'observation réelle, pas d'une heuristique codée.
+    /// Charge les sessions pour l'entraînement ML via un sampling stratifié calendaire.
+    ///
+    /// STRATÉGIE :
+    ///   Au lieu d'un simple Take(N) qui surreprésente les données récentes,
+    ///   on découpe la fenêtre temporelle en strates (mois × heure_du_jour) et on
+    ///   tire un quota proportionnel dans chaque strate.
+    ///
+    ///   Résultat : le modèle voit autant de données de janvier que de juillet,
+    ///   autant de données nocturnes que diurnes — ce qui est crucial pour apprendre
+    ///   les patterns météo/calendrier sur 2 ans sans biais de récence.
+    ///
+    ///   Les sessions à fort poids qualitatif (surplusWasted, import réseau) sont
+    ///   toujours incluses en priorité dans leur strate, puis complétées par les
+    ///   sessions normales jusqu'au quota.
     /// </summary>
     public async Task<List<DistributionSession>> GetSessionsForTrainingAsync(
         int maxRecords = 5000, CancellationToken ct = default)
     {
-        return await _db.DistributionSessions
-            .Include(s => s.BatterySnapshots)
-            .Include(s => s.Weather)
-            .Include(s => s.MlPrediction)
-            .Include(s => s.Feedback)
-            .Where(s => s.Feedback != null && s.Feedback.Status == FeedbackStatus.Valid)
-            .OrderByDescending(s => s.RequestedAt)
-            .Take(maxRecords)
+        // ── 1. Récupérer les IDs stratifiés — requête légère, pas d'Include ──
+        // On charge d'abord uniquement les métadonnées nécessaires au sampling
+        // pour éviter de ramener des centaines de milliers de rows en mémoire.
+        var cutoff = DateTime.UtcNow.AddYears(-2); // fenêtre fixe 2 ans
+
+        var candidates = await _db.DistributionSessions
+            .Where(s => s.Feedback != null
+                     && s.Feedback.Status == FeedbackStatus.Valid
+                     && s.RequestedAt >= cutoff)
+            .Select(s => new
+            {
+                s.Id,
+                s.RequestedAt,
+                // Signal qualitatif pour priorité intra-strate
+                IsHighQuality = s.Feedback!.SurplusWasted || s.Feedback.DidImportFromGrid == true
+            })
             .AsNoTracking()
             .ToListAsync(ct);
+
+        if (candidates.Count == 0)
+            return new List<DistributionSession>();
+
+        // ── 2. Sampling stratifié par (mois × tranche_horaire) ───────────────
+        // 12 mois × 4 tranches de 6h = 48 strates
+        // Chaque strate reçoit un quota = maxRecords / 48, arrondi.
+        // Les strates avec peu de données contribuent ce qu'elles ont.
+        const int HourBuckets = 4;          // 0-5h, 6-11h, 12-17h, 18-23h
+        const int TotalStrata = 12 * HourBuckets; // 48
+        int quotaPerStratum = Math.Max(1, maxRecords / TotalStrata);
+
+        var selectedIds = new HashSet<long>(maxRecords);
+
+        var byStratum = candidates.GroupBy(s => (
+            Month: s.RequestedAt.Month,
+            HourBucket: s.RequestedAt.Hour / 6
+        ));
+
+        foreach (var stratum in byStratum)
+        {
+            // Priorité aux sessions à fort signal dans la strate
+            var highQuality = stratum.Where(s => s.IsHighQuality).Select(s => s.Id).ToList();
+            var normal = stratum.Where(s => !s.IsHighQuality).Select(s => s.Id).ToList();
+
+            // Toujours inclure les high-quality (rares et précieux), plafonné à quota×2
+            foreach (var id in highQuality.Take(quotaPerStratum * 2))
+                selectedIds.Add(id);
+
+            // Compléter avec les sessions normales jusqu'au quota
+            int remaining = Math.Max(0, quotaPerStratum - highQuality.Count);
+            // Shuffle déterministe pour diversifier sans biais chronologique
+            var shuffled = normal.OrderBy(id => id % 97).Take(remaining);
+            foreach (var id in shuffled)
+                selectedIds.Add(id);
+        }
+
+        // ── 3. Charger uniquement les sessions sélectionnées avec leur contexte ─
+        // Split en batches de 500 IDs pour éviter les IN() trop larges sur MySQL
+        var idList = selectedIds.ToList();
+        var result = new List<DistributionSession>(idList.Count);
+
+        const int BatchSize = 500;
+        for (int i = 0; i < idList.Count; i += BatchSize)
+        {
+            var batch = idList.Skip(i).Take(BatchSize).ToList();
+            var loaded = await _db.DistributionSessions
+                .Include(s => s.BatterySnapshots)
+                .Include(s => s.Weather)
+                .Include(s => s.MlPrediction)
+                .Include(s => s.Feedback)
+                .Where(s => batch.Contains(s.Id))
+                .AsNoTracking()
+                .ToListAsync(ct);
+            result.AddRange(loaded);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Compresse et purge les anciennes sessions pour maîtriser le stockage DB.
+    ///
+    /// RÈGLES :
+    ///   Phase 1 — Compression (compressionAgeDays → hardDeleteAgeDays) :
+    ///     Pour chaque tranche de slotMinutes, on garde exactement 1 session,
+    ///     en priorisant les sessions à fort poids qualitatif (surplusWasted ou import).
+    ///     Les sessions "gagnantes" sont conservées, les autres supprimées.
+    ///
+    ///   Phase 2 — Hard delete (> hardDeleteAgeDays) :
+    ///     Suppression définitive de toutes les sessions hors de la fenêtre utile.
+    ///     Les DailySummaries ne sont jamais touchés.
+    ///
+    /// Retourne le nombre total de sessions supprimées.
+    /// </summary>
+    public async Task<int> PurgeOldSessionsAsync(
+        int compressionAgeDays,
+        int compressionSlotMinutes,
+        int hardDeleteAgeDays,
+        CancellationToken ct = default)
+    {
+        int totalDeleted = 0;
+        var now = DateTime.UtcNow;
+
+        // ── Phase 1 : Compression ─────────────────────────────────────────────
+        var compressionEnd = now.AddDays(-compressionAgeDays);
+        var compressionStart = now.AddDays(-hardDeleteAgeDays);
+
+        // Charger les métadonnées légères des sessions éligibles à la compression
+        var toCompress = await _db.DistributionSessions
+            .Where(s => s.RequestedAt < compressionEnd
+                     && s.RequestedAt >= compressionStart)
+            .Select(s => new
+            {
+                s.Id,
+                s.RequestedAt,
+                // Les sessions sans feedback valide sont des candidates directes à la purge
+                IsValid = s.Feedback != null && s.Feedback.Status == FeedbackStatus.Valid,
+                IsHighQuality = s.Feedback != null
+                    && (s.Feedback.SurplusWasted || s.Feedback.DidImportFromGrid == true)
+            })
+            .AsNoTracking()
+            .ToListAsync(ct);
+
+        if (toCompress.Any())
+        {
+            // Grouper par tranche temporelle de slotMinutes
+            var slotMs = (long)TimeSpan.FromMinutes(compressionSlotMinutes).TotalMilliseconds;
+
+            var grouped = toCompress.GroupBy(s =>
+            {
+                long ticks = ((DateTimeOffset)s.RequestedAt).ToUnixTimeMilliseconds();
+                return ticks / slotMs; // clé = numéro de tranche
+            });
+
+            var idsToDelete = new List<long>();
+
+            foreach (var slot in grouped)
+            {
+                var sessions = slot.ToList();
+                if (sessions.Count <= 1) continue; // rien à compresser
+
+                // Élire le représentant de la tranche :
+                //   1. High-quality en priorité (surplus gaspillé ou import réseau)
+                //   2. À défaut, session la plus récente de la tranche
+                long keepId = sessions
+                    .OrderByDescending(s => s.IsHighQuality)
+                    .ThenByDescending(s => s.RequestedAt)
+                    .First().Id;
+
+                idsToDelete.AddRange(sessions
+                    .Where(s => s.Id != keepId)
+                    .Select(s => s.Id));
+            }
+
+            // Supprimer par batches pour éviter les transactions trop grandes
+            const int DeleteBatch = 200;
+            for (int i = 0; i < idsToDelete.Count; i += DeleteBatch)
+            {
+                var batch = idsToDelete.Skip(i).Take(DeleteBatch).ToList();
+                // EF Core ExecuteDeleteAsync : DELETE direct sans chargement en mémoire
+                int deleted = await _db.DistributionSessions
+                    .Where(s => batch.Contains(s.Id))
+                    .ExecuteDeleteAsync(ct);
+                totalDeleted += deleted;
+            }
+        }
+
+        // ── Phase 2 : Hard delete ─────────────────────────────────────────────
+        var hardDeleteCutoff = now.AddDays(-hardDeleteAgeDays);
+
+        const int HardDeleteBatch = 500;
+        int hardDeleted;
+        do
+        {
+            // Boucle pour vider progressivement sans verrouiller la table
+            hardDeleted = await _db.DistributionSessions
+                .Where(s => s.RequestedAt < hardDeleteCutoff)
+                .Take(HardDeleteBatch)
+                .ExecuteDeleteAsync(ct);
+            totalDeleted += hardDeleted;
+        }
+        while (hardDeleted == HardDeleteBatch && !ct.IsCancellationRequested);
+
+        return totalDeleted;
     }
 
     /// <summary>

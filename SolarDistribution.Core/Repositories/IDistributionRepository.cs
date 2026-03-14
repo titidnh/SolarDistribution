@@ -9,8 +9,25 @@ public interface IDistributionRepository
     /// <summary>
     /// Sessions avec feedback valide — les seules utilisées pour l'entraînement ML.
     /// Labels = ObservedOptimalSoftMax + ObservedOptimalPreventive issus de l'observation réelle.
+    /// Utilise un sampling stratifié par mois/heure pour garantir une couverture calendaire
+    /// uniforme sur toute la fenêtre d'entraînement, indépendamment du volume en DB.
     /// </summary>
     Task<List<DistributionSession>> GetSessionsForTrainingAsync(int maxRecords = 5000, CancellationToken ct = default);
+
+    /// <summary>
+    /// Compresse les anciennes sessions pour réduire le stockage DB :
+    ///   - Sessions > compressionAgeDays : on garde 1 par tranche de slotMinutes,
+    ///     SAUF les sessions à fort poids qualité (surplusWasted, import réseau)
+    ///     qui sont toujours conservées car elles portent un signal rare.
+    ///   - Sessions > hardDeleteAgeDays : suppression définitive.
+    /// Les DailySummaries ne sont jamais touchés (déjà agrégés, volume négligeable).
+    /// Retourne le nombre de sessions supprimées.
+    /// </summary>
+    Task<int> PurgeOldSessionsAsync(
+        int compressionAgeDays,
+        int compressionSlotMinutes,
+        int hardDeleteAgeDays,
+        CancellationToken ct = default);
 
     /// <summary>
     /// Sessions dont le feedback est encore pending et dont le délai de collecte est dépassé.

@@ -32,6 +32,11 @@ public class DistributionMLService : IDistributionMLService
     private readonly ILogger<DistributionMLService> _log;
     private readonly string _modelDir;
 
+    // ── Paramètres de sampling et decay (injectés depuis MlConfig) ───────────
+    private readonly int _trainingTargetSamples;
+    private readonly double _decayHalfLifeDays;
+    private readonly double _decayFloor;
+
     private ITransformer? _softMaxModel;
     private ITransformer? _preventiveModel;
     // ML-7c : modèle de classification binaire
@@ -56,12 +61,18 @@ public class DistributionMLService : IDistributionMLService
     public DistributionMLService(
         IDistributionRepository repo,
         ILogger<DistributionMLService> log,
-        string modelDirectory = "ml_models")
+        string modelDirectory = "ml_models",
+        int trainingTargetSamples = 20_000,
+        double decayHalfLifeDays = 180.0,
+        double decayFloor = 0.25)
     {
         _ctx = new MLContext(seed: 42);
         _repo = repo;
         _log = log;
         _modelDir = modelDirectory;
+        _trainingTargetSamples = trainingTargetSamples;
+        _decayHalfLifeDays = decayHalfLifeDays;
+        _decayFloor = decayFloor;
         Directory.CreateDirectory(_modelDir);
         TryLoadFromDisk();
     }
@@ -173,10 +184,10 @@ public class DistributionMLService : IDistributionMLService
     {
         _log.LogInformation("ML retraining started...");
 
-        var sessions = await _repo.GetSessionsForTrainingAsync(10000, ct);
+        var sessions = await _repo.GetSessionsForTrainingAsync(_trainingTargetSamples, ct);
         var features = sessions
             .Where(s => s.Feedback?.Status == FeedbackStatus.Valid)
-            .Select(BuildFeatures)
+            .Select(s => BuildFeatures(s))
             .OfType<DistributionFeatures>()
             .ToList();
 
@@ -289,7 +300,7 @@ public class DistributionMLService : IDistributionMLService
             var recent = sessions
                 .Where(s => s.Feedback?.Status == FeedbackStatus.Valid)
                 .TakeLast(windowSize)
-                .Select(BuildFeatures)
+                .Select(s => BuildFeatures(s))
                 .OfType<DistributionFeatures>()
                 .ToList();
 
@@ -563,7 +574,7 @@ public class DistributionMLService : IDistributionMLService
         _log.LogDebug("ML-1: PredictionEngine pool rebuilt (2 engines pre-warmed per model)");
     }
 
-    private static DistributionFeatures? BuildFeatures(DistributionSession session)
+    private DistributionFeatures? BuildFeatures(DistributionSession session)
     {
         if (session.Feedback?.Status != FeedbackStatus.Valid) return null;
         if (session.Weather is null || !session.BatterySnapshots.Any()) return null;
@@ -663,7 +674,7 @@ public class DistributionMLService : IDistributionMLService
             ActualSelfSufficiencyNormalized = fb.ActualSelfSufficiencyPct.HasValue
                 ? (float)Math.Clamp(fb.ActualSelfSufficiencyPct.Value, 0, 1) : 0f,
             DidImportFromGrid = fb.DidImportFromGrid == true ? 1f : 0f,
-            SampleWeight = (float)Math.Clamp(fb.TrainingWeight, 0.5, 3.5),
+            SampleWeight = (float)ComputeDecayedWeight(fb.TrainingWeight, session.RequestedAt),
             ShouldChargeFromGrid = fb.ShouldChargeFromGrid ?? false,
 
             // Labels réels — jamais d'heuristique
@@ -685,6 +696,33 @@ public class DistributionMLService : IDistributionMLService
         if (list.Count < 2) return 0.0;
         double avg = list.Average();
         return Math.Sqrt(list.Average(v => (v - avg) * (v - avg)));
+    }
+
+    /// <summary>
+    /// Calcule le poids d'entraînement final en combinant :
+    ///   - Le poids qualitatif persisté (surplusWasted, import réseau, urgence…)
+    ///   - Un decay exponentiel temporel recalculé à chaque entraînement
+    ///
+    /// POURQUOI recalculer ici plutôt que de persister le poids decayé :
+    ///   Si on persistait le poids decayé au moment du feedback, une session
+    ///   d'il y a 3 mois aurait un poids calculé "à l'époque" — pas relatif à
+    ///   l'entraînement actuel. En recalculant, le decay est toujours relatif
+    ///   à "maintenant", ce qui donne une décroissance cohérente.
+    ///
+    /// FORMULE :
+    ///   decay = max(floor, exp(-age_jours / halfLife))
+    ///   poids_final = clamp(qualityWeight × decay, 0.1, 3.5)
+    ///
+    ///   → Session récente normale       : 1.0 × 1.0   = 1.0
+    ///   → Session 6 mois, import réseau : 1.8 × 0.37  = 0.67
+    ///   → Session 2 ans, surplusWasted  : 2.0 × 0.25  = 0.50 (plancher activé)
+    ///   → Session 2 ans normale         : 1.0 × 0.25  = 0.25 (compte encore !)
+    /// </summary>
+    private double ComputeDecayedWeight(double qualityWeight, DateTime sessionDate)
+    {
+        double ageInDays = (DateTime.UtcNow - sessionDate).TotalDays;
+        double decay = Math.Max(_decayFloor, Math.Exp(-ageInDays / _decayHalfLifeDays));
+        return Math.Clamp(qualityWeight * decay, 0.1, 3.5);
     }
 
     private static string BuildRationale(DistributionFeatures f, double softMax, double preventive)

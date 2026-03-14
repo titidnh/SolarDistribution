@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using SolarDistribution.Core.Repositories;
 using SolarDistribution.Core.Services.ML;
 using SolarDistribution.Worker.Configuration;
 
@@ -28,22 +29,27 @@ public class MlRetrainScheduler : BackgroundService
 {
     private readonly FeedbackEvaluator _feedbackEvaluator;
     private readonly IDistributionMLService _mlService;
+    private readonly IDistributionRepository _repo;
     private readonly MlConfig _mlConfig;
     private readonly DailySummaryService _dailySummaryService;
     private readonly ILogger<MlRetrainScheduler> _logger;
 
     // Dernier retrain effectué — évite les doublons si le scheduler est redémarré
     private DateTime _lastRetrainAt = DateTime.MinValue;
+    // Dernière purge — 1 fois par semaine suffit
+    private DateTime _lastPurgeAt = DateTime.MinValue;
 
     public MlRetrainScheduler(
         FeedbackEvaluator feedbackEvaluator,
         IDistributionMLService mlService,
+        IDistributionRepository repo,
         MlConfig mlConfig,
         DailySummaryService dailySummaryService,
         ILogger<MlRetrainScheduler> logger)
     {
         _feedbackEvaluator = feedbackEvaluator;
         _mlService = mlService;
+        _repo = repo;
         _mlConfig = mlConfig;
         _dailySummaryService = dailySummaryService;
         _logger = logger;
@@ -133,12 +139,48 @@ public class MlRetrainScheduler : BackgroundService
                 _logger.LogError(ex, "ML retrain failed");
             }
 
+            // ── 4. Purge et compression DB (hebdomadaire) ─────────────────────
+            // Déclenché après le retrain pour ne pas impacter les performances
+            // du cycle normal. On purge 1× par semaine max.
+            try
+            {
+                if ((now - _lastPurgeAt).TotalDays >= 7)
+                {
+                    await RunPurgeAsync(stoppingToken);
+                    _lastPurgeAt = now;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "DB purge failed");
+            }
+
             // ── Attente avant prochain check ──────────────────────────────────
             var interval = TimeSpan.FromHours(_mlConfig.FeedbackCheckIntervalHours);
             _logger.LogDebug("MlRetrainScheduler sleeping {Interval}h", interval.TotalHours);
 
             await Task.Delay(interval, stoppingToken);
         }
+    }
+
+    private async Task RunPurgeAsync(CancellationToken ct)
+    {
+        _logger.LogInformation(
+            "DB purge starting | compression after {C}d (slot={S}min) | hard delete after {H}d",
+            _mlConfig.PurgeCompressionAgeDays,
+            _mlConfig.PurgeCompressionSlotMinutes,
+            _mlConfig.PurgeHardDeleteAgeDays);
+
+        int deleted = await _repo.PurgeOldSessionsAsync(
+            _mlConfig.PurgeCompressionAgeDays,
+            _mlConfig.PurgeCompressionSlotMinutes,
+            _mlConfig.PurgeHardDeleteAgeDays,
+            ct);
+
+        if (deleted > 0)
+            _logger.LogInformation("DB purge complete: {N} sessions removed", deleted);
+        else
+            _logger.LogDebug("DB purge: nothing to remove");
     }
 
     // ── Logique de décision retrain ───────────────────────────────────────────

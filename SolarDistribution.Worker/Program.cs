@@ -115,7 +115,10 @@ var host = Host.CreateDefaultBuilder(args)
             new DistributionMLService(
                 sp.GetRequiredService<IDistributionRepository>(),
                 sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<DistributionMLService>>(),
-                config.Ml.ModelDirectory));
+                config.Ml.ModelDirectory,
+                config.Ml.TrainingTargetSamples,
+                config.Ml.TrainingDecayHalfLifeDays,
+                config.Ml.TrainingDecayFloor));
 
         // ── Weather ───────────────────────────────────────────────────────────
         services.AddHttpClient<IWeatherService, OpenMeteoWeatherService>(client =>
