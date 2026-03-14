@@ -213,8 +213,12 @@ public class DistributionRepository : IDistributionRepository
         do
         {
             // Boucle pour vider progressivement sans verrouiller la table
+            // Ajouter un OrderBy pour rendre la sélection déterministe
+            // et éviter l'avertissement EF Core sur l'utilisation de Take sans OrderBy.
             hardDeleted = await _db.DistributionSessions
                 .Where(s => s.RequestedAt < hardDeleteCutoff)
+                .OrderBy(s => s.RequestedAt)
+                .ThenBy(s => s.Id)
                 .Take(HardDeleteBatch)
                 .ExecuteDeleteAsync(ct);
             totalDeleted += hardDeleted;
