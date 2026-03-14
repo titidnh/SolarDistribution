@@ -286,7 +286,13 @@ public class BatteryDistributionService : IBatteryDistributionService
             return $"{prefix}Charged to {b.HardMaxPercent:F0}%";
 
         if (newPct >= b.SoftMaxPercent - 0.1)
-            return $"{prefix}Reached soft max {b.SoftMaxPercent:F0}%";
+        {
+            // Distinguish: SOC already at target vs. allocation is capped to reach target
+            if (b.CurrentPercent >= b.SoftMaxPercent - 0.1)
+                return $"{prefix}Reached soft max {b.SoftMaxPercent:F0}%";
+            else
+                return $"{prefix}Capped to reach soft max {b.SoftMaxPercent:F0}% ({total:F0}W)";
+        }
 
         if (grid > 0.01)
         {
