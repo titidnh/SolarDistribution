@@ -187,6 +187,12 @@ public class MlRetrainScheduler : BackgroundService
 
     /// <summary>
     /// ML-6 : Async pour éviter GetAwaiter().GetResult() dans le scheduler.
+    ///
+    /// Fix bug cron-timing : le scheduler se réveille toutes les N heures mais
+    /// jamais exactement à la minute :00. On évalue donc le cron sur une fenêtre
+    /// glissante [now - feedbackInterval, now] pour ne pas manquer la plage cible.
+    /// Exemple : cron "0 3 * * 0" (dim 03:00), réveil à 03:52 → la fenêtre
+    /// [02:52, 03:52] contient 03:00 → retrain déclenché.
     /// </summary>
     private async Task<bool> ShouldRetrainAsync(DateTime now, CancellationToken ct)
     {
@@ -207,8 +213,24 @@ public class MlRetrainScheduler : BackgroundService
             return false;
         }
 
-        // Évaluer l'expression cron
-        return CronMatches(_mlConfig.RetrainCron, now);
+        // Évaluer le cron sur la fenêtre glissante [now - interval, now] minute par minute.
+        // Corrige le cas où le réveil du scheduler tombe après la minute exacte du cron.
+        var windowStart = now.AddHours(-_mlConfig.FeedbackCheckIntervalHours);
+        var totalMinutes = (int)Math.Ceiling((now - windowStart).TotalMinutes);
+
+        for (int m = 0; m <= totalMinutes; m++)
+        {
+            var candidate = windowStart.AddMinutes(m);
+            if (CronMatches(_mlConfig.RetrainCron, candidate))
+            {
+                _logger.LogDebug(
+                    "Cron matched at {Candidate} (window [{Start}, {End}])",
+                    candidate, windowStart, now);
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private async Task RunRetrainAsync(CancellationToken ct)
