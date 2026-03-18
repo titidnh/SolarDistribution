@@ -234,8 +234,11 @@ public class SolarWorker : BackgroundService
             if (_consecutiveSurplusAnomalies >= Math.Max(1, _config.Polling.MaxConsecutiveAnomaliesBeforeAlert))
             {
                 string msg = $"Observed surplus {smoothedSurplus:F0}W exceeds configured MaxPlausibleSurplusW {_config.Solar.MaxPlausibleSurplusW.Value:F0}W for {_consecutiveSurplusAnomalies} consecutive cycles. Raw P1={rawSurplus:F0}W, production={(snapshot.ProductionW.HasValue ? snapshot.ProductionW.Value.ToString("F0") + "W" : "n/a")}. Please check the P1 meter and inverter sensors.";
-                try { await _sender.CreatePersistentNotificationAsync("SolarWorker — surplus anomaly detected", msg, ct); }
-                catch (Exception ex) { _logger.LogWarning(ex, "Failed to send persistent notification for surplus anomaly"); }
+                if (_config.Polling.EnableSurplusAnomalyNotifications)
+                {
+                    try { await _sender.CreatePersistentNotificationAsync("SolarWorker — surplus anomaly detected", msg, ct); }
+                    catch (Exception ex) { _logger.LogWarning(ex, "Failed to send persistent notification for surplus anomaly"); }
+                }
                 _consecutiveSurplusAnomalies = 0;
             }
 
@@ -252,8 +255,11 @@ public class SolarWorker : BackgroundService
             if (_consecutiveSurplusAnomalies >= Math.Max(1, _config.Polling.MaxConsecutiveAnomaliesBeforeAlert))
             {
                 string msg = $"Observed surplus {smoothedSurplus:F0}W greater than reported production {snapshot.ProductionW.Value:F0}W for {_consecutiveSurplusAnomalies} consecutive cycles. Raw P1={rawSurplus:F0}W. Please verify sensors and config.";
-                try { await _sender.CreatePersistentNotificationAsync("SolarWorker — production/surplus mismatch", msg, ct); }
-                catch (Exception ex) { _logger.LogWarning(ex, "Failed to send persistent notification for production mismatch"); }
+                if (_config.Polling.EnableSurplusAnomalyNotifications)
+                {
+                    try { await _sender.CreatePersistentNotificationAsync("SolarWorker — production/surplus mismatch", msg, ct); }
+                    catch (Exception ex) { _logger.LogWarning(ex, "Failed to send persistent notification for production mismatch"); }
+                }
                 _consecutiveSurplusAnomalies = 0;
             }
 

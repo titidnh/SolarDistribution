@@ -79,6 +79,10 @@ polling:
   # Nombre de cycles consécutifs d'anomalie du surplus avant d'envoyer une notification HA
   # Si non configuré, défaut = 3
   max_consecutive_anomalies_before_alert: 3
+  # Active/Désactive l'envoi de notifications persistantes "Observed surplus" dans HA.
+  # Mettre à false pour ne PAS recevoir ces notifications persistantes.
+  # Par défaut : true
+  enable_surplus_anomaly_notifications: true
 
 # ── Météo Open-Meteo ────────────────────────────────────────────────────────────
 #

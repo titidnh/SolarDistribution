@@ -82,6 +82,14 @@ public class PollingConfig
     /// Défaut : 3
     /// </summary>
     public int MaxConsecutiveAnomaliesBeforeAlert { get; set; } = 3;
+
+    /// <summary>
+    /// Active l'envoi de notifications persistantes dans Home Assistant
+    /// lorsque plusieurs cycles consécutifs montrent un surplus anormal.
+    /// Mettre à false pour désactiver ces notifications (Observed surplus).
+    /// Défaut : true
+    /// </summary>
+    public bool EnableSurplusAnomalyNotifications { get; set; } = true;
 }
 
 public class LocationConfig
