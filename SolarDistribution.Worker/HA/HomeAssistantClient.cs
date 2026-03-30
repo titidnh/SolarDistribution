@@ -6,7 +6,7 @@ using SolarDistribution.Worker.Configuration;
 
 namespace SolarDistribution.Worker.HA;
 
-// ── DTO réponse HA ────────────────────────────────────────────────────────────
+// ── HA response DTO ──────────────────────────────────────────────────────────
 
 public record HaState(
     [property: JsonPropertyName("entity_id")]  string EntityId,
@@ -28,16 +28,16 @@ public interface IHomeAssistantClient
     Task<bool>     PingAsync(CancellationToken ct = default);
 }
 
-// ── Implémentation ────────────────────────────────────────────────────────────
+// ── Implementation ───────────────────────────────────────────────────────────
 
 /// <summary>
-/// Client HTTP vers l'API REST de Home Assistant.
+/// HTTP client for the Home Assistant REST API.
 ///
-/// Lecture  : GET  /api/states/{entity_id}
-/// Écriture : POST /api/services/number/set_value   → contrôle la puissance W
-///            POST /api/services/homeassistant/turn_on|turn_off → switch enable
+/// Read   : GET  /api/states/{entity_id}
+/// Write  : POST /api/services/number/set_value   → controls power in W
+///          POST /api/services/homeassistant/turn_on|turn_off → enable/disable switch
 ///
-/// Resilience : retry + circuit breaker configurés via Microsoft.Extensions.Http.Resilience
+/// Resilience: retry + circuit breaker configured via Microsoft.Extensions.Http.Resilience
 /// dans Program.cs (AddResilienceHandler).
 /// </summary>
 public class HomeAssistantClient : IHomeAssistantClient
@@ -56,7 +56,7 @@ public class HomeAssistantClient : IHomeAssistantClient
         _logger = logger;
     }
 
-    // ── Lecture ───────────────────────────────────────────────────────────────
+    // ── Read ─────────────────────────────────────────────────────────────────
 
     public async Task<HaState?> GetStateAsync(string entityId, CancellationToken ct = default)
     {
@@ -93,12 +93,12 @@ public class HomeAssistantClient : IHomeAssistantClient
         return null;
     }
 
-    // ── Écriture ──────────────────────────────────────────────────────────────
+    // ── Write ────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Définit la valeur d'une entité 'number' dans HA.
+    /// Sets the value of a 'number' entity in HA.
     /// Utilise POST /api/services/number/set_value
-    /// Compatible avec tous les onduleurs/batteries exposés comme number.* dans HA.
+    /// Compatible with all inverters/batteries exposed as number.* in HA.
     /// </summary>
     public async Task<bool> SetNumberValueAsync(string entityId, double value, CancellationToken ct = default)
     {
@@ -113,8 +113,8 @@ public class HomeAssistantClient : IHomeAssistantClient
         => await CallServiceAsync("homeassistant", "turn_off", new { entity_id = entityId }, ct);
 
     /// <summary>
-    /// Appel générique vers n'importe quel service HA.
-    /// Permet d'exécuter des actions libres configurées dans ZeroWActions / NonZeroWActions.
+    /// Generic call to any HA service.
+    /// Allows executing custom actions configured in ZeroWActions / NonZeroWActions.
     /// Ex : domain="input_boolean", service="turn_on", data={ "entity_id": "..." }
     /// </summary>
     public async Task<bool> CallServiceGenericAsync(

@@ -5,24 +5,24 @@ using SolarDistribution.Worker.Configuration;
 namespace SolarDistribution.Worker.HA;
 
 /// <summary>
-/// Cache persistant des dernières valeurs envoyées et des états de zone (0W ↔ >0W)
-/// par batterie, sauvegardé sur disque en JSON.
+/// Persistent cache of the last sent values and zone states (0W ↔ >0W)
+/// per battery, saved to disk as JSON.
 ///
-/// Survie aux redémarrages Docker / reboot host :
-///   - Au démarrage : charge l'état depuis /data/state/command-state.json
-///   - Après chaque écriture réussie : sauvegarde atomique (write temp + rename)
+/// Survives Docker restarts / host reboots:
+///   - On startup: loads state from /data/state/command-state.json
+///   - After each successful write: atomic save (write temp + rename)
 ///
-/// Si le fichier est absent ou corrompu → état vide (comportement identique
-/// à avant : les actions conditionnelles se déclenchent une fois au premier cycle).
+/// If the file is missing or corrupted → empty state (same behavior as before:
+/// conditional actions trigger once on the first cycle).
 /// </summary>
 public class CommandStateCache
 {
-    // ── Chemin du fichier d'état ──────────────────────────────────────────────
+    // ── State file path ──────────────────────────────────────────────────────
 
     private readonly string _statePath;
     private readonly ILogger<CommandStateCache> _logger;
 
-    // ── État en mémoire ───────────────────────────────────────────────────────
+    // ── In-memory state ──────────────────────────────────────────────────────
 
     private CacheData _data = new();
 
@@ -30,7 +30,7 @@ public class CommandStateCache
     {
         _logger = logger;
 
-        // Déduit le répertoire depuis le chemin des logs (/data/logs → /data/state)
+        // Derive directory from log path (/data/logs → /data/state)
         string logDir = Path.GetDirectoryName(config.Logging.FilePath ?? "/data/logs/solar-worker.log")
                           ?? "/data/logs";
         string dataDir = Path.Combine(Path.GetDirectoryName(logDir) ?? "/data", "state");
@@ -39,19 +39,19 @@ public class CommandStateCache
         Load();
     }
 
-    // ── API publique ──────────────────────────────────────────────────────────
+    // ── Public API ───────────────────────────────────────────────────────────
 
-    /// <summary>Dernière valeur brute envoyée à HA pour cette batterie. null = jamais envoyé.</summary>
+    /// <summary>Last raw value sent to HA for this battery. null = never sent.</summary>
     public double? GetLastSentValue(int batteryId)
         => _data.LastSentValues.TryGetValue(batteryId, out double v) ? v : null;
 
-    /// <summary>Dernier état de zone (true = était 0W). null = jamais envoyé.</summary>
+    /// <summary>Last zone state (true = was 0W). null = never sent.</summary>
     public bool? GetLastWasZero(int batteryId)
         => _data.LastWasZero.TryGetValue(batteryId, out bool v) ? v : null;
 
     /// <summary>
-    /// Met à jour l'état d'une batterie et persiste immédiatement sur disque.
-    /// Appelé uniquement après une commande HA réussie.
+    /// Updates a battery state and persists immediately to disk.
+    /// Called only after a successful HA command.
     /// </summary>
     public void Update(int batteryId, double sentValue, bool wasZero)
     {
@@ -68,7 +68,7 @@ public class CommandStateCache
         Save();
     }
 
-    // ── Persistence ───────────────────────────────────────────────────────────
+    // ── Persistence ──────────────────────────────────────────────────────────
 
     private void Load()
     {
@@ -105,7 +105,7 @@ public class CommandStateCache
             string dir = Path.GetDirectoryName(_statePath)!;
             Directory.CreateDirectory(dir);
 
-            // Écriture atomique : temp file + rename pour éviter la corruption
+            // Atomic write: temp file + rename to avoid corruption
             string tmp = _statePath + ".tmp";
             File.WriteAllText(tmp, JsonSerializer.Serialize(_data, new JsonSerializerOptions
             {
@@ -119,7 +119,7 @@ public class CommandStateCache
         }
     }
 
-    // ── Modèle JSON ───────────────────────────────────────────────────────────
+    // ── JSON model ───────────────────────────────────────────────────────────
 
     private class CacheData
     {

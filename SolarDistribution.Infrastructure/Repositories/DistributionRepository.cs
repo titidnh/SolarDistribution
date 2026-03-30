@@ -21,28 +21,28 @@ public class DistributionRepository : IDistributionRepository
     }
 
     /// <summary>
-    /// Charge les sessions pour l'entraînement ML via un sampling stratifié calendaire.
+    /// Loads sessions for ML training using calendar-stratified sampling.
     ///
-    /// STRATÉGIE :
-    ///   Au lieu d'un simple Take(N) qui surreprésente les données récentes,
-    ///   on découpe la fenêtre temporelle en strates (mois × heure_du_jour) et on
-    ///   tire un quota proportionnel dans chaque strate.
+    /// STRATEGY:
+    ///   Instead of a simple Take(N) that overrepresents recent data,
+    ///   the time window is split into strata (month × hour_of_day) and a
+    ///   proportional quota is drawn from each stratum.
     ///
-    ///   Résultat : le modèle voit autant de données de janvier que de juillet,
-    ///   autant de données nocturnes que diurnes — ce qui est crucial pour apprendre
-    ///   les patterns météo/calendrier sur 2 ans sans biais de récence.
+    ///   Result: the model sees as much January data as July data,
+    ///   and as much nighttime data as daytime data — which is crucial for learning
+    ///   weather/calendar patterns over 2 years without recency bias.
     ///
-    ///   Les sessions à fort poids qualitatif (surplusWasted, import réseau) sont
-    ///   toujours incluses en priorité dans leur strate, puis complétées par les
-    ///   sessions normales jusqu'au quota.
+    ///   Sessions with high qualitative weight (surplusWasted, grid import) are
+    ///   always included first within their stratum, then filled by normal
+    ///   sessions up to the quota.
     /// </summary>
     public async Task<List<DistributionSession>> GetSessionsForTrainingAsync(
         int maxRecords = 5000, CancellationToken ct = default)
     {
-        // ── 1. Récupérer les IDs stratifiés — requête légère, pas d'Include ──
-        // On charge d'abord uniquement les métadonnées nécessaires au sampling
-        // pour éviter de ramener des centaines de milliers de rows en mémoire.
-        var cutoff = DateTime.UtcNow.AddYears(-2); // fenêtre fixe 2 ans
+        // ── 1. Fetch stratified IDs — lightweight query, no Include ──────────
+        // Only load the metadata needed for sampling first
+        // to avoid pulling hundreds of thousands of rows into memory.
+        var cutoff = DateTime.UtcNow.AddYears(-2); // fixed 2-year window
 
         var candidates = await _db.DistributionSessions
             .Where(s => s.Feedback != null
@@ -52,7 +52,7 @@ public class DistributionRepository : IDistributionRepository
             {
                 s.Id,
                 s.RequestedAt,
-                // Signal qualitatif pour priorité intra-strate
+                // Qualitative signal for intra-stratum priority
                 IsHighQuality = s.Feedback!.SurplusWasted || s.Feedback.DidImportFromGrid == true
             })
             .AsNoTracking()
@@ -61,10 +61,10 @@ public class DistributionRepository : IDistributionRepository
         if (candidates.Count == 0)
             return new List<DistributionSession>();
 
-        // ── 2. Sampling stratifié par (mois × tranche_horaire) ───────────────
-        // 12 mois × 4 tranches de 6h = 48 strates
-        // Chaque strate reçoit un quota = maxRecords / 48, arrondi.
-        // Les strates avec peu de données contribuent ce qu'elles ont.
+        // ── 2. Stratified sampling by (month × hour_bucket) ──────────────────
+        // 12 months × 4 buckets of 6h = 48 strata
+        // Each stratum receives a quota = maxRecords / 48, rounded.
+        // Strata with fewer data points contribute what they have.
         const int HourBuckets = 4;          // 0-5h, 6-11h, 12-17h, 18-23h
         const int TotalStrata = 12 * HourBuckets; // 48
         int quotaPerStratum = Math.Max(1, maxRecords / TotalStrata);
@@ -78,24 +78,24 @@ public class DistributionRepository : IDistributionRepository
 
         foreach (var stratum in byStratum)
         {
-            // Priorité aux sessions à fort signal dans la strate
+            // Prioritize high-signal sessions within the stratum
             var highQuality = stratum.Where(s => s.IsHighQuality).Select(s => s.Id).ToList();
             var normal = stratum.Where(s => !s.IsHighQuality).Select(s => s.Id).ToList();
 
-            // Toujours inclure les high-quality (rares et précieux), plafonné à quota×2
+            // Always include high-quality sessions (rare and valuable), capped at quota×2
             foreach (var id in highQuality.Take(quotaPerStratum * 2))
                 selectedIds.Add(id);
 
-            // Compléter avec les sessions normales jusqu'au quota
+            // Fill with normal sessions up to the quota
             int remaining = Math.Max(0, quotaPerStratum - highQuality.Count);
-            // Shuffle déterministe pour diversifier sans biais chronologique
+            // Deterministic shuffle to diversify without chronological bias
             var shuffled = normal.OrderBy(id => id % 97).Take(remaining);
             foreach (var id in shuffled)
                 selectedIds.Add(id);
         }
 
-        // ── 3. Charger uniquement les sessions sélectionnées avec leur contexte ─
-        // Split en batches de 500 IDs pour éviter les IN() trop larges sur MySQL
+        // ── 3. Load only the selected sessions with their context ─────────────
+        // Split into batches of 500 IDs to avoid overly large IN() clauses on MySQL
         var idList = selectedIds.ToList();
         var result = new List<DistributionSession>(idList.Count);
 
@@ -118,19 +118,19 @@ public class DistributionRepository : IDistributionRepository
     }
 
     /// <summary>
-    /// Compresse et purge les anciennes sessions pour maîtriser le stockage DB.
+    /// Compresses and purges old sessions to control DB storage.
     ///
-    /// RÈGLES :
-    ///   Phase 1 — Compression (compressionAgeDays → hardDeleteAgeDays) :
-    ///     Pour chaque tranche de slotMinutes, on garde exactement 1 session,
-    ///     en priorisant les sessions à fort poids qualitatif (surplusWasted ou import).
-    ///     Les sessions "gagnantes" sont conservées, les autres supprimées.
+    /// RULES:
+    ///   Phase 1 — Compression (compressionAgeDays → hardDeleteAgeDays):
+    ///     For each slotMinutes window, keep exactly 1 session,
+    ///     prioritizing sessions with high qualitative weight (surplusWasted or import).
+    ///     "Winner" sessions are kept; the rest are deleted.
     ///
-    ///   Phase 2 — Hard delete (> hardDeleteAgeDays) :
-    ///     Suppression définitive de toutes les sessions hors de la fenêtre utile.
-    ///     Les DailySummaries ne sont jamais touchés.
+    ///   Phase 2 — Hard delete (> hardDeleteAgeDays):
+    ///     Permanent deletion of all sessions outside the useful window.
+    ///     DailySummaries are never touched.
     ///
-    /// Retourne le nombre total de sessions supprimées.
+    /// Returns the total number of sessions deleted.
     /// </summary>
     public async Task<int> PurgeOldSessionsAsync(
         int compressionAgeDays,
@@ -141,11 +141,11 @@ public class DistributionRepository : IDistributionRepository
         int totalDeleted = 0;
         var now = DateTime.UtcNow;
 
-        // ── Phase 1 : Compression ─────────────────────────────────────────────
+        // ── Phase 1: Compression ─────────────────────────────────────────────
         var compressionEnd = now.AddDays(-compressionAgeDays);
         var compressionStart = now.AddDays(-hardDeleteAgeDays);
 
-        // Charger les métadonnées légères des sessions éligibles à la compression
+        // Load lightweight metadata of sessions eligible for compression
         var toCompress = await _db.DistributionSessions
             .Where(s => s.RequestedAt < compressionEnd
                      && s.RequestedAt >= compressionStart)
@@ -153,7 +153,7 @@ public class DistributionRepository : IDistributionRepository
             {
                 s.Id,
                 s.RequestedAt,
-                // Les sessions sans feedback valide sont des candidates directes à la purge
+                // Sessions without valid feedback are direct candidates for purge
                 IsValid = s.Feedback != null && s.Feedback.Status == FeedbackStatus.Valid,
                 IsHighQuality = s.Feedback != null
                     && (s.Feedback.SurplusWasted || s.Feedback.DidImportFromGrid == true)
@@ -163,13 +163,13 @@ public class DistributionRepository : IDistributionRepository
 
         if (toCompress.Any())
         {
-            // Grouper par tranche temporelle de slotMinutes
+            // Group by slotMinutes time window
             var slotMs = (long)TimeSpan.FromMinutes(compressionSlotMinutes).TotalMilliseconds;
 
             var grouped = toCompress.GroupBy(s =>
             {
                 long ticks = ((DateTimeOffset)s.RequestedAt).ToUnixTimeMilliseconds();
-                return ticks / slotMs; // clé = numéro de tranche
+                return ticks / slotMs; // key = slot index
             });
 
             var idsToDelete = new List<long>();
@@ -177,11 +177,11 @@ public class DistributionRepository : IDistributionRepository
             foreach (var slot in grouped)
             {
                 var sessions = slot.ToList();
-                if (sessions.Count <= 1) continue; // rien à compresser
+                if (sessions.Count <= 1) continue; // nothing to compress
 
-                // Élire le représentant de la tranche :
-                //   1. High-quality en priorité (surplus gaspillé ou import réseau)
-                //   2. À défaut, session la plus récente de la tranche
+                // Elect the representative for the slot:
+                //   1. High-quality first (wasted surplus or grid import)
+                //   2. Otherwise, the most recent session in the slot
                 long keepId = sessions
                     .OrderByDescending(s => s.IsHighQuality)
                     .ThenByDescending(s => s.RequestedAt)
@@ -192,12 +192,12 @@ public class DistributionRepository : IDistributionRepository
                     .Select(s => s.Id));
             }
 
-            // Supprimer par batches pour éviter les transactions trop grandes
+            // Delete in batches to avoid overly large transactions
             const int DeleteBatch = 200;
             for (int i = 0; i < idsToDelete.Count; i += DeleteBatch)
             {
                 var batch = idsToDelete.Skip(i).Take(DeleteBatch).ToList();
-                // EF Core ExecuteDeleteAsync : DELETE direct sans chargement en mémoire
+                // EF Core ExecuteDeleteAsync: direct DELETE without loading into memory
                 int deleted = await _db.DistributionSessions
                     .Where(s => batch.Contains(s.Id))
                     .ExecuteDeleteAsync(ct);
@@ -205,16 +205,16 @@ public class DistributionRepository : IDistributionRepository
             }
         }
 
-        // ── Phase 2 : Hard delete ─────────────────────────────────────────────
+        // ── Phase 2: Hard delete ─────────────────────────────────────────────
         var hardDeleteCutoff = now.AddDays(-hardDeleteAgeDays);
 
         const int HardDeleteBatch = 500;
         int hardDeleted;
         do
         {
-            // Boucle pour vider progressivement sans verrouiller la table
-            // Ajouter un OrderBy pour rendre la sélection déterministe
-            // et éviter l'avertissement EF Core sur l'utilisation de Take sans OrderBy.
+            // Loop to drain progressively without locking the table
+            // Add OrderBy to make the selection deterministic
+            // and avoid EF Core warning on Take without OrderBy.
             hardDeleted = await _db.DistributionSessions
                 .Where(s => s.RequestedAt < hardDeleteCutoff)
                 .OrderBy(s => s.RequestedAt)
@@ -229,8 +229,8 @@ public class DistributionRepository : IDistributionRepository
     }
 
     /// <summary>
-    /// Sessions dont le feedback Pending est prêt à être collecté.
-    /// On passe feedbackDelayHours depuis la config (ex: 4.0).
+    /// Sessions whose Pending feedback is ready to be collected.
+    /// feedbackDelayHours is passed from config (e.g. 4.0).
     /// </summary>
     public async Task<List<DistributionSession>> GetSessionsPendingFeedbackAsync(
         double feedbackDelayHours, CancellationToken ct = default)
@@ -240,11 +240,11 @@ public class DistributionRepository : IDistributionRepository
         return await _db.DistributionSessions
             .Include(s => s.BatterySnapshots)
             .Include(s => s.Feedback)
-            .Where(s => s.Feedback == null                          // jamais traité
-                     || s.Feedback.Status == FeedbackStatus.Pending) // en attente
-            .Where(s => s.RequestedAt <= cutoff)                    // délai écoulé
+            .Where(s => s.Feedback == null                          // never processed
+                     || s.Feedback.Status == FeedbackStatus.Pending) // awaiting feedback
+            .Where(s => s.RequestedAt <= cutoff)                    // delay elapsed
             .OrderBy(s => s.RequestedAt)
-            .Take(100)   // batch max pour ne pas surcharger HA
+            .Take(100)   // max batch to avoid overloading HA
             .AsNoTracking()
             .ToListAsync(ct);
     }
@@ -260,7 +260,7 @@ public class DistributionRepository : IDistributionRepository
 
     public async Task SaveFeedbackAsync(SessionFeedback feedback, CancellationToken ct = default)
     {
-        // Upsert : si le feedback existe déjà (Pending), on le met à jour
+        // Upsert: if feedback already exists (Pending), update it
         var existing = await _db.SessionFeedbacks
             .FirstOrDefaultAsync(f => f.SessionId == feedback.SessionId, ct);
 
@@ -300,9 +300,9 @@ public class DistributionRepository : IDistributionRepository
             .CountAsync(f => f.Status == FeedbackStatus.Valid, ct);
 
     /// <summary>
-    /// Moyenne roulante de consommation maison sur les N derniers cycles persistés
-    /// qui ont une valeur MeasuredConsumptionW non nulle.
-    /// Retourne null si aucune donnée de consommation n'est encore disponible.
+    /// Rolling average of home consumption over the last N persisted cycles
+    /// that have a non-null MeasuredConsumptionW value.
+    /// Returns null if no consumption data is available yet.
     /// </summary>
     public async Task<double?> GetRecentConsumptionAvgWAsync(int lastNCycles, CancellationToken ct = default)
     {
@@ -321,22 +321,22 @@ public class DistributionRepository : IDistributionRepository
         return values.Average();
     }
 
-    // ── Feature 6 — Bilan énergétique journalier ──────────────────────────────
+    // ── Feature 6 — Daily energy balance ─────────────────────────────────────
 
     /// <summary>
-    /// Agrège toutes les sessions d'une journée calendaire UTC et crée ou met à jour
-    /// l'enregistrement daily_summaries correspondant.
+    /// Aggregates all sessions for a UTC calendar day and creates or updates
+    /// the corresponding daily_summaries record.
     ///
-    /// Durée de cycle : estimée à partir de l'écart entre sessions consécutives,
-    /// plafonnée à 10 min pour éviter les gaps (redémarrages, maintenance).
+    /// Cycle duration: estimated from the gap between consecutive sessions,
+    /// capped at 10 min to absorb gaps (restarts, maintenance).
     /// </summary>
     public async Task UpsertDailySummaryAsync(DateTime date, CancellationToken ct = default)
     {
-        // Plage UTC de la journée
+        // UTC range of the day
         var dayStart = date.Date.ToUniversalTime();
         var dayEnd = dayStart.AddDays(1);
 
-        // Charge toutes les sessions du jour avec leur contexte tarifaire
+        // Load all sessions of the day with their tariff context
         var sessions = await _db.DistributionSessions
             .Where(s => s.RequestedAt >= dayStart && s.RequestedAt < dayEnd)
             .OrderBy(s => s.RequestedAt)
@@ -345,11 +345,11 @@ public class DistributionRepository : IDistributionRepository
 
         if (sessions.Count == 0) return;
 
-        // ── Calcul de la durée pondérée de chaque session (en heures) ─────────
-        // Principe : la durée d'une session = écart jusqu'à la session suivante,
-        // plafonné à MaxCycleGapHours pour absorber les trous (redémarrages, pannes).
+        // ── Weighted duration calculation for each session (in hours) ─────────
+        // Principle: session duration = gap to the next session,
+        // capped at MaxCycleGapHours to absorb gaps (restarts, outages).
         const double MaxCycleGapHours = 10.0 / 60.0;  // 10 min max
-        const double DefaultCycleHours = 1.0 / 60.0;  // 1 min par défaut si seule session
+        const double DefaultCycleHours = 1.0 / 60.0;  // 1 min default if sole session
 
         double solarAllocatedWh = 0;
         double gridChargedWh = 0;
@@ -378,7 +378,7 @@ public class DistributionRepository : IDistributionRepository
             gridChargedWh += sessions[i].GridChargedW * durationH;
             unusedSurplusWh += sessions[i].UnusedSurplusW * durationH;
 
-            // Économies : TariffMaxSavingsPerKwh × énergie réseau de la session
+            // Savings: TariffMaxSavingsPerKwh × grid energy for the session
             if (sessions[i].GridChargedW > 0)
             {
                 var tms = sessions[i].TariffMaxSavingsPerKwh;
@@ -391,36 +391,36 @@ public class DistributionRepository : IDistributionRepository
             }
         }
 
-        // ── Énergie réseau totale consommée ───────────────────────────────────
-        // GridConsumedWh = tout ce qui a été pris au réseau, y compris la maison
-        // pendant les périodes sans surplus. On approxime en utilisant gridChargedWh
-        // (charge batterie réseau) comme valeur minimale garantie.
-        // Les sessions n'ont pas de MeasuredConsumptionW directement utilisable
-        // ici sans over-counting → on stocke gridChargedWh dans les deux champs
-        // pour rester conservateur. La distinction sera affinée si un capteur P1
-        // total est ajouté en Feature 9.
+        // ── Total grid energy consumed ────────────────────────────────────────
+        // GridConsumedWh = everything drawn from the grid, including home consumption
+        // during periods without surplus. Approximated using gridChargedWh
+        // (grid battery charge) as the guaranteed minimum.
+        // Sessions do not have a directly usable MeasuredConsumptionW here
+        // without over-counting → store gridChargedWh in both fields
+        // to stay conservative. The distinction will be refined if a P1
+        // total sensor is added in Feature 9.
         double gridConsumedWh = gridChargedWh;
 
-        // ── Solaire autoconsommé ──────────────────────────────────────────────
-        // Utilise DailySolarConsumedWh de la dernière session du jour qui l'a,
-        // car c'est la valeur la plus à jour (calculée incrémentalement dans SolarWorker).
+        // ── Self-consumed solar ───────────────────────────────────────────────
+        // Uses DailySolarConsumedWh from the last session of the day that has it,
+        // as it is the most up-to-date value (computed incrementally in SolarWorker).
         double? solarConsumedWh = sessions
             .LastOrDefault(s => s.DailySolarConsumedWh.HasValue)
             ?.DailySolarConsumedWh;
 
-        // ── Taux d'autosuffisance ─────────────────────────────────────────────
+        // ── Self-sufficiency rate ─────────────────────────────────────────────
         double? selfSufficiencyPct = null;
         if (solarConsumedWh.HasValue && solarConsumedWh.Value >= 0)
         {
             double total = solarConsumedWh.Value + gridConsumedWh;
             selfSufficiencyPct = total > 0
                 ? Math.Round(solarConsumedWh.Value / total * 100.0, 2)
-                : 100.0; // journée 100% solaire (aucun import réseau)
+                : 100.0; // 100% solar day (no grid import)
         }
 
-        // ── Économies estimées ────────────────────────────────────────────────
+        // ── Estimated savings ────────────────────────────────────────────────
         double? estimatedSavingsEur = savingsDenominator > 0
-            ? Math.Round(savingsNumerator / 1000.0, 4)  // Wh → kWh, déjà pondéré par savings/kWh
+            ? Math.Round(savingsNumerator / 1000.0, 4)  // Wh → kWh, already weighted by savings/kWh
             : null;
 
         // ── Upsert ────────────────────────────────────────────────────────────
@@ -463,7 +463,7 @@ public class DistributionRepository : IDistributionRepository
         DateTime from, DateTime to, CancellationToken ct = default)
     {
         var fromUtc = from.Date.ToUniversalTime();
-        var toUtc = to.Date.ToUniversalTime().AddDays(1); // inclure la date de fin
+        var toUtc = to.Date.ToUniversalTime().AddDays(1); // include the end date
 
         return await _db.DailySummaries
             .Where(d => d.Date >= fromUtc && d.Date < toUtc)

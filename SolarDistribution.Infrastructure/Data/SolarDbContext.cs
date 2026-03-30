@@ -96,7 +96,7 @@ public class SolarDbContext : DbContext
             e.Property(x => x.IsEmergencyGridCharge).HasColumnName("is_emergency_grid_charge");
             e.Property(x => x.GridChargeAllowedW).HasColumnName("grid_charge_allowed_w").HasPrecision(8, 2);
             e.Property(x => x.Reason).HasColumnName("reason").HasMaxLength(300);
-            // ML-8 : cycle de vie — nombre de cycles de charge au moment de la session
+            // ML-8: lifecycle - number of charge cycles at session time
             e.Property(x => x.CycleCount).HasColumnName("cycle_count").HasDefaultValue(0);
             e.HasIndex(x => new { x.SessionId, x.BatteryId }).HasDatabaseName("idx_snapshot_session_battery");
         });
@@ -157,7 +157,7 @@ public class SolarDbContext : DbContext
             e.Property(x => x.CompositeScore).HasColumnName("composite_score").HasPrecision(5, 4);
             e.Property(x => x.Status).HasColumnName("status").HasConversion<byte>();
             e.Property(x => x.InvalidReason).HasColumnName("invalid_reason").HasMaxLength(200);
-            // ML-7 : labels enrichis de feedback réel
+            // ML-7: labels enriched with real feedback
             e.Property(x => x.ActualSelfSufficiencyPct).HasColumnName("actual_self_sufficiency_pct").HasPrecision(6, 3);
             e.Property(x => x.DidImportFromGrid).HasColumnName("did_import_from_grid");
             e.Property(x => x.ShouldChargeFromGrid).HasColumnName("should_charge_from_grid");
@@ -169,7 +169,7 @@ public class SolarDbContext : DbContext
         });
 
         // ── DailySummary ──────────────────────────────────────────────────────
-        // Une ligne par date calendaire UTC. Upsert via UpsertDailySummaryAsync.
+        // One row per UTC calendar date. Upsert via UpsertDailySummaryAsync.
         model.Entity<DailySummary>(e =>
         {
             e.ToTable("daily_summaries");
@@ -186,9 +186,9 @@ public class SolarDbContext : DbContext
             e.Property(x => x.SessionCount).HasColumnName("session_count");
             e.Property(x => x.ComputedAt).HasColumnName("computed_at");
 
-            // Contrainte unique sur la date (clé métier)
+            // Unique constraint on date (business key)
             e.HasIndex(x => x.Date).IsUnique().HasDatabaseName("uq_daily_summary_date");
-            // Index pour les requêtes de plage (GET /api/summary/daily?from=&to=)
+            // Range-query index (GET /api/summary/daily?from=&to=)
             e.HasIndex(x => x.Date).HasDatabaseName("idx_daily_summary_date");
         });
     }

@@ -34,9 +34,9 @@ public class MlRetrainScheduler : BackgroundService
     private readonly DailySummaryService _dailySummaryService;
     private readonly ILogger<MlRetrainScheduler> _logger;
 
-    // Dernier retrain effectué — évite les doublons si le scheduler est redémarré
+    // Last retrain performed — avoids duplicates if scheduler restarts
     private DateTime _lastRetrainAt = DateTime.MinValue;
-    // Dernière purge — 1 fois par semaine suffit
+    // Last purge — once per week is enough
     private DateTime _lastPurgeAt = DateTime.MinValue;
 
     public MlRetrainScheduler(
@@ -62,16 +62,16 @@ public class MlRetrainScheduler : BackgroundService
             _mlConfig.FeedbackCheckIntervalHours,
             _mlConfig.RetrainCron);
 
-        // Petit délai initial pour laisser le SolarWorker se stabiliser d'abord
+        // Small initial delay to let SolarWorker stabilize first
         await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             var now = DateTime.UtcNow;
 
-            // ── 0. Bilan énergétique journalier (Feature 6) ──────────────────
-            // Calculé en premier pour que YesterdaySelfSufficiencyPct soit disponible
-            // dans BuildFeatures() dès le premier cycle du nouveau jour.
+            // ── 0. Daily energy balance (Feature 6) ──────────────────────────
+            // Computed first so YesterdaySelfSufficiencyPct is available
+            // in BuildFeatures() from the first cycle of the new day.
             try
             {
                 await _dailySummaryService.CheckAndComputeYesterdayAsync(stoppingToken);
@@ -81,7 +81,7 @@ public class MlRetrainScheduler : BackgroundService
                 _logger.LogError(ex, "Daily summary computation failed");
             }
 
-            // ── 1. Collecte de feedback ───────────────────────────────────────
+            // ── 1. Feedback collection ───────────────────────────────────────
             try
             {
                 int collected = await _feedbackEvaluator.CollectPendingFeedbacksAsync(stoppingToken);
@@ -91,7 +91,7 @@ public class MlRetrainScheduler : BackgroundService
                     _logger.LogInformation(
                         "Feedback: {Count} new valid feedbacks collected", collected);
 
-                    // ML-6 : GetStatusAsync remplace GetStatus() synchrone (deadlock)
+                    // ML-6: GetStatusAsync replaces synchronous GetStatus() (deadlock risk)
                     var status = await _mlService.GetStatusAsync(stoppingToken);
                     _logger.LogInformation(
                         "ML training readiness: {Valid}/{Min} valid feedbacks " +
@@ -105,7 +105,7 @@ public class MlRetrainScheduler : BackgroundService
                 _logger.LogError(ex, "Feedback collection failed");
             }
 
-            // ── 2. Détection de dérive (ML-5) ─────────────────────────────────
+            // ── 2. Drift detection (ML-5) ────────────────────────────────────
             try
             {
                 bool driftDetected = await _mlService.CheckForDriftAsync(
@@ -125,7 +125,7 @@ public class MlRetrainScheduler : BackgroundService
                 _logger.LogError(ex, "Drift detection failed");
             }
 
-            // ── 3. Vérification du retrain planifié ───────────────────────────
+            // ── 3. Scheduled retrain check ───────────────────────────────────
             try
             {
                 if (await ShouldRetrainAsync(now, stoppingToken))
@@ -139,9 +139,9 @@ public class MlRetrainScheduler : BackgroundService
                 _logger.LogError(ex, "ML retrain failed");
             }
 
-            // ── 4. Purge et compression DB (hebdomadaire) ─────────────────────
-            // Déclenché après le retrain pour ne pas impacter les performances
-            // du cycle normal. On purge 1× par semaine max.
+            // ── 4. DB purge and compression (weekly) ─────────────────────────
+            // Triggered after retrain to avoid impacting normal-cycle performance.
+            // Purge runs at most once per week.
             try
             {
                 if ((now - _lastPurgeAt).TotalDays >= 7)
@@ -155,7 +155,7 @@ public class MlRetrainScheduler : BackgroundService
                 _logger.LogError(ex, "DB purge failed");
             }
 
-            // ── Attente avant prochain check ──────────────────────────────────
+            // ── Wait before next check ────────────────────────────────────────
             var interval = TimeSpan.FromHours(_mlConfig.FeedbackCheckIntervalHours);
             _logger.LogDebug("MlRetrainScheduler sleeping {Interval}h", interval.TotalHours);
 
@@ -183,20 +183,20 @@ public class MlRetrainScheduler : BackgroundService
             _logger.LogDebug("DB purge: nothing to remove");
     }
 
-    // ── Logique de décision retrain ───────────────────────────────────────────
+    // ── Retrain decision logic ───────────────────────────────────────────────
 
     /// <summary>
-    /// ML-6 : Async pour éviter GetAwaiter().GetResult() dans le scheduler.
+    /// ML-6: Async to avoid GetAwaiter().GetResult() in scheduler.
     ///
-    /// Fix bug cron-timing : le scheduler se réveille toutes les N heures mais
-    /// jamais exactement à la minute :00. On évalue donc le cron sur une fenêtre
-    /// glissante [now - feedbackInterval, now] pour ne pas manquer la plage cible.
-    /// Exemple : cron "0 3 * * 0" (dim 03:00), réveil à 03:52 → la fenêtre
-    /// [02:52, 03:52] contient 03:00 → retrain déclenché.
+    /// Cron-timing bug fix: scheduler wakes every N hours but
+    /// not exactly at minute :00. Therefore cron is evaluated over a rolling
+    /// window [now - feedbackInterval, now] to avoid missing target time.
+    /// Example: cron "0 3 * * 0" (Sun 03:00), wake-up at 03:52 → window
+    /// [02:52, 03:52] contains 03:00 → retrain triggered.
     /// </summary>
     private async Task<bool> ShouldRetrainAsync(DateTime now, CancellationToken ct)
     {
-        // Vérifier le minimum de feedbacks valides en base
+        // Check minimum valid feedbacks in database
         var status = await _mlService.GetStatusAsync(ct);
         if (status.SessionsInDb < _mlConfig.MinFeedbackForRetrain)
         {
@@ -206,15 +206,15 @@ public class MlRetrainScheduler : BackgroundService
             return false;
         }
 
-        // Vérifier qu'on n'a pas déjà entraîné aujourd'hui (protection anti-doublon)
+        // Check not already trained today (anti-duplicate protection)
         if (_lastRetrainAt.Date == now.Date)
         {
             _logger.LogDebug("Retrain skipped: already trained today at {Time}", _lastRetrainAt);
             return false;
         }
 
-        // Évaluer le cron sur la fenêtre glissante [now - interval, now] minute par minute.
-        // Corrige le cas où le réveil du scheduler tombe après la minute exacte du cron.
+        // Evaluate cron over rolling window [now - interval, now] minute by minute.
+        // Fixes the case where scheduler wakes after exact cron minute.
         var windowStart = now.AddHours(-_mlConfig.FeedbackCheckIntervalHours);
         var totalMinutes = (int)Math.Ceiling((now - windowStart).TotalMinutes);
 
@@ -259,13 +259,13 @@ public class MlRetrainScheduler : BackgroundService
         }
     }
 
-    // ── Évaluateur Cron minimal ───────────────────────────────────────────────
-    // Supporte la syntaxe standard 5 champs : "minute heure jourMois mois jourSemaine"
-    // Exemples :
-    //   "0 3 * * 0"   → dimanche à 3h00
-    //   "0 3 * * *"   → tous les jours à 3h00
-    //   "0 2 * * 1"   → lundi à 2h00
-    //   "30 4 1 * *"  → le 1er de chaque mois à 4h30
+    // ── Minimal cron evaluator ───────────────────────────────────────────────
+    // Supports standard 5-field syntax: "minute hour dayOfMonth month dayOfWeek"
+    // Examples:
+    //   "0 3 * * 0"   → Sunday at 3:00
+    //   "0 3 * * *"   → every day at 3:00
+    //   "0 2 * * 1"   → Monday at 2:00
+    //   "30 4 1 * *"  → 1st of each month at 4:30
 
     private static bool CronMatches(string cron, DateTime now)
     {
@@ -290,11 +290,11 @@ public class MlRetrainScheduler : BackgroundService
     {
         if (field == "*") return true;
 
-        // Listes : "1,3,5"
+        // Lists: "1,3,5"
         if (field.Contains(','))
             return field.Split(',').Any(f => MatchesCronField(f.Trim(), value));
 
-        // Plages : "1-5"
+        // Ranges: "1-5"
         if (field.Contains('-'))
         {
             var range = field.Split('-');
@@ -304,7 +304,7 @@ public class MlRetrainScheduler : BackgroundService
                 return value >= min && value <= max;
         }
 
-        // Pas : "*/5" ou "0/15"
+        // Steps: "*/5" or "0/15"
         if (field.Contains('/'))
         {
             var step = field.Split('/');
@@ -315,7 +315,7 @@ public class MlRetrainScheduler : BackgroundService
             }
         }
 
-        // Valeur exacte
+        // Exact value
         return int.TryParse(field, out int exact) && exact == value;
     }
 }

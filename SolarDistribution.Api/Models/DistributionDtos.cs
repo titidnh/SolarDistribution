@@ -147,41 +147,41 @@ public class DistributionResponseDto
 
 
 /// <summary>
-/// Bilan énergétique journalier — une ligne par date calendaire.
-/// Retourné par GET /api/distribution/summary/daily
+/// Daily energy summary — one row per calendar date.
+/// Returned by GET /api/distribution/summary/daily
 /// </summary>
 public class DailySummaryDto
 {
-    /// <summary>Date du bilan (UTC, sans heure).</summary>
+    /// <summary>Summary date (UTC, no time component).</summary>
     public DateTime Date { get; set; }
 
-    /// <summary>Énergie solaire autoconsommée (Wh). Null si Solcast non configuré.</summary>
+    /// <summary>Solar energy self-consumed (Wh). Null if Solcast is not configured.</summary>
     public double? SolarConsumedWh { get; set; }
 
-    /// <summary>Énergie totale soutirée depuis le réseau sur la journée (Wh).</summary>
+    /// <summary>Total energy drawn from the grid over the day (Wh).</summary>
     public double GridConsumedWh { get; set; }
 
-    /// <summary>Énergie chargée dans les batteries depuis le réseau (Wh).</summary>
+    /// <summary>Energy charged into batteries from the grid (Wh).</summary>
     public double GridChargedWh { get; set; }
 
-    /// <summary>Énergie distribuée aux batteries depuis le surplus solaire (Wh).</summary>
+    /// <summary>Energy distributed to batteries from solar surplus (Wh).</summary>
     public double SolarAllocatedWh { get; set; }
 
-    /// <summary>Surplus solaire non utilisé (batteries pleines) (Wh).</summary>
+    /// <summary>Unused solar surplus (full batteries) (Wh).</summary>
     public double UnusedSurplusWh { get; set; }
 
-    /// <summary>Économies estimées en € grâce à la charge en heures creuses. Null si pas de contexte tarifaire.</summary>
+    /// <summary>Estimated savings in EUR from off-peak grid charging. Null if no tariff context is available.</summary>
     public double? EstimatedSavingsEur { get; set; }
 
     /// <summary>
-    /// Taux d'autosuffisance (%) = solaire / (solaire + réseau) × 100.
-    /// Null si Solcast non configuré.
+    /// Self-sufficiency rate (%) = solar / (solar + grid) × 100.
+    /// Null if Solcast is not configured.
     /// </summary>
     public double? SelfSufficiencyPct { get; set; }
 
-    /// <summary>Nombre de sessions de distribution sur cette journée.</summary>
+    /// <summary>Number of distribution sessions for this day.</summary>
     public int SessionCount { get; set; }
 
-    /// <summary>Timestamp UTC du dernier calcul de ce bilan.</summary>
+    /// <summary>UTC timestamp of the last computation of this summary.</summary>
     public DateTime ComputedAt { get; set; }
 }

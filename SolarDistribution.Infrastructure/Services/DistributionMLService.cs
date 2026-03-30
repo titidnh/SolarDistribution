@@ -23,7 +23,7 @@ public class DistributionMLService : IDistributionMLService
     private const double MIN_CONFIDENCE_TO_APPLY = 0.65;
     private const string SOFTMAX_MODEL_FILE = "ml_softmax_model.zip";
     private const string PREVENTIVE_MODEL_FILE = "ml_preventive_model.zip";
-    // ML-7c : modèle de classification binaire ShouldChargeFromGrid
+    // ML-7c: binary classification model for ShouldChargeFromGrid
     private const string GRID_CHARGE_MODEL_FILE = "ml_grid_charge_model.zip";
     private const double MIN_CLASSIFICATION_SAMPLES_RATIO = 0.4;
 
@@ -32,14 +32,14 @@ public class DistributionMLService : IDistributionMLService
     private readonly ILogger<DistributionMLService> _log;
     private readonly string _modelDir;
 
-    // ── Paramètres de sampling et decay (injectés depuis MlConfig) ───────────
+    // ── Sampling and decay parameters (injected from MlConfig) ───────────────
     private readonly int _trainingTargetSamples;
     private readonly double _decayHalfLifeDays;
     private readonly double _decayFloor;
 
     private ITransformer? _softMaxModel;
     private ITransformer? _preventiveModel;
-    // ML-7c : modèle de classification binaire
+    // ML-7c: binary classification model
     private ITransformer? _gridChargeModel;
     private MLModelMeta? _meta;
 
@@ -48,12 +48,12 @@ public class DistributionMLService : IDistributionMLService
     // Without a pool: CreatePredictionEngine() costs ~5-20ms (allocation + JIT) per call.
     private ConcurrentBag<PredictionEngine<DistributionFeatures, SoftMaxPrediction>>? _smEngines;
     private ConcurrentBag<PredictionEngine<DistributionFeatures, PreventivePrediction>>? _pvEngines;
-    // ML-7c : pool pour le classifieur
+    // ML-7c: pool for the classifier
     private ConcurrentBag<PredictionEngine<DistributionFeatures, GridChargePrediction>>? _gcEngines;
 
     private record MLModelMeta(string Version, int Samples,
         double SoftMaxR2, double PreventiveR2, DateTime TrainedAt,
-        // ML-7c : métriques du classifieur (null si GridImportEntity non configuré)
+        // ML-7c: classifier metrics (null if GridImportEntity is not configured)
         double? GridChargeAccuracy = null,
         double? GridChargeAuc = null,
         int GridChargeSamples = 0);
@@ -77,7 +77,7 @@ public class DistributionMLService : IDistributionMLService
         TryLoadFromDisk();
     }
 
-    // ── Prédiction ────────────────────────────────────────────────────────────
+    // ── Prediction ───────────────────────────────────────────────────────────
 
     public Task<MLRecommendation?> PredictAsync(DistributionFeatures f, CancellationToken ct = default)
     {
@@ -129,7 +129,7 @@ public class DistributionMLService : IDistributionMLService
             const double MinMarginPercent = 10.0;
             if (softMax - preventive < MinMarginPercent)
             {
-                // On préfère ajuster le moins coûteux des deux
+                // Prefer adjusting whichever is less costly
                 if (softMax < 80)
                     softMax = Math.Clamp(preventive + MinMarginPercent, 50, 100);
                 else
@@ -142,7 +142,7 @@ public class DistributionMLService : IDistributionMLService
 
             double conf = (Math.Max(0, _meta.SoftMaxR2) + Math.Max(0, _meta.PreventiveR2)) / 2.0;
 
-            // ML-7c : classification ShouldChargeFromGrid (optionnelle — disponible si GridImportEntity configuré)
+            // ML-7c: ShouldChargeFromGrid classification (optional — available if GridImportEntity is configured)
             bool? shouldCharge = null;
             double? gcConf = null;
 
@@ -215,7 +215,7 @@ public class DistributionMLService : IDistributionMLService
             _softMaxModel = smModel;
             _preventiveModel = pvModel;
 
-            // ML-7c : entraîner le classifieur ShouldChargeFromGrid si assez de labels
+            // ML-7c: train ShouldChargeFromGrid classifier if enough labels
             ITransformer? gcModel = null;
             double? gcAcc = null;
             double? gcAuc = null;
@@ -256,7 +256,7 @@ public class DistributionMLService : IDistributionMLService
             _meta = new MLModelMeta(ver, features.Count, smR2, pvR2, DateTime.UtcNow,
                 gcAcc, gcAuc, gcCount);
 
-            // ML-1 : (re)construire les pools après chaque entraînement
+            // ML-1: rebuild pools after each training
             RebuildPredictionPools(data.Schema);
 
             _log.LogInformation(
@@ -386,30 +386,30 @@ public class DistributionMLService : IDistributionMLService
             nameof(DistributionFeatures.AvgSolarForecastGrid),
             nameof(DistributionFeatures.SolarExpectedSoon),
             nameof(DistributionFeatures.MaxSavingsPerKwh),
-            // ML-7 : contexte adaptatif — temps restant, soleil, urgence
+            // ML-7: adaptive context — remaining time, solar, urgency
             nameof(DistributionFeatures.HoursRemainingInSlot),
             nameof(DistributionFeatures.HoursUntilSolarCapped),
             nameof(DistributionFeatures.WasEmergencySession),
             nameof(DistributionFeatures.NormalizedGridChargeW),
-            // ML-8 : prévisions HA installation-spécifiques
-            // Ces features sont parmi les plus prédictives : elles encodent directement
-            // "combien d'énergie mon installation va produire" au lieu d'un proxy W/m².
-            // Normalisées par capacité totale → sans dimension, comparables entre installations.
+            // ML-8: installation-specific HA forecasts
+            // These features are among the most predictive: they directly encode
+            // "how much energy my installation will produce" instead of a W/m² proxy.
+            // Normalized by total capacity → unitless, comparable across installations.
             nameof(DistributionFeatures.ForecastTodayNormalized),
             nameof(DistributionFeatures.ForecastTomorrowNormalized),
             nameof(DistributionFeatures.HasHaForecast),
-            // ML-9 : tendance solaire J vs J+1 + qualité du signal de blocage
-            // ForecastRatioTomorrowVsToday : encode "demain meilleur/pire qu'aujourd'hui"
-            //   → permet au ML d'apprendre à charger plus quand la tendance est mauvaise
-            // SolarBlockedByHaForecast : différencie "bloqué par Solcast précis" vs "Open-Meteo"
-            //   → permet au ML de pondérer sa confiance selon la qualité de la source
+            // ML-9: D vs D+1 solar trend + blocking signal quality
+            // ForecastRatioTomorrowVsToday: encodes "tomorrow better/worse than today"
+            //   → allows ML to learn charging more when trend is poor
+            // SolarBlockedByHaForecast: differentiates "blocked by precise Solcast" vs "Open-Meteo"
+            //   → allows ML to weight confidence by source quality
             nameof(DistributionFeatures.ForecastRatioTomorrowVsToday),
             nameof(DistributionFeatures.SolarBlockedByHaForecast),
-            // ML-7 : feedback réel mesuré dans HA
-            // ActualSelfSufficiencyNormalized : taux d'autosuffisance réel (0–1) mesuré N heures après
-            //   → label de régression complémentaire, plus représentatif qu'une heuristique SOC
-            // DidImportFromGrid : signal binaire — du courant a-t-il été importé depuis le réseau ?
-            //   → signal fort pour améliorer SoftMaxPercent et le classifieur ShouldChargeFromGrid
+            // ML-7: real feedback measured in HA
+            // ActualSelfSufficiencyNormalized: real self-sufficiency rate (0-1) measured N hours later
+            //   → complementary regression label, more representative than an SOC heuristic
+            // DidImportFromGrid: binary signal — was power imported from the grid?
+            //   → strong signal to improve SoftMaxPercent and ShouldChargeFromGrid classifier
             nameof(DistributionFeatures.ActualSelfSufficiencyNormalized),
             nameof(DistributionFeatures.DidImportFromGrid),
         };
@@ -426,8 +426,8 @@ public class DistributionMLService : IDistributionMLService
                 LearningRate = 0.08f,
                 LabelColumnName = "Label",
                 FeatureColumnName = "Features",
-                // ML-7d : appliquer les poids d'entraînement pour sur-pondérer
-                // les sessions avec surplus gaspillé ou import réseau non voulu
+                // ML-7d: apply training weights to upweight
+                // sessions with wasted surplus or unwanted grid import
                 ExampleWeightColumnName = nameof(DistributionFeatures.SampleWeight)
             }));
 
@@ -437,17 +437,17 @@ public class DistributionMLService : IDistributionMLService
     }
 
     /// <summary>
-    /// ML-7c : entraîne le classifieur binaire ShouldChargeFromGrid (FastTree binary classification).
+    /// ML-7c: trains the binary ShouldChargeFromGrid classifier (FastTree binary classification).
     ///
-    /// Objectif : prédire si une session devrait déclencher une charge réseau,
-    /// en se basant sur les observations réelles (DidImportFromGrid, ActualSelfSufficiency).
+    /// Goal: predict whether a session should trigger grid charging,
+    /// based on real observations (DidImportFromGrid, ActualSelfSufficiency).
     ///
-    /// Ce classifieur complète les deux régresseurs existants :
-    ///   - SoftMaxRegressor → "jusqu'où charger ?"
-    ///   - PreventiveRegressor → "à partir de quand forcer ?"
-    ///   - GridChargeClassifier (nouveau) → "faut-il charger depuis le réseau ?"
+    /// This classifier complements the two existing regressors:
+    ///   - SoftMaxRegressor → "how far to charge?"
+    ///   - PreventiveRegressor → "from which threshold should charging be forced?"
+    ///   - GridChargeClassifier (new) → "should we charge from the grid?"
     ///
-    /// Retourne (model, accuracy, auc) ou lève une exception si échec.
+    /// Returns (model, accuracy, auc) or throws an exception on failure.
     /// </summary>
     private (ITransformer Model, double Accuracy, double Auc) TrainClassifier(
         IDataView train, IDataView test)
@@ -518,7 +518,7 @@ public class DistributionMLService : IDistributionMLService
             _preventiveModel = _ctx.Model.Load(pv, out _);
             var ts = File.GetLastWriteTimeUtc(sm);
 
-            // ML-7c : charger le classifieur si disponible (optionnel — absent si GridImportEntity non configuré)
+            // ML-7c: load classifier if available (optional — absent if GridImportEntity not configured)
             var gc = Path.Combine(_modelDir, GRID_CHARGE_MODEL_FILE);
             if (File.Exists(gc))
             {
@@ -534,7 +534,7 @@ public class DistributionMLService : IDistributionMLService
             }
 
             _meta = new MLModelMeta($"v{ts:yyyyMMdd-HHmmss}", 0, 0.7, 0.7, ts);
-            // ML-1 : construire les pools dès le chargement depuis le disque
+            // ML-1: build pools immediately after loading from disk
             RebuildPredictionPools(smSchema);
             _log.LogInformation("ML models loaded from disk (version {V})", _meta.Version);
         }
@@ -542,23 +542,23 @@ public class DistributionMLService : IDistributionMLService
     }
 
     /// <summary>
-    /// ML-1 : (Re)construit les pools de PredictionEngine après entraînement ou chargement disque.
-    /// Pré-chauffe 2 moteurs par modèle pour les premiers cycles concurrents.
+    /// ML-1: (Re)builds PredictionEngine pools after training or disk loading.
+    /// Pre-warms 2 engines per model for the first concurrent cycles.
     /// </summary>
     private void RebuildPredictionPools(DataViewSchema _)
     {
-        // Vider les anciens pools avant de reconstruire (modèle remplacé)
+        // Clear old pools before rebuilding (model replaced)
         _smEngines = new ConcurrentBag<PredictionEngine<DistributionFeatures, SoftMaxPrediction>>();
         _pvEngines = new ConcurrentBag<PredictionEngine<DistributionFeatures, PreventivePrediction>>();
 
-        // Pré-chauffe : 2 moteurs suffisent pour un worker à cycle unique
+        // Pre-warm: 2 engines are enough for a single-cycle worker
         for (int i = 0; i < 2; i++)
         {
             _smEngines.Add(_ctx.Model.CreatePredictionEngine<DistributionFeatures, SoftMaxPrediction>(_softMaxModel!));
             _pvEngines.Add(_ctx.Model.CreatePredictionEngine<DistributionFeatures, PreventivePrediction>(_preventiveModel!));
         }
 
-        // ML-7c : pré-chauffer le pool du classifieur si disponible
+        // ML-7c: pre-warm classifier pool if available
         if (_gridChargeModel is not null)
         {
             _gcEngines = new ConcurrentBag<PredictionEngine<DistributionFeatures, GridChargePrediction>>();
@@ -620,7 +620,7 @@ public class DistributionMLService : IDistributionMLService
             UrgentBatteryCount = bs.Count(b => b.WasUrgent),
             TotalMaxChargeRateW = (float)bs.Sum(b => b.MaxChargeRateW),
 
-            // ML-4 : features de dispersion calculées depuis les snapshots
+            // ML-4: dispersion features computed from snapshots
             SocStdDev = (float)StdDev(bs.Select(b => b.CurrentPercentBefore)),
             CapacityRatio = bs.Min(b => b.CapacityWh) > 0
                 ? (float)(bs.Max(b => b.CapacityWh) / bs.Min(b => b.CapacityWh))
@@ -629,7 +629,7 @@ public class DistributionMLService : IDistributionMLService
 
             SurplusW = (float)session.SurplusW,
 
-            // Tarif — depuis les champs persistés en session
+            // Tariff — from fields persisted in session
             NormalizedTariff = (float)(session.TariffPricePerKwh.HasValue
                 ? Math.Min(1.0, session.TariffPricePerKwh.Value / 0.40) : 0.5),
             IsOffPeakHour = session.WasGridChargeFavorable ? 1f : 0f,
@@ -638,19 +638,19 @@ public class DistributionMLService : IDistributionMLService
             SolarExpectedSoon = session.SolarExpectedSoon ? 1f : 0f,
             MaxSavingsPerKwh = (float)(session.TariffMaxSavingsPerKwh ?? 0),
 
-            // ML-7 : contexte adaptatif étendu — reconstruit depuis les champs persistés
+            // ML-7: extended adaptive context — rebuilt from persisted fields
             HoursRemainingInSlot = (float)(session.HoursRemainingInSlot ?? 0.0),
             HoursUntilSolarCapped = (float)Math.Min(session.HoursUntilSolar ?? 24.0, 24.0),
             WasEmergencySession = session.HadEmergencyGridCharge ? 1f : 0f,
-            // Puissance réseau normalisée depuis la valeur effective persistée
+            // Grid power normalized from the persisted effective value
             NormalizedGridChargeW = session.EffectiveGridChargeW.HasValue && bs.Any()
                 ? (float)Math.Clamp(
                     session.EffectiveGridChargeW.Value / Math.Max(1, bs.Average(b => b.MaxChargeRateW)),
                     0, 1)
                 : 0f,
 
-            // ML-8 : prévisions HA installation-spécifiques — reconstruit depuis la session
-            // Normalisées par capacité totale (sans dimension, stable entre installations)
+            // ML-8: installation-specific HA forecasts — rebuilt from session
+            // Normalized by total capacity (unitless, stable across installations)
             ForecastTodayNormalized = totalCap > 0 && session.ForecastTodayWh.HasValue
                 ? (float)Math.Clamp(session.ForecastTodayWh.Value / totalCap, 0, 5) : 0f,
             ForecastTomorrowNormalized = totalCap > 0 && session.ForecastTomorrowWh.HasValue
@@ -658,7 +658,7 @@ public class DistributionMLService : IDistributionMLService
             HasHaForecast = (session.ForecastTodayWh.HasValue || session.ForecastTomorrowWh.HasValue)
                 ? 1f : 0f,
 
-            // ML-9 : ratio J vs J+1 + source du blocage solaire
+            // ML-9: D vs D+1 ratio + solar blocking source
             ForecastRatioTomorrowVsToday = totalCap > 0
                 && session.ForecastTodayWh.HasValue && session.ForecastTodayWh.Value > 0
                 && session.ForecastTomorrowWh.HasValue
@@ -667,17 +667,17 @@ public class DistributionMLService : IDistributionMLService
             SolarBlockedByHaForecast = (session.ForecastTodayWh.HasValue && session.SolarExpectedSoon == false)
                 ? 1f : 0f,
 
-            // Bilan J-1
-            YesterdaySelfSufficiencyPct = 0f, // injecté dynamiquement par SmartDistributionService
+            // D-1 balance
+            YesterdaySelfSufficiencyPct = 0f, // injected dynamically by SmartDistributionService
 
-            // ML-7 : labels enrichis de feedback réel
+            // ML-7: labels enriched with real feedback
             ActualSelfSufficiencyNormalized = fb.ActualSelfSufficiencyPct.HasValue
                 ? (float)Math.Clamp(fb.ActualSelfSufficiencyPct.Value, 0, 1) : 0f,
             DidImportFromGrid = fb.DidImportFromGrid == true ? 1f : 0f,
             SampleWeight = (float)ComputeDecayedWeight(fb.TrainingWeight, session.RequestedAt),
             ShouldChargeFromGrid = fb.ShouldChargeFromGrid ?? false,
 
-            // Labels réels — jamais d'heuristique
+            // Real labels — never heuristic
             OptimalSoftMaxPercent = (float)fb.ObservedOptimalSoftMax,
             OptimalPreventiveThreshold = (float)fb.ObservedOptimalPreventive,
         };
@@ -689,7 +689,7 @@ public class DistributionMLService : IDistributionMLService
         catch { return Array.Empty<double>(); }
     }
 
-    /// <summary>ML-4 : écart-type population (σ) — retourne 0 si collection vide ou singleton.</summary>
+    /// <summary>ML-4: population standard deviation (σ) — returns 0 for empty or singleton collections.</summary>
     private static double StdDev(IEnumerable<double> values)
     {
         var list = values.ToList();
@@ -699,24 +699,24 @@ public class DistributionMLService : IDistributionMLService
     }
 
     /// <summary>
-    /// Calcule le poids d'entraînement final en combinant :
-    ///   - Le poids qualitatif persisté (surplusWasted, import réseau, urgence…)
-    ///   - Un decay exponentiel temporel recalculé à chaque entraînement
+    /// Computes the final training weight by combining:
+    ///   - Persisted qualitative weight (surplusWasted, grid import, emergency...)
+    ///   - A temporal exponential decay recomputed at each training
     ///
-    /// POURQUOI recalculer ici plutôt que de persister le poids decayé :
-    ///   Si on persistait le poids decayé au moment du feedback, une session
-    ///   d'il y a 3 mois aurait un poids calculé "à l'époque" — pas relatif à
-    ///   l'entraînement actuel. En recalculant, le decay est toujours relatif
-    ///   à "maintenant", ce qui donne une décroissance cohérente.
+    /// WHY recompute here instead of persisting decayed weight:
+    ///   If decayed weight were persisted at feedback time, a session
+    ///   from 3 months ago would have a weight computed "back then" — not relative
+    ///   to current training. By recomputing, decay is always relative
+    ///   to "now", yielding coherent decay.
     ///
-    /// FORMULE :
-    ///   decay = max(floor, exp(-age_jours / halfLife))
-    ///   poids_final = clamp(qualityWeight × decay, 0.1, 3.5)
+    /// FORMULA:
+    ///   decay = max(floor, exp(-age_days / halfLife))
+    ///   final_weight = clamp(qualityWeight × decay, 0.1, 3.5)
     ///
-    ///   → Session récente normale       : 1.0 × 1.0   = 1.0
-    ///   → Session 6 mois, import réseau : 1.8 × 0.37  = 0.67
-    ///   → Session 2 ans, surplusWasted  : 2.0 × 0.25  = 0.50 (plancher activé)
-    ///   → Session 2 ans normale         : 1.0 × 0.25  = 0.25 (compte encore !)
+    ///   → Recent normal session         : 1.0 × 1.0   = 1.0
+    ///   → 6-month session, grid import  : 1.8 × 0.37  = 0.67
+    ///   → 2-year session, surplusWasted : 2.0 × 0.25  = 0.50 (floor active)
+    ///   → 2-year normal session         : 1.0 × 0.25  = 0.25 (still counted!)
     /// </summary>
     private double ComputeDecayedWeight(double qualityWeight, DateTime sessionDate)
     {

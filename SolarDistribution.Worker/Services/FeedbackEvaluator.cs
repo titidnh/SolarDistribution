@@ -8,34 +8,34 @@ using SolarDistribution.Worker.HA;
 namespace SolarDistribution.Worker.Services;
 
 /// <summary>
-/// Collecte le feedback réel sur les sessions passées en relisant le SOC des batteries dans HA.
+/// Collects real feedback on past sessions by re-reading battery SOC in HA.
 ///
-/// POURQUOI C'EST IMPORTANT :
-///   Sans cela, le ML apprenait à reproduire une règle codée en dur (heuristique).
-///   Avec ce feedback, le ML apprend depuis CE QUI S'EST VRAIMENT PASSÉ.
+/// WHY THIS MATTERS:
+///   Without this, ML learned to reproduce a hard-coded rule (heuristic).
+///   With this feedback, ML learns from WHAT ACTUALLY HAPPENED.
 ///
-/// QUAND :
-///   Déclenché par MlRetrainScheduler selon config ml.feedback_delay_hours (défaut: 4h).
-///   On attend N heures après une session pour voir l'effet réel de la décision.
+/// WHEN:
+///   Triggered by MlRetrainScheduler based on config ml.feedback_delay_hours (default: 4h).
+///   We wait N hours after a session to observe the real impact of the decision.
 ///
-/// CE QU'ON MESURE :
-///   On relit le SOC actuel de chaque batterie dans HA.
-///   On calcule deux labels réels :
+/// WHAT IS MEASURED:
+///   Current SOC of each battery is read again in HA.
+///   Two real labels are computed:
 ///
 ///   1. ObservedOptimalSoftMax :
-///      - Si les batteries sont tombées trop bas après la session → le SoftMax était trop bas,
-///        on aurait dû charger davantage → label = SoftMax + correction
-///      - Si les batteries sont restées inutilement hautes → label = SoftMax légèrement réduit
+///      - If batteries dropped too low after the session → SoftMax was too low,
+///        charging should have been higher → label = SoftMax + correction
+///      - If batteries stayed unnecessarily high → label = slightly reduced SoftMax
 ///
 ///   2. ObservedOptimalPreventive :
-///      - Si une batterie est passée sous MinPercent → le seuil préventif était trop bas
-///      - Sinon → seuil préventif était correct ou légèrement trop conservateur
+///      - If a battery went below MinPercent → preventive threshold was too low
+///      - Otherwise → preventive threshold was correct or slightly too conservative
 ///
 ///   3. EnergyEfficiencyScore (0→1) :
-///      - Ratio énergie stockée / énergie disponible
+///      - Stored energy / available energy ratio
 ///
 ///   4. AvailabilityScore (0→1) :
-///      - Pénalise les batteries trop basses au moment du feedback
+///      - Penalizes batteries that are too low at feedback time
 /// </summary>
 public class FeedbackEvaluator
 {
@@ -57,8 +57,8 @@ public class FeedbackEvaluator
     }
 
     /// <summary>
-    /// Collecte le feedback pour toutes les sessions en attente.
-    /// Appelé périodiquement par MlRetrainScheduler.
+    /// Collects feedback for all pending sessions.
+    /// Called periodically by MlRetrainScheduler.
     /// </summary>
     public async Task<int> CollectPendingFeedbacksAsync(CancellationToken ct = default)
     {
@@ -108,14 +108,14 @@ public class FeedbackEvaluator
         return collected;
     }
 
-    // ── Évaluation d'une session ──────────────────────────────────────────────
+    // ── Session evaluation ───────────────────────────────────────────────────
 
     private async Task<SessionFeedback> EvaluateSessionAsync(
         DistributionSession session, CancellationToken ct)
     {
         double hoursElapsed = (DateTime.UtcNow - session.RequestedAt).TotalHours;
 
-        // ── Lire le SOC actuel de chaque batterie dans HA ─────────────────────
+        // ── Read current SOC of each battery from HA ─────────────────────────
         var observedSocs = new Dictionary<int, double>();
         bool anyReadFailed = false;
 
@@ -136,7 +136,7 @@ public class FeedbackEvaluator
             }
         }
 
-        // Si toutes les lectures ont échoué → feedback invalide
+        // If all reads failed → invalid feedback
         if (!observedSocs.Any())
         {
             return new SessionFeedback
@@ -149,14 +149,14 @@ public class FeedbackEvaluator
             };
         }
 
-        // ── Calcul des scores d'efficacité ────────────────────────────────────
+        // ── Compute efficiency scores ────────────────────────────────────────
         double energyEfficiency = ComputeEnergyEfficiency(session);
         double availability = ComputeAvailabilityScore(observedSocs, session);
         double composite = energyEfficiency * 0.6 + availability * 0.4;
 
-        // ── Calcul des labels réels pour l'entraînement ML ────────────────────
-        // IMPORTANT : les sessions urgence, HC et avec prévisions HA ont des
-        // dynamiques différentes. On les traite séparément pour des labels précis.
+        // ── Compute real labels for ML training ──────────────────────────────
+        // IMPORTANT: emergency, off-peak, and HA-forecast sessions have
+        // different dynamics. They are handled separately for precise labels.
         bool wasEmergency = session.HadEmergencyGridCharge;
         bool wasOffPeak = session.WasGridChargeFavorable;
         bool hasHaForecast = session.ForecastTodayWh.HasValue || session.ForecastTomorrowWh.HasValue;
@@ -166,40 +166,40 @@ public class FeedbackEvaluator
         double optimalPreventive = ComputeObservedOptimalPreventive(
             session, observedSocs, wasEmergency, hasHaForecast);
 
-        // ── ML-7a : ActualSelfSufficiencyPct ─────────────────────────────────
-        // Mesure le taux d'autosuffisance réel N heures après la session.
-        // On relit ConsumptionEntity et GridImportEntity depuis HA pour calculer :
+        // ── ML-7a: ActualSelfSufficiencyPct ──────────────────────────────────
+        // Measures real self-sufficiency rate N hours after the session.
+        // Reads ConsumptionEntity and GridImportEntity from HA to compute:
         //   selfSufficiency = 1 − (grid_import / total_consumption)
-        // Si les entités ne sont pas configurées, le champ reste null.
+        // If entities are not configured, field stays null.
         double? actualSelfSufficiency = await ComputeActualSelfSufficiencyAsync(session, ct);
 
-        // ── ML-7b : DidImportFromGrid ─────────────────────────────────────────
-        // Lit GridImportEntity pour savoir si un import significatif s'est produit.
-        // Import = puissance mesurée > GridImportSignificantThresholdW.
+        // ── ML-7b: DidImportFromGrid ─────────────────────────────────────────
+        // Reads GridImportEntity to determine if significant import occurred.
+        // Import = measured power > GridImportSignificantThresholdW.
         bool? didImport = await ReadGridImportAsync(ct);
 
-        // ── ML-7c : ShouldChargeFromGrid (classification binaire) ────────────
-        // Détermine si la session aurait dû forcer la charge réseau.
-        // Règle : on aurait dû charger si :
-        //   - du courant a été importé après (didImport = true) ET
-        //   - la session n'était pas déjà une charge réseau, OU
-        //   - l'autosuffisance observée est < seuil bas (70%)
+        // ── ML-7c: ShouldChargeFromGrid (binary classification) ─────────────
+        // Determines whether the session should have forced grid charging.
+        // Rule: should have charged if:
+        //   - power was imported afterwards (didImport = true) AND
+        //   - session was not already a grid-charge session, OR
+        //   - observed self-sufficiency is below low threshold (70%)
         bool? shouldCharge = ComputeShouldChargeFromGrid(
             session, didImport, actualSelfSufficiency);
 
-        // ── ML-7d : SurplusWasted + TrainingWeight ────────────────────────────
-        // Un surplus est gaspillé si les batteries étaient pleines et qu'il y avait
-        // du surplus non absorbé (UnusedSurplusW > 0).
-        // Ces sessions portent un signal fort : le ML doit apprendre à réduire
-        // SoftMaxPercent la nuit quand le lendemain est ensoleillé.
-        // TrainingWeight est augmenté pour amplifier ces cas rares mais importants.
+        // ── ML-7d: SurplusWasted + TrainingWeight ────────────────────────────
+        // Surplus is wasted if batteries were full while there was
+        // unabsorbed surplus (UnusedSurplusW > 0).
+        // These sessions carry a strong signal: ML should learn to reduce
+        // SoftMaxPercent at night when tomorrow is sunny.
+        // TrainingWeight is increased to amplify these rare but important cases.
         bool surplusWasted = session.UnusedSurplusW > 50
                           && observedSocs.Values.Any(soc => soc >= 95.0);
 
         double trainingWeight = ComputeTrainingWeight(
             surplusWasted, didImport, actualSelfSufficiency, wasEmergency);
 
-        // Avertissement si des lectures ont partiellement échoué
+        // Warning if reads partially failed
         string? invalidReason = anyReadFailed
             ? "Some battery reads failed — partial feedback"
             : null;
@@ -217,7 +217,7 @@ public class FeedbackEvaluator
             ObservedOptimalSoftMax = optimalSoftMax,
             ObservedOptimalPreventive = optimalPreventive,
             CompositeScore = composite,
-            // ML-7 : labels enrichis
+            // ML-7: enriched labels
             ActualSelfSufficiencyPct = actualSelfSufficiency,
             DidImportFromGrid = didImport,
             ShouldChargeFromGrid = shouldCharge,
@@ -235,23 +235,23 @@ public class FeedbackEvaluator
         return feedback;
     }
 
-    // ── ML-7a : Autosuffisance réelle ─────────────────────────────────────────
+    // ── ML-7a: Real self-sufficiency ────────────────────────────────────────
 
     /// <summary>
-    /// Tente de calculer le taux d'autosuffisance en relisant ConsumptionEntity
-    /// et GridImportEntity dans HA au moment du feedback.
+    /// Tries to compute self-sufficiency rate by re-reading ConsumptionEntity
+    /// and GridImportEntity in HA at feedback time.
     ///
     /// selfSufficiency = 1 − (import_W / consumption_W)
-    ///   → 1.0 = 100% solaire, 0.0 = 100% réseau
+    ///   → 1.0 = 100% solar, 0.0 = 100% grid
     ///
-    /// Retourne null si les entités ne sont pas configurées ou si la lecture échoue.
+    /// Returns null if entities are not configured or read fails.
     /// </summary>
     private async Task<double?> ComputeActualSelfSufficiencyAsync(
         DistributionSession session, CancellationToken ct)
     {
         var solar = _config.Solar;
 
-        // On a besoin d'au moins ConsumptionEntity ou ProductionEntity + GridImportEntity
+        // Need at least ConsumptionEntity or ProductionEntity + GridImportEntity
         if (solar.GridImportEntity is null) return null;
 
         double? importW = await _haClient.GetNumericStateAsync(solar.GridImportEntity, ct);
@@ -259,14 +259,14 @@ public class FeedbackEvaluator
 
         importW = importW.Value * solar.GridImportEntityMultiplier;
 
-        // Lecture optionnelle de la consommation totale pour normaliser
+        // Optional read of total consumption for normalization
         double? consumptionW = null;
         if (solar.ConsumptionEntity is not null)
             consumptionW = await _haClient.GetNumericStateAsync(solar.ConsumptionEntity, ct);
 
         if (consumptionW is null || consumptionW.Value <= 0)
         {
-            // Fallback : estimer la consommation depuis l'import et le surplus de session
+            // Fallback: estimate consumption from import and session surplus
             // consumption ≈ production − surplus_net + import
             double productionEstimate = session.BatterySnapshots.Sum(b => b.AllocatedW) + session.SurplusW;
             consumptionW = productionEstimate + Math.Max(0, importW.Value);
@@ -278,11 +278,11 @@ public class FeedbackEvaluator
         return Math.Clamp(selfSufficiency, 0.0, 1.0);
     }
 
-    // ── ML-7b : Import réseau binaire ────────────────────────────────────────
+    // ── ML-7b: Binary grid import ───────────────────────────────────────────
 
     /// <summary>
-    /// Lit GridImportEntity et retourne true si un import significatif est détecté.
-    /// Filtre les micro-imports sous GridImportSignificantThresholdW (bruit P1).
+    /// Reads GridImportEntity and returns true if significant import is detected.
+    /// Filters micro-imports below GridImportSignificantThresholdW (P1 noise).
     /// </summary>
     private async Task<bool?> ReadGridImportAsync(CancellationToken ct)
     {
@@ -296,19 +296,19 @@ public class FeedbackEvaluator
         return adjusted > solar.GridImportSignificantThresholdW;
     }
 
-    // ── ML-7c : Label de classification ShouldChargeFromGrid ─────────────────
+    // ── ML-7c: ShouldChargeFromGrid classification label ────────────────────
 
     /// <summary>
-    /// Calcule le label binaire ShouldChargeFromGrid :
-    ///   true  → la session aurait dû forcer la charge réseau (on a importé après)
-    ///   false → la décision de ne pas charger était correcte
-    ///   null  → pas assez de données pour trancher
+    /// Computes binary ShouldChargeFromGrid label:
+    ///   true  → session should have forced grid charging (import happened later)
+    ///   false → decision not to charge was correct
+    ///   null  → not enough data to decide
     ///
-    /// Règles :
-    ///   1. Si didImport = true ET la session n'était pas une charge réseau → shouldCharge = true
-    ///   2. Si actualSelfSufficiency &lt; 0.70 → shouldCharge = true (70% = seuil configurable)
-    ///   3. Si selfSufficiency ≥ 0.90 ET pas d'import → shouldCharge = false
-    ///   4. Sinon → null (signal ambigu)
+    /// Rules:
+    ///   1. If didImport = true AND session was not a grid-charge session → shouldCharge = true
+    ///   2. If actualSelfSufficiency &lt; 0.70 → shouldCharge = true (70% = configurable threshold)
+    ///   3. If selfSufficiency ≥ 0.90 AND no import → shouldCharge = false
+    ///   4. Otherwise → null (ambiguous signal)
     /// </summary>
     private static bool? ComputeShouldChargeFromGrid(
         DistributionSession session,
@@ -326,29 +326,29 @@ public class FeedbackEvaluator
         if (didImport == false && selfSufficiency.HasValue && selfSufficiency.Value >= 0.90)
             return false;
 
-        // Signal ambigu → pas de label de classification pour cette session
+        // Ambiguous signal → no classification label for this session
         return null;
     }
 
-    // ── ML-7d : Poids d'entraînement ─────────────────────────────────────────
+    // ── ML-7d: Training weight ───────────────────────────────────────────────
 
     /// <summary>
-    /// Calcule le poids d'entraînement pour cette session.
+    /// Computes training weight for this session.
     ///
-    /// RATIONALE :
-    ///   Le dataset ML est déséquilibré : les sessions "correctes" (solaire bien absorbé)
-    ///   sont majoritaires. Les sessions problématiques (surplus gaspillé, import non voulu)
-    ///   sont rares mais portent un signal fort.
+    /// RATIONALE:
+    ///   ML dataset is imbalanced: "correct" sessions (solar well absorbed)
+    ///   are the majority. Problematic sessions (wasted surplus, unwanted import)
+    ///   are rare but carry a strong signal.
     ///
-    ///   En augmentant leur poids, on force le modèle à mieux apprendre ces cas
-    ///   sans modifier l'algorithme de training (FastTree supporte les poids via ColumnName).
+    ///   By increasing their weight, the model is forced to learn these cases better
+    ///   without changing training algorithm (FastTree supports weights via ColumnName).
     ///
-    /// Pondération :
-    ///   · Surplus gaspillé        → ×2.0 (signal fort : trop chargé la nuit)
-    ///   · Import réseau non voulu → ×1.8 (signal fort : pas assez chargé)
-    ///   · Autosuffisance &lt; 50%   → ×1.5 (signal moyen : journée dégradée)
-    ///   · Session urgence         → ×1.4 (signal : algo trop conservateur)
-    ///   · Poids cumulables jusqu'à ×3.5 max (évite la sur-correction)
+    /// Weighting:
+    ///   · Wasted surplus          → ×2.0 (strong signal: overcharged at night)
+    ///   · Unwanted grid import    → ×1.8 (strong signal: undercharged)
+    ///   · Self-sufficiency &lt; 50%  → ×1.5 (medium signal: degraded day)
+    ///   · Emergency session       → ×1.4 (signal: algorithm too conservative)
+    ///   · Multipliers accumulate up to ×3.5 max (prevents over-correction)
     /// </summary>
     private static double ComputeTrainingWeight(
         bool surplusWasted,
@@ -363,17 +363,17 @@ public class FeedbackEvaluator
         if (selfSufficiency.HasValue && selfSufficiency.Value < 0.50) weight *= 1.5;
         if (wasEmergency) weight *= 1.4;
 
-        return Math.Min(weight, 3.5); // plafond pour éviter les outliers dominants
+        return Math.Min(weight, 3.5); // cap to avoid dominant outliers
     }
 
-    // ── Calcul EnergyEfficiency ───────────────────────────────────────────────
+    // ── EnergyEfficiency calculation ────────────────────────────────────────
 
     /// <summary>
-    /// Efficacité énergétique = énergie effectivement stockée / énergie théoriquement disponible.
+    /// Energy efficiency = effectively stored energy / theoretically available energy.
     ///
-    /// Si on avait 1000W de surplus et qu'on n'a pu en stocker que 600W (batteries pleines
-    /// ou MaxChargeRate atteint) → score = 0.6
-    /// Si tout a été absorbé → score = 1.0
+    /// If there was 1000W surplus but only 600W could be stored (full batteries
+    /// or MaxChargeRate reached) → score = 0.6
+    /// If everything was absorbed → score = 1.0
     /// </summary>
     private static double ComputeEnergyEfficiency(DistributionSession session)
     {
@@ -383,19 +383,19 @@ public class FeedbackEvaluator
         return Math.Clamp(ratio, 0, 1);
     }
 
-    // ── Calcul AvailabilityScore ──────────────────────────────────────────────
+    // ── AvailabilityScore calculation ───────────────────────────────────────
 
     /// <summary>
-    /// Score de disponibilité : les batteries sont-elles à un niveau acceptable N heures après ?
+    /// Availability score: are batteries at an acceptable level N hours later?
     ///
-    /// Pénalise proportionnellement si le SOC est tombé sous MinPercent.
-    /// Score = 1.0 si toutes les batteries sont au-dessus de MinPercent
-    /// Score = 0.0 si toutes les batteries sont tombées au minimum absolu
+    /// Penalizes proportionally if SOC dropped below MinPercent.
+    /// Score = 1.0 if all batteries are above MinPercent
+    /// Score = 0.0 if all batteries dropped to absolute minimum
     /// </summary>
     private double ComputeAvailabilityScore(
         Dictionary<int, double> observedSocs, DistributionSession session)
     {
-        if (!observedSocs.Any()) return 0.5; // valeur neutre si pas de lecture
+        if (!observedSocs.Any()) return 0.5; // neutral value when no reading
 
         var scores = new List<double>();
 
@@ -404,8 +404,8 @@ public class FeedbackEvaluator
             var battConfig = _config.Batteries.FirstOrDefault(b => b.Id == battId);
             if (battConfig is null) continue;
 
-            // Score 1.0 si au-dessus de MinPercent
-            // Pénalité linéaire jusqu'à 0 si SOC = 0%
+            // Score 1.0 when above MinPercent
+            // Linear penalty down to 0 when SOC = 0%
             double score = soc >= battConfig.MinPercent
                 ? 1.0
                 : soc / battConfig.MinPercent;
@@ -416,24 +416,24 @@ public class FeedbackEvaluator
         return scores.Any() ? scores.Average() : 0.5;
     }
 
-    // ── Calcul ObservedOptimalSoftMax ─────────────────────────────────────────
+    // ── ObservedOptimalSoftMax calculation ──────────────────────────────────
 
     /// <summary>
-    /// SoftMax optimal déduit de l'observation réelle, selon le contexte de la session.
+    /// Optimal SoftMax inferred from real observation, depending on session context.
     ///
-    /// SESSIONS URGENCE (wasEmergency = true) :
-    ///   La batterie était en crise. Le vrai signal pour le ML est : quel SoftMax HC
-    ///   aurait permis d'avoir assez de réserve pour éviter cette urgence ?
-    ///   → Correction plus agressive (×1.5) pour forcer le ML à apprendre à viser
-    ///     plus haut en HC afin d'avoir de la marge face aux situations critiques.
-    ///   → Ces sessions enrichissent le ML sans polluer les labels HC normaux :
-    ///     le ML apprend la corrélation "urgence passée → viser SoftMax plus haut".
+    /// EMERGENCY SESSIONS (wasEmergency = true):
+    ///   Battery was in crisis. The true ML signal is: which off-peak SoftMax
+    ///   would have provided enough reserve to avoid this emergency?
+    ///   → More aggressive correction (×1.5) to force ML to learn targeting
+    ///     higher off-peak levels, leaving margin for critical situations.
+    ///   → These sessions enrich ML without polluting normal off-peak labels:
+    ///     ML learns correlation "past emergency → target higher SoftMax".
     ///
-    /// SESSIONS HC NORMALES (wasOffPeak = true) :
-    ///   Ajustement standard selon le résultat observé N heures après.
+    /// NORMAL OFF-PEAK SESSIONS (wasOffPeak = true):
+    ///   Standard adjustment based on observed result N hours later.
     ///
-    /// SESSIONS SANS CONTEXTE :
-    ///   Correction atténuée (×0.5) — signal moins fiable.
+    /// SESSIONS WITHOUT CONTEXT:
+    ///   Reduced correction (×0.5) — less reliable signal.
     /// </summary>
     private double ComputeObservedOptimalSoftMax(
         DistributionSession session,
@@ -451,42 +451,42 @@ public class FeedbackEvaluator
 
         if (wasEmergency)
         {
-            // Session urgence → signal fort : le ML doit viser plus haut en HC
-            // pour constituer une réserve suffisante avant la prochaine crise.
+            // Emergency session → strong signal: ML must target higher in off-peak
+            // to build enough reserve before next crisis.
             if (availabilityScore < 0.8)
             {
                 double penalty = (0.8 - availabilityScore) / 0.8;
                 double correction = penalty * _config.Ml.FeedbackSoftmaxCorrectionFactor * 1.5;
                 return Math.Clamp(appliedSoftMax + correction, 65, 95);
             }
-            // Urgence résolue, batterie remontée → le SoftMax HC était suffisant
+            // Emergency resolved, battery recovered → off-peak SoftMax was sufficient
             return Math.Clamp(appliedSoftMax, 65, 95);
         }
 
         if (wasOffPeak)
         {
-            // HC normale : ajustement standard
+            // Normal off-peak: standard adjustment
             if (availabilityScore < 0.7)
             {
                 double penalty = (0.7 - availabilityScore) / 0.7;
                 double correction = penalty * _config.Ml.FeedbackSoftmaxCorrectionFactor;
                 return Math.Clamp(appliedSoftMax + correction, 60, 95);
             }
-            // Batteries trop pleines et surplus non absorbé → réduction légère
+            // Batteries too full with unabsorbed surplus → slight reduction
             if (avgSocNow > appliedSoftMax + 5 && session.UnusedSurplusW > 0)
             {
                 double reduction = _config.Ml.FeedbackSoftmaxReduction;
-                // Si on avait une prévision HA qui annonçait une forte production demain,
-                // et que les batteries sont effectivement restées trop pleines → signal
-                // plus fort : le ML doit vraiment apprendre à réduire le SoftMax nocturne
-                // quand demain est ensoleillé (laisser de la place pour l'autoconsommation).
+                // If HA forecast predicted high production tomorrow,
+                // and batteries indeed stayed too full → stronger signal:
+                // ML must really learn to reduce nighttime SoftMax
+                // when tomorrow is sunny (leave room for self-consumption).
                 if (hasHaForecast && session.ForecastTomorrowWh.HasValue
                     && session.ForecastTomorrowWh.Value > 0)
                 {
                     double totalCap = session.BatterySnapshots.Sum(b => b.CapacityWh);
                     double tomorrowRatio = totalCap > 0
                         ? session.ForecastTomorrowWh.Value / totalCap : 0;
-                    // Si demain > 80% capacité batteries : réduction doublée
+                    // If tomorrow > 80% of battery capacity: amplified reduction
                     if (tomorrowRatio > 0.8)
                         reduction *= 1.5;
                 }
@@ -496,7 +496,7 @@ public class FeedbackEvaluator
             return Math.Clamp(appliedSoftMax, 60, 95);
         }
 
-        // Session sans contexte tarifaire — signal atténué
+        // Session without tariff context — reduced signal
         if (availabilityScore < 0.7)
         {
             double penalty = (0.7 - availabilityScore) / 0.7;
@@ -504,7 +504,7 @@ public class FeedbackEvaluator
             return Math.Clamp(appliedSoftMax + correction, 60, 95);
         }
 
-        // Batteries inutilement hautes même sans contexte HC → réduction atténuée
+        // Unnecessarily high batteries even without off-peak context → reduced reduction
         if (avgSocNow > appliedSoftMax + 5 && session.UnusedSurplusW > 0)
         {
             double reduction = _config.Ml.FeedbackSoftmaxReduction * 0.5;
@@ -514,18 +514,18 @@ public class FeedbackEvaluator
         return Math.Clamp(appliedSoftMax, 60, 95);
     }
 
-    // ── Calcul ObservedOptimalPreventive ──────────────────────────────────────
+    // ── ObservedOptimalPreventive calculation ───────────────────────────────
 
     /// <summary>
-    /// Seuil préventif optimal déduit de l'observation, selon le contexte.
+    /// Optimal preventive threshold inferred from observation, based on context.
     ///
-    /// SESSIONS URGENCE :
-    ///   Le déclenchement d'urgence EST la preuve que le seuil préventif était insuffisant.
-    ///   Le label idéal = SOC au moment du déclenchement + marge de sécurité.
-    ///   C'est un signal très fort et direct — le ML apprend exactement où placer la garde.
+    /// EMERGENCY SESSIONS:
+    ///   Emergency trigger IS proof that preventive threshold was insufficient.
+    ///   Ideal label = SOC at trigger time + safety margin.
+    ///   This is a very strong and direct signal — ML learns exactly where to place the guard.
     ///
-    /// SESSIONS NORMALES :
-    ///   Ajustement standard selon si une batterie est tombée sous MinPercent.
+    /// NORMAL SESSIONS:
+    ///   Standard adjustment based on whether a battery fell below MinPercent.
     /// </summary>
     private double ComputeObservedOptimalPreventive(
         DistributionSession session,
@@ -541,18 +541,18 @@ public class FeedbackEvaluator
 
         if (wasEmergency)
         {
-            // SOC de déclenchement = valeur la plus basse parmi les batteries urgentes
+            // Trigger SOC = lowest value among emergency batteries
             double triggerSoc = session.BatterySnapshots
                 .Where(b => b.IsEmergencyGridCharge)
                 .Select(b => b.CurrentPercentBefore)
                 .DefaultIfEmpty(appliedMinPercent)
                 .Min();
 
-            // Seuil préventif idéal = SOC de déclenchement + marge de sécurité configurable
+            // Ideal preventive threshold = trigger SOC + configurable safety margin
             double safetyMargin = _config.Ml.FeedbackMaxPreventiveCorrection * 0.5;
             double idealThreshold = triggerSoc + safetyMargin;
 
-            // Si la batterie est encore basse au feedback → renforcement supplémentaire
+            // If battery is still low at feedback time → additional reinforcement
             if (minObservedSoc < appliedMinPercent)
             {
                 double shortfall = appliedMinPercent - minObservedSoc;
@@ -562,7 +562,7 @@ public class FeedbackEvaluator
             return Math.Clamp(idealThreshold, 15, 50);
         }
 
-        // Session normale : batterie tombée trop bas → augmenter le seuil
+        // Normal session: battery dropped too low → increase threshold
         if (minObservedSoc < appliedMinPercent)
         {
             double shortfall = appliedMinPercent - minObservedSoc;
@@ -570,16 +570,16 @@ public class FeedbackEvaluator
                 shortfall * _config.Ml.FeedbackPreventiveFactor,
                 _config.Ml.FeedbackMaxPreventiveCorrection);
 
-            // Si on avait une prévision HA pour aujourd'hui ET que les batteries sont quand
-            // même tombées bas → la prévision n'a pas suffi à compenser.
-            // Signal : garder un seuil préventif plus élevé même quand la prévision est bonne.
-            // Le ML apprend à ne pas baisser sa garde même avec une bonne météo prévue.
+            // If there was an HA forecast for today and batteries still
+            // dropped low, forecast did not compensate enough.
+            // Signal: keep a higher preventive threshold even with good forecasts.
+            // ML learns not to lower its guard even with good expected weather.
             if (hasHaForecast && session.ForecastTodayWh.HasValue)
             {
                 double totalCap = session.BatterySnapshots.Sum(b => b.CapacityWh);
                 double todayRatio = totalCap > 0 ? session.ForecastTodayWh.Value / totalCap : 0;
-                // Journée bien ensoleillée prévue mais batteries quand même basses
-                // → signal paradoxal → correction plus conservatrice
+                // Sunny day expected but batteries still low
+                // → paradoxical signal → more conservative correction
                 if (todayRatio > 0.5)
                     correction = Math.Min(correction * 1.25, _config.Ml.FeedbackMaxPreventiveCorrection);
             }
@@ -587,7 +587,7 @@ public class FeedbackEvaluator
             return Math.Clamp(appliedMinPercent + correction, 15, 50);
         }
 
-        // Batterie restée très au-dessus → seuil trop conservateur, réduction légère
+        // Battery stayed well above target → threshold too conservative, slight reduction
         if (minObservedSoc > appliedMinPercent + 20)
             return Math.Clamp(appliedMinPercent - _config.Ml.FeedbackPreventiveReduction, 15, 50);
 

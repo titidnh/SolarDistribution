@@ -32,62 +32,62 @@ public class PollingConfig
     public double MinChangeTriggerW { get; set; } = 10;
 
     /// <summary>
-    /// Buffer de sécurité en W soustrait du surplus avant distribution aux batteries.
+    /// Safety buffer in W subtracted from surplus before battery distribution.
     ///
-    /// POURQUOI : la consommation maison fluctue en permanence (appareils qui s'allument,
-    /// variations de charge). Sans buffer, si on envoie 100 % du surplus aux batteries
-    /// et que la consommation monte de 200 W soudainement, on importe momentanément
-    /// depuis le réseau le temps que le cycle suivant recalcule.
+    /// WHY: home consumption constantly fluctuates (devices turning on,
+    /// load variations). Without a buffer, if 100% of surplus is sent to batteries
+    /// and consumption suddenly rises by 200 W, temporary grid import occurs
+    /// until the next cycle recalculates.
     ///
-    /// COMMENT : surplusEffectif = surplusBrut - SurplusBufferW
-    ///   → les 200 W restants continuent d'alimenter la maison directement
-    ///   → les batteries ne reçoivent que le surplus vraiment disponible
+    /// HOW: effectiveSurplus = rawSurplus - SurplusBufferW
+    ///   → remaining 200 W continue feeding the house directly
+    ///   → batteries receive only truly available surplus
     ///
-    /// EXEMPLE (défaut 200 W) :
-    ///   surplus HA = 912 W
-    ///   distribué aux batteries = 912 - 200 = 712 W
-    ///   les 200 W restants absorbent les pics de consommation sans import réseau
+    /// EXAMPLE (default 200 W):
+    ///   HA surplus = 912 W
+    ///   distributed to batteries = 912 - 200 = 712 W
+    ///   remaining 200 W absorb consumption spikes without grid import
     ///
-    /// Mettre à 0 pour désactiver (toute la puissance va aux batteries).
+    /// Set to 0 to disable (all power goes to batteries).
     /// </summary>
     public double SurplusBufferW { get; set; } = 200;
 
     /// <summary>
-    /// Seuil EN DESSOUS duquel la charge solaire est STOPPÉE (Fix Bug #3 — anti-oscillation).
+    /// Threshold BELOW which solar charging is STOPPED (Fix Bug #3 — anti-oscillation).
     ///
-    /// Logique double-seuil (hystérésis de surplus) :
-    ///   · Démarrage : surplus > SurplusBufferW      (200 W)
-    ///   · Arrêt     : surplus &lt; SurplusStopBufferW  (80 W par défaut)
-    ///   · Zone [80W–200W] : on maintient l'état précédent (ni démarrage, ni arrêt)
+    /// Dual-threshold logic (surplus hysteresis):
+    ///   · Start : surplus > SurplusBufferW      (200 W)
+    ///   · Stop  : surplus &lt; SurplusStopBufferW  (80 W default)
+    ///   · Zone [80W–200W]: keep previous state (neither start nor stop)
     ///
-    /// Évite les ON/OFF toutes les 5 min quand le soleil fluctue autour du seuil
-    /// de démarrage (passages nuageux ponctuels).
+    /// Prevents ON/OFF every 5 min when sunlight fluctuates around
+    /// the start threshold (short cloud passages).
     ///
-    /// Doit être &lt; SurplusBufferW. Mettre à 0 pour désactiver (comportement original).
+    /// Must be &lt; SurplusBufferW. Set to 0 to disable (original behavior).
     /// </summary>
     public double SurplusStopBufferW { get; set; } = 80;
 
     /// <summary>
-    /// Nombre minimum de cycles consécutifs en charge avant d'autoriser un arrêt.
+    /// Minimum number of consecutive charging cycles before allowing a stop.
     ///
-    /// Exemple : 3 cycles × 300 s = 15 min minimum de charge avant arrêt possible.
-    /// Protège contre les faux-négatifs de surplus sur une rafale nuageuse de 5 min.
-    /// Mettre à 0 pour désactiver.
+    /// Example: 3 cycles × 300 s = 15 min minimum charging time before stop.
+    /// Protects against surplus false-negatives during a 5 min cloud burst.
+    /// Set to 0 to disable.
     /// </summary>
     public int MinChargeDurationCycles { get; set; } = 3;
 
     /// <summary>
-    /// Nombre de cycles consécutifs d'anomalie du surplus avant de déclencher
-    /// une notification persistante dans Home Assistant.
-    /// Défaut : 3
+    /// Number of consecutive surplus-anomaly cycles before triggering
+    /// a persistent notification in Home Assistant.
+    /// Default: 3
     /// </summary>
     public int MaxConsecutiveAnomaliesBeforeAlert { get; set; } = 3;
 
     /// <summary>
-    /// Active l'envoi de notifications persistantes dans Home Assistant
-    /// lorsque plusieurs cycles consécutifs montrent un surplus anormal.
-    /// Mettre à false pour désactiver ces notifications (Observed surplus).
-    /// Défaut : true
+    /// Enables sending persistent notifications in Home Assistant
+    /// when several consecutive cycles show abnormal surplus.
+    /// Set to false to disable these notifications (Observed surplus).
+    /// Default: true
     /// </summary>
     public bool EnableSurplusAnomalyNotifications { get; set; } = true;
 }
@@ -105,121 +105,121 @@ public class SolarConfig_Solar
     public string? ProductionEntity { get; set; }
 
     /// <summary>
-    /// [OPTIONNEL] Entité HA représentant la consommation totale du foyer (W).
-    /// Ex: "sensor.power_consumption" ou "sensor.shellyem_channel_1_power"
-    /// Utilisée pour calculer la moyenne roulante de consommation servant à projeter
+    /// [OPTIONAL] HA entity representing total household consumption (W).
+    /// Ex: "sensor.power_consumption" or "sensor.shellyem_channel_1_power"
+    /// Used to compute the rolling consumption average used to project
     /// EstimatedConsumptionNextHoursWh dans TariffContext.
     /// </summary>
     public string? ConsumptionEntity { get; set; }
 
     /// <summary>
-    /// [OPTIONNEL] Entités HA de consommation par zone/appareil (W).
-    /// Permet de lire la conso de zones spécifiques (four, EV, chauffe-eau…)
-    /// quand une entité de consommation globale n'est pas disponible ou pour
-    /// affiner la projection de charge future.
+    /// [OPTIONAL] HA entities for zone/device consumption (W).
+    /// Allows reading consumption from specific zones (oven, EV, water heater...)
+    /// when a global consumption entity is not available or to
+    /// refine future load projection.
     ///
     /// Ex:
     ///   - "sensor.ev_charger_power"
     ///   - "sensor.oven_power"
     ///   - "sensor.water_heater_power"
     ///
-    /// Les valeurs sont sommées pour estimer la consommation totale du foyer
-    /// quand ConsumptionEntity est absent. Si ConsumptionEntity EST configuré,
-    /// les zones sont ignorées (redondance évitée).
+    /// Values are summed to estimate total household consumption
+    /// when ConsumptionEntity is absent. If ConsumptionEntity IS configured,
+    /// zones are ignored (redundancy avoided).
     /// </summary>
     public List<string> ZoneConsumptionEntities { get; set; } = new();
 
     /// <summary>
-    /// Nombre de cycles récents utilisés pour calculer la moyenne roulante de
-    /// consommation depuis MariaDB. Cette moyenne projette la charge future dans
-    /// ComputeAdaptiveGridChargeW pour affiner la décision de charge réseau.
+    /// Number of recent cycles used to compute rolling average consumption
+    /// from MariaDB. This average projects future load in
+    /// ComputeAdaptiveGridChargeW to refine the grid-charging decision.
     ///
-    /// Ex: 12 cycles × 60s = 10 min de rolling average
-    /// Défaut: 12 cycles. Mettre à 0 pour désactiver (utilise uniquement la lecture HA live).
+    /// Ex: 12 cycles × 60s = 10 min rolling average
+    /// Default: 12 cycles. Set to 0 to disable (uses only live HA readings).
     /// </summary>
     public int ConsumptionRollingWindowCycles { get; set; } = 12;
 
     /// <summary>
-    /// Horizon de projection de la consommation estimée (en heures).
+    /// Projection horizon for estimated consumption (in hours).
     /// EstimatedConsumptionNextHoursWh = avgConsumptionW × ConsumptionProjectionHours
-    /// Cette valeur est soustraite de l'énergie solaire attendue dans le calcul
-    /// de la charge réseau adaptative (ComputeAdaptiveGridChargeW).
-    /// Défaut: 4h (correspond à SolarForecastHorizonHours).
+    /// This value is subtracted from expected solar energy in
+    /// adaptive grid charging (ComputeAdaptiveGridChargeW).
+    /// Default: 4h (matches SolarForecastHorizonHours).
     /// </summary>
     public double ConsumptionProjectionHours { get; set; } = 4.0;
 
     /// <summary>
-    /// [OPTIONNEL — FORTEMENT RECOMMANDÉ]
-    /// Entité HA : production solaire estimée AUJOURD'HUI (Wh).
+    /// [OPTIONAL — STRONGLY RECOMMENDED]
+    /// HA entity: estimated solar production TODAY (Wh).
     /// Ex: "sensor.solcast_pv_forecast_forecast_today"
     /// </summary>
     public string? ForecastTodayEntity { get; set; }
 
     /// <summary>
-    /// [OPTIONNEL — FORTEMENT RECOMMANDÉ]
-    /// Entité HA : production solaire estimée DEMAIN (Wh).
+    /// [OPTIONAL — STRONGLY RECOMMENDED]
+    /// HA entity: estimated solar production TOMORROW (Wh).
     /// Ex: "sensor.solcast_pv_forecast_forecast_tomorrow"
     /// </summary>
     public string? ForecastTomorrowEntity { get; set; }
 
-    // ── Prévisions Solcast intra-journalières ──────────────────────────────────
-    // Ces trois entités fournissent la courbe horaire réelle de production.
-    // Elles remplacent le profil sinusoïdal simplifié dans ComputeAdaptiveGridChargeW
-    // et permettent de savoir QUAND le solaire va monter, pas seulement COMBIEN.
+    // ── Intraday Solcast forecasts ───────────────────────────────────────────
+    // These three entities provide the real hourly production curve.
+    // They replace the simplified sinusoidal profile in ComputeAdaptiveGridChargeW
+    // and show WHEN solar will ramp up, not just HOW MUCH.
 
     /// <summary>
-    /// [OPTIONNEL] Entité HA : production solaire estimée CETTE HEURE (Wh).
+    /// [OPTIONAL] HA entity: estimated solar production THIS HOUR (Wh).
     /// Ex: "sensor.solcast_pv_forecast_forecast_this_hour"
-    /// Permet de savoir si le solaire monte EN CE MOMENT (ex: 09h, nuage partiel).
+    /// Helps detect whether solar is ramping up RIGHT NOW (e.g., 09:00, partial cloud).
     /// </summary>
     public string? ForecastThisHourEntity { get; set; }
 
     /// <summary>
-    /// [OPTIONNEL] Entité HA : production solaire estimée L'HEURE SUIVANTE (Wh).
+    /// [OPTIONAL] HA entity: estimated solar production NEXT HOUR (Wh).
     /// Ex: "sensor.solcast_pv_forecast_forecast_next_hour"
-    /// Si cette valeur est élevée → inutile de charger depuis le réseau maintenant,
-    /// le solaire prend le relais dans &lt; 1h.
+    /// If this value is high → no need to charge from grid now,
+    /// solar will take over in &lt; 1h.
     /// </summary>
     public string? ForecastNextHourEntity { get; set; }
 
     /// <summary>
-    /// [OPTIONNEL] Entité HA : production solaire restante AUJOURD'HUI (Wh).
+    /// [OPTIONAL] HA entity: estimated REMAINING solar production TODAY (Wh).
     /// Ex: "sensor.solcast_pv_forecast_forecast_remaining_today"
-    /// Utilisé dans le calcul du bilan énergétique journalier (Feature 4) :
-    /// si le solaire restant couvre le déficit batterie → pas besoin de charger du réseau.
+    /// Used in daily energy balance computation (Feature 4):
+    /// if remaining solar covers battery deficit → no need for grid charging.
     /// </summary>
     public string? ForecastRemainingTodayEntity { get; set; }
 
     /// <summary>
-    /// (OPTIONNEL) Seuil de plausibilité supérieur pour le surplus (W).
-    /// Ex: peak_installation_power × 1.1. Si le surplus observé dépasse
-    /// cette valeur, le cycle est considéré comme anomal et ignoré.
-    /// Null = désactivé.
+    /// (OPTIONAL) Upper plausibility threshold for surplus (W).
+    /// Ex: peak_installation_power × 1.1. If observed surplus exceeds
+    /// this value, the cycle is considered anomalous and ignored.
+    /// Null = disabled.
     /// </summary>
     public double? MaxPlausibleSurplusW { get; set; }
 
     /// <summary>
-    /// [ML-7 OPTIONNEL] Entité HA exposant la puissance d'import réseau instantanée (W).
-    /// Ex: "sensor.p1_grid_import_power" ou "sensor.shellyem_channel_1_power_import"
+    /// [ML-7 OPTIONAL] HA entity exposing instantaneous grid import power (W).
+    /// Ex: "sensor.p1_grid_import_power" or "sensor.shellyem_channel_1_power_import"
     ///
-    /// POURQUOI : permet au FeedbackEvaluator de détecter si du courant a été importé
-    /// depuis le réseau dans les N heures suivant une session (DidImportFromGrid).
-    /// Ce label binaire alimente le modèle de classification ShouldChargeFromGrid.
+    /// WHY: allows FeedbackEvaluator to detect whether power was imported
+    /// from the grid in the N hours after a session (DidImportFromGrid).
+    /// This binary label feeds the ShouldChargeFromGrid classification model.
     ///
-    /// CONVENTION : la valeur doit être positive quand on importe, nulle ou négative quand
-    /// on exporte. Utiliser GridImportEntityMultiplier = -1 si le signal est inversé.
+    /// CONVENTION: value should be positive when importing, zero or negative when
+    /// exporting. Use GridImportEntityMultiplier = -1 if the signal is inverted.
     /// </summary>
     public string? GridImportEntity { get; set; }
 
     /// <summary>
-    /// Multiplicateur appliqué à la valeur lue depuis GridImportEntity (défaut 1.0).
-    /// Mettre -1.0 si la valeur est négative quand on importe.
+    /// Multiplier applied to value read from GridImportEntity (default 1.0).
+    /// Set -1.0 if value is negative when importing.
     /// </summary>
     public double GridImportEntityMultiplier { get; set; } = 1.0;
 
     /// <summary>
-    /// Seuil en W au-dessus duquel l'import réseau est considéré significatif (défaut 50W).
-    /// Filtre le bruit du capteur (offset P1, micro-imports dus au smoothing).
+    /// Threshold in W above which grid import is considered significant (default 50W).
+    /// Filters sensor noise (P1 offset, micro-imports due to smoothing).
     /// </summary>
     public double GridImportSignificantThresholdW { get; set; } = 50.0;
 }
@@ -236,65 +236,65 @@ public class BatteryConfig
     public double HardMaxPercent { get; set; } = 100;
 
     /// <summary>
-    /// Puissance de maintien envoyée à la batterie quand elle a atteint sa cible (SoftMax ou HardMax).
-    /// Au lieu d'envoyer 0 W — ce qui peut dérouter certains BMS — on envoie cette valeur symbolique
-    /// pour indiquer "charge autorisée, mais quasi rien à absorber".
+    /// Keep-alive power sent to battery when target is reached (SoftMax or HardMax).
+    /// Instead of sending 0 W — which can confuse some BMS — this symbolic value is sent
+    /// to indicate "charging allowed, but almost nothing to absorb".
     ///
-    /// Avantages :
-    ///   • Évite le cycling on/off du BMS sur certains onduleurs
-    ///   • Permet à l'interface HA de voir une puissance > 0 = "en charge"
-    ///   • Absorbe les micro-surplus résiduels (arrondi, bruit du compteur)
+    /// Benefits:
+    ///   • Avoids BMS on/off cycling on some inverters
+    ///   • Lets HA UI show power > 0 = "charging"
+    ///   • Absorbs residual micro-surplus (rounding, meter noise)
     ///
-    /// Défaut : 100 W (override possible par batterie)
-    /// Mettre à 0 pour comportement standard (coupe la charge à la cible).
+    /// Default: 100 W (overridable per battery)
+    /// Set to 0 for standard behavior (stop charging at target).
     /// </summary>
     /// <summary>
-    /// Puissance minimale en dessous de laquelle la batterie n'accepte pas la charge (W).
+    /// Minimum power below which the battery does not accept charging (W).
     ///
-    /// Contrainte hardware : certaines batteries (ex: EcoFlow Delta) refusent ou ignorent
-    /// toute consigne inférieure à ce seuil. Envoyer 50W à une batterie dont le minimum
-    /// est 100W ne produit aucune charge réelle.
+    /// Hardware constraint: some batteries (e.g., EcoFlow Delta) reject or ignore
+    /// any setpoint below this threshold. Sending 50W to a battery with a 100W minimum
+    /// produces no real charging.
     ///
-    /// Impact sur la distribution (surplus solaire) :
-    ///   · PASS 1/2 : si surplusW &lt; HardwareMinChargeW → batterie skippée
-    ///   · IdleCharge : même garde (remplace l'ancienne condition surplusW >= IdleChargeW)
-    ///   · Emergency grid charge : ignore ce seuil — charge toujours
-    ///   · Grid charge HC (PASS 3) : GridChargeAllowedW déjà calculé ≥ ce seuil
+    /// Impact on distribution (solar surplus):
+    ///   · PASS 1/2: if surplusW &lt; HardwareMinChargeW → battery skipped
+    ///   · IdleCharge: same guard (replaces old condition surplusW >= IdleChargeW)
+    ///   · Emergency grid charge: ignores this threshold — always charges
+    ///   · Off-peak grid charge (PASS 3): GridChargeAllowedW already computed ≥ this threshold
     ///
-    /// Défaut 0 → désactivé. Pour EcoFlow Delta 3 : mettre à 100.
+    /// Default 0 → disabled. For EcoFlow Delta 3: set to 100.
     /// </summary>
     public double HardwareMinChargeW { get; set; } = 0;
 
     public double IdleChargeW { get; set; } = 100;
 
     /// <summary>
-    /// Zone morte SOC (%) autour de la cible SoftMax pour la charge réseau HC (Fix Bug #1).
+    /// SOC dead-band (%) around SoftMax target for off-peak grid charge (Fix Bug #1).
     ///
-    /// Exemple : SoftMaxPercent=90, SocHysteresisPercent=2
-    ///   → recharge réseau autorisée seulement si SOC &lt; 88%
-    ///   → entre 88% et 90% : 0W réseau (auto-décharge EcoFlow acceptée dans cette zone)
-    ///   → SOC descend à 87.9% → recharge normale ≥ 100W
+    /// Example: SoftMaxPercent=90, SocHysteresisPercent=2
+    ///   → grid charging allowed only if SOC &lt; 88%
+    ///   → between 88% and 90%: 0W grid (EcoFlow self-discharge accepted in this zone)
+    ///   → SOC drops to 87.9% → normal charging resumes ≥ 100W
     ///
-    /// Valeur recommandée : 2.0. Mettre à 0 pour désactiver.
+    /// Recommended value: 2.0. Set to 0 to disable.
     /// </summary>
     public double SocHysteresisPercent { get; set; } = 0.0;
 
     /// <summary>
-    /// Hystérésis sur le seuil d'activation/arrêt de IdleChargeW (Anti-oscillation IdleCharge).
+    /// Hysteresis on IdleChargeW start/stop threshold (IdleCharge anti-oscillation).
     ///
-    /// Problème : avec IdleChargeW=100W, si le surplus oscille autour de 100W, on obtient
-    /// un ON/OFF à chaque cycle : surplus=110W → IdleCharge ON (self-powered OFF),
+    /// Problem: with IdleChargeW=100W, if surplus oscillates around 100W, it causes
+    /// ON/OFF each cycle: surplus=110W → IdleCharge ON (self-powered OFF),
     /// surplus=90W → IdleCharge OFF (self-powered ON), etc.
-    /// Chaque transition déclenche des actions HA (ZeroWActions / NonZeroWActions)
-    /// qui peuvent stresser le BMS EcoFlow.
+    /// Each transition triggers HA actions (ZeroWActions / NonZeroWActions)
+    /// that can stress the EcoFlow BMS.
     ///
-    /// Solution double-seuil :
+    /// Dual-threshold solution:
     ///   · Activation  : surplus >= IdleChargeW                         (ex: 100W)
-    ///   · Arrêt       : surplus &lt; IdleChargeW - IdleStopBufferW        (ex: 100 - 30 = 70W)
-    ///   · Zone morte  : [70W – 100W] → état précédent maintenu
+    ///   · Stop        : surplus &lt; IdleChargeW - IdleStopBufferW        (ex: 100 - 30 = 70W)
+    ///   · Dead-band   : [70W – 100W] → previous state maintained
     ///
-    /// Valeur recommandée : 30W (≈ 30% de IdleChargeW=100W).
-    /// Mettre à 0 pour désactiver (seuil unique à IdleChargeW, comportement original Bug #5).
+    /// Recommended value: 30W (≈ 30% of IdleChargeW=100W).
+    /// Set to 0 to disable (single threshold at IdleChargeW, original Bug #5 behavior).
     /// </summary>
     public double IdleStopBufferW { get; set; } = 30.0;
 
@@ -303,36 +303,36 @@ public class BatteryConfig
     public double? EmergencyGridChargeTargetPercent { get; set; }
 
     /// <summary>
-    /// [ML-8 OPTIONNEL] Seuil de cycles au-delà duquel une alerte est émise dans HA.
+    /// [ML-8 OPTIONAL] Cycle threshold above which an HA alert is emitted.
     ///
-    /// Lorsque le compteur de cycles (Entities.CycleCountEntity) dépasse cette valeur,
-    /// le Worker :
-    ///   1. Émet un LogWarning en continu à chaque cycle (visible dans Grafana/Loki)
-    ///   2. Envoie une notification persistante dans HA (persistent_notification.create)
-    ///   3. Réduit la priorité effective de la batterie via CycleAgingFactor
+    /// When cycle counter (Entities.CycleCountEntity) exceeds this value,
+    /// the Worker:
+    ///   1. Emits a continuous LogWarning each cycle (visible in Grafana/Loki)
+    ///   2. Sends a persistent notification in HA (persistent_notification.create)
+    ///   3. Reduces battery effective priority via CycleAgingFactor
     ///
-    /// Valeur recommandée selon chimie :
-    ///   LiFePO4 (EcoFlow, Pylontech) : 3000–6000 cycles selon spec constructeur
-    ///   Li-ion classique             : 500–1000 cycles
-    ///   Null = désactivé (aucune alerte)
+    /// Recommended value by chemistry:
+    ///   LiFePO4 (EcoFlow, Pylontech): 3000-6000 cycles depending on manufacturer specs
+    ///   Classic Li-ion             : 500-1000 cycles
+    ///   Null = disabled (no alert)
     /// </summary>
     public int? MaxRecommendedCycles { get; set; }
 
     /// <summary>
-    /// [ML-8] Facteur de réduction de priorité par cycle de vie (défaut 0.0001).
+    /// [ML-8] Priority reduction factor per lifecycle cycle (default 0.0001).
     ///
-    /// La priorité effective est modulée comme suit :
+    /// Effective priority is modulated as follows:
     ///   effectivePriority = basePriority × (1 − CycleAgingFactor × cycleCount)
-    ///   → clampé à [basePriority × 0.5, basePriority] pour éviter un écart trop grand
+    ///   → clamped to [basePriority × 0.5, basePriority] to avoid excessive gap
     ///
-    /// Exemple avec CycleAgingFactor = 0.0001 et cycleCount = 2000 :
-    ///   réduction = 0.0001 × 2000 = 20% → priorité réduite de 20%
-    ///   Une batterie neuve (0 cycles) et une batterie à 2000 cycles de priorité 2 :
-    ///   batterie neuve   : effectivePriority = 2
-    ///   batterie âgée    : effectivePriority = 2 × (1 − 0.2) = 1.6
-    ///   → le surplus est orienté vers la batterie neuve en priorité.
+    /// Example with CycleAgingFactor = 0.0001 and cycleCount = 2000:
+    ///   reduction = 0.0001 × 2000 = 20% → priority reduced by 20%
+    ///   A new battery (0 cycles) and a battery at 2000 cycles with priority 2:
+    ///   new battery      : effectivePriority = 2
+    ///   older battery    : effectivePriority = 2 × (1 − 0.2) = 1.6
+    ///   → surplus is prioritized toward the newer battery.
     ///
-    /// Mettre à 0 pour désactiver la pondération par cycle (égalité de traitement).
+    /// Set to 0 to disable cycle-based weighting (equal treatment).
     /// </summary>
     public double CycleAgingFactor { get; set; } = 0.0001;
 }
@@ -353,49 +353,49 @@ public class BatteryEntitiesConfig
     public string ChargePower { get; set; } = string.Empty;
 
     /// <summary>
-    /// [OPTIONNEL — FORTEMENT RECOMMANDÉ]
-    /// Entité HA exposant la puissance de charge RÉELLE actuellement mesurée (W).
+    /// [OPTIONAL — STRONGLY RECOMMENDED]
+    /// HA entity exposing currently measured REAL charging power (W).
     ///
-    /// POURQUOI C'EST CRITIQUE :
-    ///   Le surplus HA (P1 ou sensor dédié) est déjà NET de la charge batterie actuelle.
-    ///   Si la batterie charge déjà à 200 W et que P1 = -912 W :
+    /// WHY THIS IS CRITICAL:
+    ///   HA surplus (P1 or dedicated sensor) is already NET of current battery charging.
+    ///   If battery is already charging at 200 W and P1 = -912 W:
     ///     → surplus brut apparent = 912 W
-    ///     → mais 200 W de cette batterie sont DÉJÀ comptés dedans
-    ///   Sans cette entité, le Worker va ordonner 912 W → gain réel = seulement 712 W.
-    ///   Avec cette entité, le Worker fait : surplus_corrigé = 912 + 200 = 1112 W
-    ///   → il ordonne 1112 W aux batteries → gain réel = 912 W (correct).
+    ///     → but 200 W from this battery are ALREADY included
+    ///   Without this entity, Worker will command 912 W → real gain = only 712 W.
+    ///   With this entity, Worker computes: corrected_surplus = 912 + 200 = 1112 W
+    ///   → commands 1112 W to batteries → real gain = 912 W (correct).
     ///
-    /// EXEMPLES selon matériel :
+    /// EXAMPLES by hardware:
     ///   EcoFlow (MQTT/HA)   : sensor.delta3_salon_ac_charge_power_w
     ///   Victron             : sensor.victron_battery_charge_power
     ///   Solis/SolarEdge     : sensor.inverter_battery_charge_power
-    ///   Générique           : Chercher "charge power" / "puissance charge" dans HA → États
+    ///   Generic             : Search "charge power" in HA → States
     ///
-    /// Si absent → le surplus utilisé est le surplus brut HA (peut sous-estimer le disponible).
+    /// If missing → used surplus is raw HA surplus (may underestimate available power).
     /// </summary>
     public string? CurrentChargePowerEntity { get; set; }
 
     /// <summary>
-    /// Multiplicateur appliqué à la valeur lue depuis CurrentChargePowerEntity.
-    /// Défaut 1.0 (W). Mettre -1.0 si la valeur est négative quand la batterie charge.
+    /// Multiplier applied to value read from CurrentChargePowerEntity.
+    /// Default 1.0 (W). Set -1.0 if value is negative when battery is charging.
     /// </summary>
     public double CurrentChargePowerMultiplier { get; set; } = 1.0;
 
     /// <summary>
-    /// [ML-8 OPTIONNEL] Entité HA exposant le nombre de cycles de charge complets de la batterie.
+    /// [ML-8 OPTIONAL] HA entity exposing number of full battery charge cycles.
     ///
-    /// POURQUOI :
-    ///   Une batterie ayant subi plus de cycles est plus dégradée et a une capacité effective
-    ///   réduite. En lisant ce compteur, l'algorithme peut moduler la priorité de charge
-    ///   pour préserver la durée de vie des batteries les plus sollicitées.
+    /// WHY:
+    ///   A battery with more cycles is more degraded and has reduced effective capacity.
+    ///   By reading this counter, the algorithm can modulate charge priority
+    ///   to preserve lifetime of the most used batteries.
     ///
-    /// EXEMPLES selon matériel :
+    /// EXAMPLES by hardware:
     ///   EcoFlow Delta 3     : sensor.delta3_salon_battery_cycles
     ///   Victron BMS         : sensor.victron_battery_cycles
     ///   Pylontech           : sensor.pylontech_cycle_count
-    ///   Générique           : Chercher "cycle" ou "cycles" dans les entités batterie HA
+    ///   Generic             : Search "cycle" or "cycles" in HA battery entities
     ///
-    /// Si absent → CycleCount = 0, aucune pondération par cycle.
+    /// If missing → CycleCount = 0, no cycle-based weighting.
     /// </summary>
     public string? CycleCountEntity { get; set; }
 
@@ -429,58 +429,58 @@ public class MlConfig
     public double DriftDetectionR2Threshold { get; set; } = 0.15;
     public int DriftDetectionWindowSize { get; set; } = 100;
 
-    // ── Fenêtre d'entraînement et sampling calendaire ─────────────────────────
+    // ── Training window and calendar sampling ───────────────────────────────
 
     /// <summary>
-    /// Fenêtre maximale de données utilisées pour l'entraînement (jours).
-    /// 730 = 2 ans — couvre 2 cycles saisonniers complets pour les patterns météo/calendrier.
+    /// Maximum data window used for training (days).
+    /// 730 = 2 years — covers 2 full seasonal cycles for weather/calendar patterns.
     /// </summary>
     public int TrainingWindowDays { get; set; } = 730;
 
     /// <summary>
-    /// Nombre cible de sessions à charger pour l'entraînement.
-    /// Le sampling stratifié garantit une répartition uniforme sur la fenêtre,
-    /// indépendamment du volume réel en DB.
-    /// Recommandé : 15 000–25 000 pour un bon équilibre mémoire/qualité.
+    /// Target number of sessions to load for training.
+    /// Stratified sampling guarantees uniform distribution over the window,
+    /// independent of actual DB volume.
+    /// Recommended: 15,000-25,000 for a good memory/quality balance.
     /// </summary>
     public int TrainingTargetSamples { get; set; } = 20_000;
 
     /// <summary>
-    /// Demi-vie du decay temporel en jours (τ pour exp(-age/τ)).
-    /// 180 = les sessions vieilles de 6 mois ont un poids ~37% d'une session récente.
-    /// Le plancher <see cref="TrainingDecayFloor"/> évite que les vieilles données
-    /// soient complètement ignorées (utile pour les patterns saisonniers rares).
+    /// Temporal decay half-life in days (τ for exp(-age/τ)).
+    /// 180 = sessions older than 6 months have weight ~37% of a recent session.
+    /// Floor <see cref="TrainingDecayFloor"/> prevents old data from being
+    /// completely ignored (useful for rare seasonal patterns).
     /// </summary>
     public double TrainingDecayHalfLifeDays { get; set; } = 180.0;
 
     /// <summary>
-    /// Poids minimal garanti après decay (0.0–1.0).
-    /// 0.25 = même une session de 2 ans compte au moins à 25% d'une session récente.
-    /// Nécessaire pour que le ML voie les deux hivers dans la fenêtre de 2 ans.
+    /// Guaranteed minimum weight after decay (0.0-1.0).
+    /// 0.25 = even a 2-year session counts at least 25% of a recent session.
+    /// Required so ML sees both winters in the 2-year window.
     /// </summary>
     public double TrainingDecayFloor { get; set; } = 0.25;
 
-    // ── Purge et compression automatique ──────────────────────────────────────
+    // ── Automatic purge and compression ─────────────────────────────────────
 
     /// <summary>
-    /// Âge à partir duquel les sessions sont éligibles à la compression (jours).
-    /// Les sessions plus récentes sont toujours conservées intégralement.
-    /// Défaut : 90 jours.
+    /// Age after which sessions become eligible for compression (days).
+    /// More recent sessions are always kept in full.
+    /// Default: 90 days.
     /// </summary>
     public int PurgeCompressionAgeDays { get; set; } = 90;
 
     /// <summary>
-    /// Après compression : on garde 1 session par tranche de N minutes dans les
-    /// créneaux horaires non critiques (sessions avec poids qualité normal).
-    /// Défaut : 30 min → divise environ par 30 le volume des vieilles données.
-    /// Les sessions à fort poids (surplusWasted, import réseau) sont toujours conservées.
+    /// After compression: keep 1 session per N-minute slot in
+    /// non-critical time windows (sessions with normal quality weight).
+    /// Default: 30 min → roughly divides old data volume by 30.
+    /// High-weight sessions (surplusWasted, grid import) are always retained.
     /// </summary>
     public int PurgeCompressionSlotMinutes { get; set; } = 30;
 
     /// <summary>
-    /// Âge au-delà duquel les sessions sont supprimées définitivement (jours).
-    /// Doit être ≥ TrainingWindowDays pour ne pas perdre de données utiles au ML.
-    /// Défaut : 750 jours (~2 ans + marge).
+    /// Age beyond which sessions are permanently deleted (days).
+    /// Must be ≥ TrainingWindowDays to avoid losing ML-useful data.
+    /// Default: 750 days (~2 years + margin).
     /// </summary>
     public int PurgeHardDeleteAgeDays { get; set; } = 750;
 }
@@ -491,15 +491,15 @@ public class LoggingConfig
     public string? FilePath { get; set; } = "/data/logs/solar-worker.log";
 
     /// <summary>
-    /// [OPTIONNEL] URL de l'instance Grafana Loki vers laquelle pousser les logs en JSON.
+    /// [OPTIONAL] URL of Grafana Loki instance where JSON logs are pushed.
     /// Ex: "http://loki:3100"
-    /// Laisser null/vide pour désactiver l'envoi vers Loki.
+    /// Leave null/empty to disable sending to Loki.
     /// </summary>
     public string? LokiUrl { get; set; }
 
     /// <summary>
-    /// Labels Loki ajoutés à chaque log stream (key=value).
-    /// Permettent de filtrer les logs dans Grafana via LogQL :
+    /// Loki labels added to each log stream (key=value).
+    /// Allow filtering logs in Grafana via LogQL:
     ///   {app="solar-worker", env="prod"}
     /// </summary>
     public Dictionary<string, string> LokiLabels { get; set; } = new()

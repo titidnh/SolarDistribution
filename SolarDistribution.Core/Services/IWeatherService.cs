@@ -1,6 +1,6 @@
 namespace SolarDistribution.Core.Services;
 
-/// <summary>Données météo enrichies pour une localisation à un instant donné.</summary>
+/// <summary>Enriched weather data for a location at a given point in time.</summary>
 public record WeatherData(
     double Latitude,
     double Longitude,
@@ -12,14 +12,14 @@ public record WeatherData(
     double DiffuseRadiationWm2,
     double DaylightHours,
     double HoursUntilSunset,
-    double[] RadiationForecast12h,   // W/m² par heure sur les 12 prochaines heures
-    double[] CloudForecast12h        // % par heure sur les 12 prochaines heures
+    double[] RadiationForecast12h,   // W/m² per hour over the next 12 hours
+    double[] CloudForecast12h        // % per hour over the next 12 hours
 );
 
 public interface IWeatherService
 {
     /// <summary>
-    /// Récupère les conditions météo actuelles + prévisions 12h depuis Open-Meteo.
+    /// Fetches current weather conditions + 12h forecast from Open-Meteo.
     /// </summary>
     Task<WeatherData?> GetCurrentWeatherAsync(double latitude, double longitude,
         CancellationToken ct = default);

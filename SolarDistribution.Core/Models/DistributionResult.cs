@@ -1,22 +1,22 @@
 namespace SolarDistribution.Core.Models;
 
-/// <summary>Résultat d'allocation pour une batterie individuelle.</summary>
+/// <summary>Allocation result for an individual battery.</summary>
 public record BatteryChargeResult(
     int    BatteryId,
     double AllocatedW,
     double PreviousPercent,
     double NewPercent,
     bool   WasUrgent,
-    bool   IsGridCharge          = false,   // true = puissance venant du réseau (Pass 3)
-    bool   IsEmergencyGridCharge = false,   // true = recharge réseau forcée par urgence SOC
+    bool   IsGridCharge          = false,   // true = power coming from the grid (Pass 3)
+    bool   IsEmergencyGridCharge = false,   // true = grid charge forced by SOC emergency
     string Reason = ""
 );
 
-/// <summary>Résultat complet d'une distribution pour un cycle donné.</summary>
+/// <summary>Full distribution result for a given cycle.</summary>
 public record DistributionResult(
     double SurplusInputW,
-    double TotalAllocatedW,    // total alloué depuis surplus solaire
-    double UnusedSurplusW,     // surplus non absorbé
-    double GridChargedW,       // total chargé depuis le réseau (Pass 3)
+    double TotalAllocatedW,    // total allocated from solar surplus
+    double UnusedSurplusW,     // surplus not absorbed
+    double GridChargedW,       // total charged from the grid (Pass 3)
     List<BatteryChargeResult> Allocations
 );

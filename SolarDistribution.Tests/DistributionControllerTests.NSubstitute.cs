@@ -12,11 +12,11 @@ using SolarDistribution.Core.Services;
 namespace SolarDistribution.Tests.Unit;
 
 /// <summary>
-/// Tests unitaires du <see cref="DistributionController"/> isolé de son service
-/// grâce à NSubstitute pour mocker <see cref="IBatteryDistributionService"/>.
+/// Unit tests for <see cref="DistributionController"/> isolated from its service
+/// using NSubstitute to mock <see cref="IBatteryDistributionService"/>.
 ///
-/// Note : Calculate() est async depuis le Fix #2 (suppression GetAwaiter().GetResult()).
-/// Les tests utilisent donc await et vérifient actionResult.Result.
+/// Note: Calculate() is async since Fix #2 (removal of GetAwaiter().GetResult()).
+/// Tests therefore use await and check actionResult.Result.
 /// </summary>
 [TestFixture]
 public class DistributionControllerTests
@@ -69,7 +69,7 @@ public class DistributionControllerTests
     // ── Tests nominaux ───────────────────────────────────────────────────────
 
     [Test]
-    [Description("Calculate retourne 200 OK avec le résultat mappé depuis le service")]
+    [Description("Calculate returns 200 OK with result mapped from service")]
     public async Task Calculate_ValidRequest_Returns200WithMappedResult()
     {
         var request = new DistributionRequestDto
@@ -82,10 +82,10 @@ public class DistributionControllerTests
             .Distribute(Arg.Is(500d), Arg.Any<IEnumerable<Battery>>())
             .Returns(FakeResult(500, 500, 0, (1, 307.2), (2, 192.8)));
 
-        // Act — Calculate est async depuis Fix #2
+        // Act — Calculate is async since Fix #2
         var actionResult = await _sut.Calculate(request);
 
-        // Assert — ActionResult<T>.Result contient le IActionResult effectif
+        // Assert — ActionResult<T>.Result contains the effective IActionResult
         var ok       = actionResult.Result.Should().BeOfType<OkObjectResult>().Subject;
         var response = ok.Value.Should().BeOfType<DistributionResponseDto>().Subject;
 
@@ -97,7 +97,7 @@ public class DistributionControllerTests
     }
 
     [Test]
-    [Description("Calculate appelle le service avec les bons paramètres (vérification NSubstitute)")]
+    [Description("Calculate calls service with correct parameters (NSubstitute verification)")]
     public async Task Calculate_ValidRequest_CallsServiceWithCorrectSurplus()
     {
         var request = new DistributionRequestDto
@@ -119,7 +119,7 @@ public class DistributionControllerTests
     }
 
     [Test]
-    [Description("Calculate mappe correctement les DTOs vers les domaines Battery (Id, Capacity, Priority)")]
+    [Description("Calculate correctly maps DTOs to Battery domain objects (Id, Capacity, Priority)")]
     public async Task Calculate_ValidRequest_MapsDtosToCorrectDomainBatteries()
     {
         var request = new DistributionRequestDto
@@ -153,7 +153,7 @@ public class DistributionControllerTests
     }
 
     [Test]
-    [Description("Calculate retourne les données du service avec UnusedSurplus > 0 quand batteries pleines")]
+    [Description("Calculate returns service data with UnusedSurplus > 0 when batteries are full")]
     public async Task Calculate_AllBatteriesFull_ReturnsUnusedSurplus()
     {
         var request = new DistributionRequestDto
@@ -177,7 +177,7 @@ public class DistributionControllerTests
     // ── Tests validation 400 ─────────────────────────────────────────────────
 
     [Test]
-    [Description("IDs dupliqués → 400 Bad Request, service non appelé")]
+    [Description("Duplicate IDs → 400 Bad Request, service not called")]
     public async Task Calculate_DuplicateIds_Returns400_ServiceNotCalled()
     {
         var request = new DistributionRequestDto
@@ -193,7 +193,7 @@ public class DistributionControllerTests
     }
 
     [Test]
-    [Description("SoftMaxPercent > HardMaxPercent → 400 Bad Request, service non appelé")]
+    [Description("SoftMaxPercent > HardMaxPercent → 400 Bad Request, service not called")]
     public async Task Calculate_SoftMaxExceedsHardMax_Returns400_ServiceNotCalled()
     {
         var request = new DistributionRequestDto
@@ -209,7 +209,7 @@ public class DistributionControllerTests
     }
 
     [Test]
-    [Description("MinPercent >= SoftMaxPercent → 400 Bad Request, service non appelé")]
+    [Description("MinPercent >= SoftMaxPercent → 400 Bad Request, service not called")]
     public async Task Calculate_MinPercentAboveSoftMax_Returns400_ServiceNotCalled()
     {
         var request = new DistributionRequestDto
@@ -227,7 +227,7 @@ public class DistributionControllerTests
     // ── Test GetExamples ─────────────────────────────────────────────────────
 
     [Test]
-    [Description("GetExamples retourne 200 OK avec 5 entrées")]
+    [Description("GetExamples returns 200 OK with 5 entries")]
     public void GetExamples_Returns200_WithFiveEntries()
     {
         var result = _sut.GetExamples();

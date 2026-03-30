@@ -8,8 +8,8 @@ public static class ConfigLoader
     private const string DefaultConfigPath = "/config/config.yaml";
 
     /// <summary>
-    /// Charge config.yaml depuis le chemin spécifié (par défaut /config/config.yaml).
-    /// Le chemin peut être surchargé via la variable d'environnement CONFIG_PATH.
+    /// Loads config.yaml from the specified path (default /config/config.yaml).
+    /// The path can be overridden via the CONFIG_PATH environment variable.
     /// </summary>
     public static SolarConfig Load(string? overridePath = null)
     {

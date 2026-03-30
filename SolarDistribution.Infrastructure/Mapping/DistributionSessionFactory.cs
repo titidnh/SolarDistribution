@@ -6,9 +6,9 @@ using SolarDistribution.Core.Services.ML;
 namespace SolarDistribution.Infrastructure.Mapping;
 
 /// <summary>
-/// Fix #6 : Implémentation concrète de IDistributionSessionFactory.
-/// Délègue au mapper statique — l'infrastructure est seule responsable
-/// de la sérialisation JSON et de la construction des entités EF.
+/// Fix #6: Concrete implementation of IDistributionSessionFactory.
+/// Delegates to static mapper — infrastructure is solely responsible
+/// for JSON serialization and EF entity construction.
 /// </summary>
 public class DistributionSessionFactory : IDistributionSessionFactory
 {

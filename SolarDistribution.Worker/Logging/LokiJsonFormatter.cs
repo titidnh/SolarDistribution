@@ -5,23 +5,23 @@ using System.Text.Json;
 namespace SolarDistribution.Worker.Logging;
 
 /// <summary>
-/// Formatter Loki — sérialise chaque LogEvent en une ligne JSON valide.
+/// Loki formatter — serializes each LogEvent as a valid one-line JSON record.
 ///
-/// Pourquoi pas {Message:j} dans un outputTemplate ?
-///   → Serilog n'échappe pas les guillemets/caractères spéciaux dans {Message:j}
-///     quand le message est déjà une string rendue (pas un objet).
-///     Résultat : JSON cassé dès qu'un message contient ":", ",", "/"...
+/// Why not use {Message:j} in an outputTemplate?
+///   → Serilog does not escape quotes/special characters in {Message:j}
+///     when message is already a rendered string (not an object).
+///     Result: broken JSON as soon as a message contains ":", ",", "/"...
 ///
-/// Solution : on sérialise chaque champ avec System.Text.Json qui garantit
-/// un JSON valide quelles que soient les valeurs.
+/// Solution: serialize each field with System.Text.Json, which guarantees
+/// valid JSON regardless of values.
 ///
-/// Format produit (une ligne par log) :
+/// Produced format (one line per log):
 /// {
 ///   "timestamp": "2025-06-15T08:32:11.453+02:00",
 ///   "level":     "INF",
 ///   "message":   "Cycle #42 — surplus 712 W",
 ///   "source":    "SolarDistribution.Worker.Services.SolarWorker",
-///   "exception": "System.Exception: ...",   // vide si pas d'exception
+///   "exception": "System.Exception: ...",   // empty if no exception
 ///   "properties": { "Cycle": 42, "SurplusW": 712 }
 /// }
 ///
@@ -33,13 +33,13 @@ public sealed class LokiJsonFormatter : ITextFormatter
 {
     private static readonly JsonSerializerOptions _opts = new()
     {
-        // Garde les caractères non-ASCII lisibles dans Grafana (émojis, accents...)
+        // Keep non-ASCII characters readable in Grafana (emoji, accents...)
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
     public void Format(LogEvent logEvent, TextWriter output)
     {
-        // Propriétés supplémentaires (hors SourceContext et Exception — déjà en champs dédiés)
+        // Extra properties (excluding SourceContext and Exception — already mapped to dedicated fields)
         var props = new Dictionary<string, object?>();
         foreach (var (key, value) in logEvent.Properties)
         {
@@ -62,7 +62,7 @@ public sealed class LokiJsonFormatter : ITextFormatter
         output.WriteLine(JsonSerializer.Serialize(entry, _opts));
     }
 
-    /// <summary>Convertit un ScalarValue/SequenceValue/StructureValue en type primitif .NET.</summary>
+    /// <summary>Converts ScalarValue/SequenceValue/StructureValue to primitive .NET types.</summary>
     private static object? SimplifyValue(LogEventPropertyValue value) => value switch
     {
         ScalarValue sv => sv.Value,

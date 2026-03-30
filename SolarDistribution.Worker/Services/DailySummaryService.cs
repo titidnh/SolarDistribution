@@ -5,28 +5,28 @@ using SolarDistribution.Core.Repositories;
 namespace SolarDistribution.Worker.Services;
 
 /// <summary>
-/// Service responsable du calcul et de la persistance du bilan énergétique journalier.
+/// Service responsible for computing and persisting the daily energy balance.
 ///
-/// DÉCLENCHEMENT :
-///   Appelé par MlRetrainScheduler toutes les heures (feedback check interval).
-///   Le service détecte lui-même si une journée vient de se terminer (transition
-///   de date UTC) pour éviter des agrégations redondantes au cours de la journée.
-///   Il peut aussi être appelé en mode "force" pour calculer le bilan de n'importe
-///   quelle journée (backfill ou re-calcul manuel).
+/// TRIGGERING:
+///   Called by MlRetrainScheduler every hour (feedback check interval).
+///   The service detects by itself when a day has just ended (UTC date transition)
+///   to avoid redundant aggregations during the day.
+///   It can also be called in "force" mode to compute the balance for any day
+///   (backfill or manual recomputation).
 ///
-/// CONCEPTION :
-///   Utilise IServiceScopeFactory pour résoudre IDistributionRepository en scope
-///   scoped (DbContext EF), tout en étant lui-même singleton dans le conteneur DI.
-///   Le calcul effectif (agrégation SQL + upsert) est entièrement dans le repository
-///   pour rester testable sans ce service.
+/// DESIGN:
+///   Uses IServiceScopeFactory to resolve IDistributionRepository in a scoped
+///   lifetime (EF DbContext), while this service remains singleton in DI.
+///   The effective computation (SQL aggregation + upsert) is entirely in the repository
+///   to stay testable without this service.
 /// </summary>
 public class DailySummaryService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<DailySummaryService> _logger;
 
-    // Dernière journée UTC pour laquelle le bilan a été calculé.
-    // Null au démarrage → le premier check calcule hier si nécessaire.
+    // Last UTC day for which the balance was computed.
+    // Null at startup → first check computes yesterday if needed.
     private DateTime? _lastComputedDate;
 
     public DailySummaryService(
@@ -38,15 +38,15 @@ public class DailySummaryService
     }
 
     /// <summary>
-    /// Vérifie si la journée UTC précédente a été calculée.
-    /// Si non, déclenche l'agrégation et persiste le résultat.
-    /// Idempotent : plusieurs appels pour la même date n'ont aucun effet.
+    /// Checks whether the previous UTC day has been computed.
+    /// If not, triggers aggregation and persists the result.
+    /// Idempotent: multiple calls for the same date have no effect.
     /// </summary>
     public async Task CheckAndComputeYesterdayAsync(CancellationToken ct = default)
     {
         var yesterday = DateTime.UtcNow.Date.AddDays(-1);
 
-        // Déjà calculé pour cette date → rien à faire
+        // Already computed for this date → nothing to do
         if (_lastComputedDate.HasValue && _lastComputedDate.Value.Date == yesterday.Date)
             return;
 
@@ -55,8 +55,8 @@ public class DailySummaryService
     }
 
     /// <summary>
-    /// Force le calcul du bilan pour une date spécifique (backfill ou re-calcul).
-    /// Met à jour _lastComputedDate seulement si la date est hier.
+    /// Forces balance computation for a specific date (backfill or recomputation).
+    /// Updates _lastComputedDate only if the date is yesterday.
     /// </summary>
     public async Task ComputeForDateAsync(DateTime date, CancellationToken ct = default)
     {
@@ -71,7 +71,7 @@ public class DailySummaryService
 
         await repo.UpsertDailySummaryAsync(dateUtc, ct);
 
-        // Relire pour logger les valeurs persistées
+        // Read again to log persisted values
         var summaries = await repo.GetDailySummariesAsync(dateUtc, dateUtc, ct);
         var s = summaries.FirstOrDefault();
 

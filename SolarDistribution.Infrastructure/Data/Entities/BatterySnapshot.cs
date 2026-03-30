@@ -15,9 +15,9 @@ public class BatterySnapshot
     public bool   WasUrgent            { get; set; }
     public double AllocatedW           { get; set; }
     public bool   IsGridCharge         { get; set; }
-    /// <summary>True si cette charge réseau était déclenchée par urgence SOC.</summary>
+    /// <summary>True if this grid charge was triggered by SOC emergency.</summary>
     public bool   IsEmergencyGridCharge { get; set; }
-    /// <summary>Puissance réseau adaptative autorisée pour cette batterie (W).</summary>
+    /// <summary>Adaptive grid power allowed for this battery (W).</summary>
     public double GridChargeAllowedW   { get; set; }
     public string Reason               { get; set; } = string.Empty;
     public DistributionSession Session { get; set; } = null!;

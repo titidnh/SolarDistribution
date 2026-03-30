@@ -19,39 +19,39 @@ public class SessionFeedback
     public FeedbackStatus Status { get; set; } = FeedbackStatus.Pending;
     public string? InvalidReason { get; set; }
 
-    // ── ML-7 : labels réels mesurés N heures après la session ────────────────
+    // ── ML-7 : real labels measured N hours after the session ────────────────────
 
     /// <summary>
-    /// Taux d'autosuffisance réel mesuré N heures après la session (0–1).
+    /// Actual self-sufficiency rate measured N hours after the session (0–1).
     /// solar_consumed / (solar_consumed + grid_consumed).
-    /// Null si les entités HA de consommation/import ne sont pas configurées.
+    /// Null if the HA consumption/import entities are not configured.
     /// </summary>
     public double? ActualSelfSufficiencyPct { get; set; }
 
     /// <summary>
-    /// True si du courant a été importé depuis le réseau dans les N heures
-    /// suivant la session (lu depuis l'entité grid_import_entity dans HA).
-    /// Null si l'entité n'est pas configurée.
+    /// True if current was imported from the grid in the N hours
+    /// following the session (read from the grid_import_entity in HA).
+    /// Null if the entity is not configured.
     /// </summary>
     public bool? DidImportFromGrid { get; set; }
 
     /// <summary>
-    /// Label de classification : aurait-il fallu charger depuis le réseau
-    /// pendant cette session ? Dérivé de DidImportFromGrid et de l'autosuffisance.
-    /// Null avant calcul ou si données insuffisantes.
+    /// Classification label: should the session have triggered a grid charge?
+    /// Derived from DidImportFromGrid and self-sufficiency.
+    /// Null before computation or if insufficient data.
     /// </summary>
     public bool? ShouldChargeFromGrid { get; set; }
 
     /// <summary>
-    /// True si du surplus solaire a été gaspillé (batteries pleines, surplus non absorbé).
-    /// Utilisé comme facteur de pondération dans l'entraînement ML :
-    /// ces sessions doivent peser plus lourd pour apprendre à ne pas laisser passer le surplus.
+    /// True if solar surplus was wasted (batteries full, surplus not absorbed).
+    /// Used as a weighting factor in ML training:
+    /// these sessions must carry more weight to learn not to miss surplus absorption.
     /// </summary>
     public bool SurplusWasted { get; set; } = false;
 
     /// <summary>
-    /// Poids d'entraînement ML calculé pour cette session (1.0 = poids normal).
-    /// Augmenté pour les sessions avec surplus gaspillé ou import réseau non voulu.
+    /// ML training weight computed for this session (1.0 = normal weight).
+    /// Increased for sessions with wasted surplus or unwanted grid import.
     /// </summary>
     public double TrainingWeight { get; set; } = 1.0;
 

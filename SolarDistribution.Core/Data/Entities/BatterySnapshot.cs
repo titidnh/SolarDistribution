@@ -15,14 +15,14 @@ public class BatterySnapshot
     public bool WasUrgent { get; set; }
     public double AllocatedW { get; set; }
     public bool IsGridCharge { get; set; }
-    /// <summary>True si cette charge réseau était déclenchée par urgence SOC.</summary>
+    /// <summary>True if this grid charge was triggered by a SOC emergency.</summary>
     public bool IsEmergencyGridCharge { get; set; }
-    /// <summary>Puissance réseau adaptative autorisée pour cette batterie (W).</summary>
+    /// <summary>Adaptive grid charge power allowed for this battery (W).</summary>
     public double GridChargeAllowedW { get; set; }
     public string Reason { get; set; } = string.Empty;
     /// <summary>
-    /// ML-8 : Nombre de cycles de charge de cette batterie au moment de la session.
-    /// 0 si CycleCountEntity non configurée dans SolarConfig.
+    /// ML-8: Number of charge cycles for this battery at the time of the session.
+    /// 0 if CycleCountEntity is not configured in SolarConfig.
     /// </summary>
     public int CycleCount { get; set; } = 0;
     public DistributionSession Session { get; set; } = null!;

@@ -5,9 +5,9 @@ using SolarDistribution.Core.Services.ML;
 namespace SolarDistribution.Core.Services;
 
 /// <summary>
-/// Fix #6 : Interface de fabrique pour la construction des entités de persistance.
-/// SmartDistributionService dépend de cette abstraction (Core),
-/// l'implémentation réelle (qui connaît EF, JSON, etc.) vit dans Infrastructure.
+/// Fix #6: Factory interface for building persistence entities.
+/// SmartDistributionService depends on this abstraction (Core),
+/// the real implementation (which knows EF, JSON, etc.) lives in Infrastructure.
 /// </summary>
 public interface IDistributionSessionFactory
 {

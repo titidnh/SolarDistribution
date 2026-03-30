@@ -62,14 +62,14 @@ public class DistributionFeatures
     [LoadColumn(36)] public float ForecastTomorrowNormalized { get; set; }
     [LoadColumn(37)] public float HasHaForecast { get; set; }
 
-    // ── ML-9: tendance solaire J vs J+1 ──────────────────────────────────────
+    // ── ML-9: solar trend D vs D+1 ─────────────────────────────────────────
     [LoadColumn(38)] public float ForecastRatioTomorrowVsToday { get; set; }
     [LoadColumn(39)] public float SolarBlockedByHaForecast { get; set; }
 
-    // ── Feature 6 — Bilan J-1 ────────────────────────────────────────────────
+    // ── Feature 6 — D-1 balance ─────────────────────────────────────────────
     [LoadColumn(42)] public float YesterdaySelfSufficiencyPct { get; set; }
 
-    // ── ML-7 : labels enrichis de feedback réel ──────────────────────────────
+    // ── ML-7: labels enriched with real feedback ────────────────────────────
     [LoadColumn(43)] public float ActualSelfSufficiencyNormalized { get; set; }
     [LoadColumn(44)] public float DidImportFromGrid { get; set; }
     [LoadColumn(45)] public float SampleWeight { get; set; }

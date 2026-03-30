@@ -23,7 +23,7 @@ public class MlController : ControllerBase
     /// <summary>
     /// Current ML model status: availability, version, metrics, and number of sessions.
     /// </summary>
-    /// <response code="200">Statut retourné</response>
+    /// <response code="200">Status returned</response>
     [HttpGet("status")]
     [ProducesResponseType(typeof(MLModelStatusDto), StatusCodes.Status200OK)]
     public async Task<ActionResult<MLModelStatusDto>> GetStatus(CancellationToken ct)
@@ -51,8 +51,8 @@ public class MlController : ControllerBase
     /// Minimum 50 sessions required to start training.
     /// The model is automatically activated if R² >= 0.65 for both predictions.
     /// </remarks>
-    /// <response code="200">Entraînement réussi — métriques retournées</response>
-    /// <response code="400">Pas assez de données d'entraînement</response>
+    /// <response code="200">Training successful — metrics returned</response>
+    /// <response code="400">Not enough training data</response>
     [HttpPost("retrain")]
     [ProducesResponseType(typeof(MLTrainingResultDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
@@ -84,7 +84,7 @@ public class MlController : ControllerBase
     }
 }
 
-// ── DTOs réponse ML ───────────────────────────────────────────────────────────
+// ── ML response DTOs ─────────────────────────────────────────────────────────
 
 public class MLModelStatusDto
 {

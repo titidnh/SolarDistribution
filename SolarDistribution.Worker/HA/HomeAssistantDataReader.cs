@@ -7,32 +7,32 @@ using SolarDistribution.Worker.Configuration;
 namespace SolarDistribution.Worker.HA;
 
 /// <summary>
-/// Lit toutes les valeurs nécessaires depuis HA en un seul cycle.
+/// Reads all required values from HA in a single cycle.
 /// </summary>
 public record HaSnapshot(
     double SurplusW,
     double? ProductionW,
     double? ConsumptionW,
-    /// <summary>Production solaire estimée aujourd'hui (Wh) — depuis HA, optionnel.</summary>
+    /// <summary>Estimated solar production today (Wh) — from HA, optional.</summary>
     double? ForecastTodayWh,
-    /// <summary>Production solaire estimée demain (Wh) — depuis HA, optionnel.</summary>
+    /// <summary>Estimated solar production tomorrow (Wh) — from HA, optional.</summary>
     double? ForecastTomorrowWh,
-    /// <summary>Production solaire estimée CETTE HEURE (Wh) — Solcast intraday, optionnel.</summary>
+    /// <summary>Estimated solar production THIS HOUR (Wh) — Solcast intraday, optional.</summary>
     double? ForecastThisHourWh,
-    /// <summary>Production solaire estimée L'HEURE SUIVANTE (Wh) — Solcast intraday, optionnel.</summary>
+    /// <summary>Estimated solar production NEXT HOUR (Wh) — Solcast intraday, optional.</summary>
     double? ForecastNextHourWh,
-    /// <summary>Production solaire RESTANTE AUJOURD'HUI (Wh) — pour le bilan énergétique journalier.</summary>
+    /// <summary>Estimated REMAINING solar production TODAY (Wh) — for daily energy balance.</summary>
     double? ForecastRemainingTodayWh,
     /// <summary>
-    /// Consommation par zone/appareil lue depuis HA (W).
-    /// Clé = entity_id HA, valeur = puissance lue (W).
-    /// Vide si ZoneConsumptionEntities non configuré ou si ConsumptionEntity est déjà présent.
+    /// Zone/device consumption read from HA (W).
+    /// Key = HA entity_id, value = read power (W).
+    /// Empty if ZoneConsumptionEntities is not configured or ConsumptionEntity is already present.
     /// </summary>
     Dictionary<string, double> ZoneConsumptionW,
     /// <summary>
-    /// Consommation estimée sur les prochaines heures (Wh) — moyenne roulante × horizon.
-    /// Calculée à partir de la moyenne des N derniers cycles (MariaDB) × ConsumptionProjectionHours.
-    /// Null si données insuffisantes ou entités non configurées.
+    /// Estimated consumption over the next hours (Wh) — rolling average × horizon.
+    /// Computed from average of last N cycles (MariaDB) × ConsumptionProjectionHours.
+    /// Null if insufficient data or entities not configured.
     /// </summary>
     double? EstimatedConsumptionNextHoursWh,
     List<BatteryReading> Batteries,
@@ -45,15 +45,15 @@ public record BatteryReading(
     double SocPercent,
     double? MaxChargeRateW,
     /// <summary>
-    /// Puissance de charge réelle actuelle lue depuis HA (W).
-    /// Null si CurrentChargePowerEntity non configurée ou lecture échouée.
-    /// Utilisée pour corriger le surplus brut : surplus_réel = surplus_HA + Σ CurrentChargeW.
+    /// Current real charge power read from HA (W).
+    /// Null if CurrentChargePowerEntity is not configured or read failed.
+    /// Used to correct raw surplus: real_surplus = HA_surplus + Σ CurrentChargeW.
     /// </summary>
     double? CurrentChargeW,
     bool ReadSuccess,
     /// <summary>
-    /// ML-8 : Nombre de cycles de charge lus depuis CycleCountEntity dans HA.
-    /// 0 si l'entité n'est pas configurée ou si la lecture a échoué.
+    /// ML-8: Number of charge cycles read from CycleCountEntity in HA.
+    /// 0 if entity is not configured or read failed.
     /// </summary>
     int CycleCount = 0
 );
@@ -82,7 +82,7 @@ public class HomeAssistantDataReader
 
     public async Task<HaSnapshot?> ReadAllAsync(CancellationToken ct = default)
     {
-        // ── Surplus solaire ───────────────────────────────────────────────────
+        // ── Solar surplus ────────────────────────────────────────────────────
         double? rawSurplus = await _client.GetNumericStateAsync(_config.Solar.SurplusEntity, ct);
 
         if (rawSurplus is null)
@@ -99,7 +99,7 @@ public class HomeAssistantDataReader
             "Surplus: raw={Raw:F0}W, mode={Mode}, effective={Surplus:F0}W",
             rawSurplus.Value, _config.Solar.SurplusMode, surplusW);
 
-        // ── Optionnels production + conso ─────────────────────────────────────
+        // ── Optional production + consumption ────────────────────────────────
         double? productionW = null;
         double? consumptionW = null;
 
@@ -109,7 +109,7 @@ public class HomeAssistantDataReader
         if (_config.Solar.ConsumptionEntity is not null)
             consumptionW = await _client.GetNumericStateAsync(_config.Solar.ConsumptionEntity, ct);
 
-        // ── Consommation par zone (optionnel — complément ou alternative à ConsumptionEntity) ──
+        // ── Zone consumption (optional — complement or alternative to ConsumptionEntity) ──
         var zoneConsumptionW = new Dictionary<string, double>();
 
         if (consumptionW is null && _config.Solar.ZoneConsumptionEntities.Count > 0)
@@ -139,7 +139,7 @@ public class HomeAssistantDataReader
             }
         }
 
-        // ── Rolling average de consommation + projection ──────────────────────
+        // ── Consumption rolling average + projection ─────────────────────────
         double? estimatedConsumptionNextHoursWh = null;
 
         int rollingWindow = _config.Solar.ConsumptionRollingWindowCycles;
@@ -170,7 +170,7 @@ public class HomeAssistantDataReader
             }
         }
 
-        // ── Prévisions solaires HA (optionnelles — chaudement recommandées) ───
+        // ── HA solar forecasts (optional — strongly recommended) ─────────────
         double? forecastTodayWh = null;
         double? forecastTomorrowWh = null;
         double? forecastThisHourWh = null;
@@ -182,7 +182,7 @@ public class HomeAssistantDataReader
             var rawToday = await _client.GetNumericStateAsync(_config.Solar.ForecastTodayEntity, ct);
             if (rawToday is not null)
             {
-                // Solcast retourne des kWh → convertir en Wh
+                // Solcast returns kWh → convert to Wh
                 forecastTodayWh = rawToday.Value * 1000.0;
                 _logger.LogDebug(
                     "Solar forecast today: {V:F0} Wh (from HA, raw={Raw:F3} kWh)",
@@ -199,7 +199,7 @@ public class HomeAssistantDataReader
             var rawTomorrow = await _client.GetNumericStateAsync(_config.Solar.ForecastTomorrowEntity, ct);
             if (rawTomorrow is not null)
             {
-                // Solcast retourne des kWh → convertir en Wh
+                // Solcast returns kWh → convert to Wh
                 forecastTomorrowWh = rawTomorrow.Value * 1000.0;
                 _logger.LogDebug(
                     "Solar forecast tomorrow: {V:F0} Wh (from HA, raw={Raw:F3} kWh)",
@@ -211,9 +211,9 @@ public class HomeAssistantDataReader
                     _config.Solar.ForecastTomorrowEntity);
         }
 
-        // ── Prévisions Solcast intra-journalières ─────────────────────────────
-        // forecast_this_hour et forecast_next_hour sont déjà en Wh — pas de conversion.
-        // forecast_remaining_today est en kWh → convertir en Wh.
+        // ── Intraday Solcast forecasts ───────────────────────────────────────
+        // forecast_this_hour and forecast_next_hour are already in Wh — no conversion.
+        // forecast_remaining_today is in kWh → convert to Wh.
         if (_config.Solar.ForecastThisHourEntity is not null)
         {
             forecastThisHourWh = await _client.GetNumericStateAsync(_config.Solar.ForecastThisHourEntity, ct);
@@ -235,7 +235,7 @@ public class HomeAssistantDataReader
             var rawRemaining = await _client.GetNumericStateAsync(_config.Solar.ForecastRemainingTodayEntity, ct);
             if (rawRemaining is not null)
             {
-                // Solcast retourne des kWh → convertir en Wh
+                // Solcast returns kWh → convert to Wh
                 forecastRemainingTodayWh = rawRemaining.Value * 1000.0;
                 _logger.LogDebug(
                     "Solcast remaining_today: {V:F0} Wh (raw={Raw:F3} kWh)",
@@ -245,7 +245,7 @@ public class HomeAssistantDataReader
                 _logger.LogDebug("Solcast remaining_today: n/a");
         }
 
-        // ── SOC + MaxChargeRate de chaque batterie ────────────────────────────
+        // ── SOC + MaxChargeRate for each battery ─────────────────────────────
         var readings = new List<BatteryReading>();
 
         foreach (var b in _config.Batteries)
@@ -351,7 +351,7 @@ public class HomeAssistantDataReader
                     ? $"{r.Name}:{r.SocPercent:F1}%{(r.MaxChargeRateW.HasValue ? $"/{r.MaxChargeRateW:F0}W" : "")}{(r.CurrentChargeW.HasValue ? $" now={r.CurrentChargeW:F0}W" : "")}"
                     : $"{r.Name}:ERR")));
 
-        // ── Prix spot dynamique (Feature 5) ──────────────────────────────────
+        // ── Dynamic spot price (Feature 5) ───────────────────────────────────
         if (_config.Tariff.CurrentPriceEntity is not null)
         {
             double? spotPrice = await _client.GetNumericStateAsync(

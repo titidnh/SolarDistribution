@@ -6,22 +6,22 @@ using SolarDistribution.Worker.Configuration;
 namespace SolarDistribution.Worker.Services;
 
 /// <summary>
-/// Service de cache météo avec rafraîchissement périodique indépendant du cycle de distribution.
+/// Weather cache service with periodic refresh independent of the distribution cycle.
 ///
-/// Problème résolu :
-///   Open-Meteo est appelé toutes les 60s dans le cycle principal → inutile et gourmand en API.
-///   Les prévisions météo changent au mieux toutes les heures.
+/// Problem solved:
+///   Open-Meteo was called every 60s in the main cycle → unnecessary and API-expensive.
+///   Weather forecasts change at best hourly.
 ///
-/// Solution :
-///   Ce BackgroundService tourne en parallèle et rafraîchit les données météo
-///   selon weather.refresh_interval_minutes (défaut: 15 min).
-///   SmartDistributionService lit simplement le dernier WeatherData disponible
-///   via GetCurrent() — sans attente réseau dans le cycle principal.
+/// Solution:
+///   This BackgroundService runs in parallel and refreshes weather data
+///   according to weather.refresh_interval_minutes (default: 15 min).
+///   SmartDistributionService simply reads the latest WeatherData
+///   through GetCurrent() — no network wait in main cycle.
 ///
-/// Comportement au démarrage :
-///   - Pré-charge immédiatement avant que le premier cycle ne démarre.
-///   - Si la première tentative échoue → retente toutes les 30s jusqu'au succès.
-///   - Si la météo est indisponible → WeatherData = null (le cycle continue sans météo).
+/// Startup behavior:
+///   - Preloads immediately before first cycle starts.
+///   - If first attempt fails → retries every 30s until success.
+///   - If weather is unavailable → WeatherData = null (cycle continues without weather).
 /// </summary>
 public class WeatherCacheService : BackgroundService
 {
@@ -44,12 +44,12 @@ public class WeatherCacheService : BackgroundService
     }
 
     /// <summary>
-    /// Retourne le dernier WeatherData disponible (jamais null si au moins une fetch a réussi).
-    /// Thread-safe — lecture sans lock (snapshot immutable).
+    /// Returns latest available WeatherData (never null if at least one fetch succeeded).
+    /// Thread-safe — lock-free read (immutable snapshot).
     /// </summary>
     public WeatherData? GetCurrent() => _current;
 
-    /// <summary>Age des données météo actuelles. null si jamais récupérées.</summary>
+    /// <summary>Age of current weather data. null if never fetched.</summary>
     public TimeSpan? DataAge => _current is null
         ? null
         : DateTime.UtcNow - _lastFetchUtc;
@@ -61,8 +61,8 @@ public class WeatherCacheService : BackgroundService
             "WeatherCacheService starting — refresh every {Min} min (lat={Lat}, lon={Lon})",
             refreshMinutes, _config.Location.Latitude, _config.Location.Longitude);
 
-        // ── Pré-charge initiale (avec retries) ───────────────────────────────
-        // Retente toutes les 30s jusqu'à succès pour que le premier cycle ait des données.
+        // ── Initial preload (with retries) ───────────────────────────────────
+        // Retry every 30s until success so first cycle has data.
         while (!stoppingToken.IsCancellationRequested && _current is null)
         {
             await FetchAsync(stoppingToken);
@@ -74,7 +74,7 @@ public class WeatherCacheService : BackgroundService
             }
         }
 
-        // ── Rafraîchissement périodique ───────────────────────────────────────
+        // ── Periodic refresh ─────────────────────────────────────────────────
         while (!stoppingToken.IsCancellationRequested)
         {
             await Task.Delay(TimeSpan.FromMinutes(refreshMinutes), stoppingToken);
@@ -109,7 +109,7 @@ public class WeatherCacheService : BackgroundService
         }
         catch (OperationCanceledException)
         {
-            // Arrêt propre
+            // Graceful shutdown
         }
         catch (Exception ex)
         {

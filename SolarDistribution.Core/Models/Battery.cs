@@ -15,59 +15,59 @@ public class Battery
     public int Priority { get; set; }
 
     /// <summary>
-    /// Puissance max autorisée depuis le réseau pour cette batterie (W).
-    ///   0  → charge réseau interdite (surplus solaire uniquement).
-    ///   >0 → charge réseau permise (heures creuses ou urgence SOC).
-    /// Calculé par SmartDistributionService selon le contexte tarifaire.
+    /// Maximum power allowed from the grid for this battery (W).
+    ///   0  → grid charging forbidden (solar surplus only).
+    ///   >0 → grid charging allowed (off-peak hours or SOC emergency).
+    /// Computed by SmartDistributionService based on the tariff context.
     /// </summary>
     public double GridChargeAllowedW { get; set; } = 0;
 
     /// <summary>
-    /// Puissance de maintien envoyée à la batterie une fois sa cible atteinte (W).
+    /// Idle charge power sent to the battery once its target is reached (W).
     ///
-    /// Quand la batterie a absorbé son surplus (SoftMax ou HardMax atteint),
-    /// au lieu d'envoyer 0 W, on envoie IdleChargeW pour :
-    ///   • Éviter le cycling on/off de certains BMS
-    ///   • Indiquer à l'onduleur que la charge est toujours autorisée
-    ///   • Absorber les micro-surplus résiduels (bruit du compteur P1)
+    /// When the battery has absorbed its surplus (SoftMax or HardMax reached),
+    /// instead of sending 0 W, IdleChargeW is sent to:
+    ///   • Avoid on/off cycling of some BMS devices
+    ///   • Signal to the inverter that charging is still authorised
+    ///   • Absorb residual micro-surpluses (P1 meter noise)
     ///
-    /// Défaut 0 W (comportement standard : coupe à la cible).
-    /// Configuré via BatteryConfig.IdleChargeW (défaut config = 100 W).
+    /// Default 0 W (standard behaviour: cut at target).
+    /// Configured via BatteryConfig.IdleChargeW (config default = 100 W).
     /// </summary>
     public double IdleChargeW { get; set; } = 0;
 
     /// <summary>
-    /// Puissance minimale en dessous de laquelle la batterie n'accepte pas la charge (W).
+    /// Minimum power below which the battery does not accept charging (W).
     ///
-    /// Contrainte hardware : certaines batteries (ex: EcoFlow Delta) refusent ou ignorent
-    /// toute consigne inférieure à ce seuil. Envoyer 50W à une batterie dont le minimum
-    /// est 100W ne produit aucune charge réelle — la commande est silencieusement ignorée.
+    /// Hardware constraint: some batteries (e.g. EcoFlow Delta) refuse or ignore
+    /// any setpoint below this threshold. Sending 50 W to a battery whose minimum
+    /// is 100 W produces no real charge — the command is silently ignored.
     ///
-    /// Impact sur la distribution :
-    ///   · PASS 1/2 (surplus solaire) : si surplusW &lt; HardwareMinChargeW, la batterie
-    ///     est skippée — le surplus ne suffit pas à franchir le seuil hardware.
-    ///   · IdleCharge (POST-DISTRIBUTION) : même garde — remplace l'ancienne condition
-    ///     surplusW >= IdleChargeW (Bug #5) qui était un proxy imparfait.
-    ///   · Emergency grid charge : ignore HardwareMinChargeW — la batterie doit
-    ///     toujours charger quelle que soit la puissance disponible.
-    ///   · Grid charge HC (PASS 3) : GridChargeAllowedW est déjà calculé ≥ MinChargeRateW
-    ///     par ComputeAdaptiveGridChargeW — pas de garde supplémentaire nécessaire.
+    /// Impact on distribution:
+    ///   · PASS 1/2 (solar surplus): if surplusW &lt; HardwareMinChargeW, the battery
+    ///     is skipped — the surplus is not enough to exceed the hardware threshold.
+    ///   · IdleCharge (POST-DISTRIBUTION): same guard — replaces the old condition
+    ///     surplusW >= IdleChargeW (Bug #5) which was an imperfect proxy.
+    ///   · Emergency grid charge: ignores HardwareMinChargeW — the battery must
+    ///     always charge regardless of the available power.
+    ///   · Grid charge HC (PASS 3): GridChargeAllowedW is already computed ≥ MinChargeRateW
+    ///     by ComputeAdaptiveGridChargeW — no additional guard needed.
     ///
-    /// Défaut 0 → désactivé (comportement original, aucun seuil minimum).
-    /// Configuré via BatteryConfig.HardwareMinChargeW.
+    /// Default 0 → disabled (original behaviour, no minimum threshold).
+    /// Configured via BatteryConfig.HardwareMinChargeW.
     /// </summary>
     public double HardwareMinChargeW { get; set; } = 0;
     ///
-    /// Évite les micro-commandes de 1-3W générées quand la batterie oscille juste
-    /// sous sa cible par auto-décharge EcoFlow self-powered (~1-2%/h).
+    /// Avoids micro-commands of 1-3 W generated when the battery oscillates just
+    /// below its target due to EcoFlow self-powered self-discharge (~1-2%/h).
     ///
-    /// Avec SocHysteresisPercent = 2 :
-    ///   · Cible 90% → recharge réseau autorisée seulement si SOC &lt; 88%
-    ///   · Entre 88% et 90% : pas de charge réseau (auto-décharge acceptée)
-    ///   · SOC descend à 87.9% → recharge réseau normale (≥ 100W)
+    /// With SocHysteresisPercent = 2:
+    ///   · Target 90% → grid charging only allowed if SOC &lt; 88%
+    ///   · Between 88% and 90%: no grid charging (self-discharge accepted)
+    ///   · SOC drops to 87.9% → normal grid charging (≥ 100 W)
     ///
-    /// Défaut 0 → désactivé, comportement original.
-    /// Propagé depuis BatteryConfig.SocHysteresisPercent.
+    /// Default 0 → disabled, original behaviour.
+    /// Propagated from BatteryConfig.SocHysteresisPercent.
     /// </summary>
     public double SocHysteresisPercent { get; set; } = 0.0;
 
@@ -78,48 +78,48 @@ public class Battery
     // ── ML-8 : cycle de vie ───────────────────────────────────────────────────
 
     /// <summary>
-    /// Nombre de cycles de charge complets lus depuis HA via CycleCountEntity.
-    /// 0 si l'entité n'est pas configurée ou si la lecture a échoué.
+    /// Number of full charge cycles read from HA via CycleCountEntity.
+    /// 0 if the entity is not configured or if the read failed.
     /// </summary>
     public int CycleCount { get; set; } = 0;
 
     /// <summary>
-    /// Facteur de réduction de priorité par cycle (depuis BatteryConfig.CycleAgingFactor).
-    /// 0 = désactivé (pas de pondération par cycle).
+    /// Priority reduction factor per cycle (from BatteryConfig.CycleAgingFactor).
+    /// 0 = disabled (no cycle-based weighting).
     /// </summary>
     public double CycleAgingFactor { get; set; } = 0.0001;
 
     // ── Computed ──────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Priorité effective tenant compte de l'urgence SOC ET du vieillissement par cycles.
+    /// Effective priority taking into account both SOC urgency AND cycle aging.
     ///
-    /// Règle d'urgence (inchangée) :
-    ///   SOC &lt; MinPercent → EffectivePriority = 0 (URGENT, toujours premier)
+    /// Urgency rule (unchanged):
+    ///   SOC &lt; MinPercent → EffectivePriority = 0 (URGENT, always first)
     ///
-    /// Pondération par cycles (ML-8) :
+    /// Cycle-based weighting (ML-8):
     ///   effectivePriority = basePriority × (1 − CycleAgingFactor × CycleCount)
-    ///   clampé à [basePriority × 0.5, basePriority] pour rester dans des bornes raisonnables.
+    ///   clamped to [basePriority × 0.5, basePriority] to stay within reasonable bounds.
     ///
-    /// Impact sur la distribution :
-    ///   Les batteries moins cyclées (plus neuves) ont une priorité numérique plus basse
-    ///   (rappel : tri ASC → priorité 0 = premier). Les batteries âgées, dont le
-    ///   EffectivePriority se rapproche de Priority (sans réduction), passent après.
-    ///   Effet : le surplus solaire va d'abord aux batteries les plus fraîches.
+    /// Impact on distribution:
+    ///   Less-cycled (newer) batteries have a lower numeric priority
+    ///   (reminder: sorted ASC → priority 0 = first). Aged batteries, whose
+    ///   EffectivePriority approaches Priority (with no reduction), are processed later.
+    ///   Effect: solar surplus goes to the freshest batteries first.
     /// </summary>
     public double EffectivePriority
     {
         get
         {
-            if (CurrentPercent < MinPercent) return 0; // urgence toujours premier
+            if (CurrentPercent < MinPercent) return 0; // emergency always first
 
             if (CycleAgingFactor <= 0 || CycleCount <= 0)
                 return Priority;
 
-            // Réduction de priorité proportionnelle aux cycles
+            // Priority reduction proportional to cycles
             double reduction = CycleAgingFactor * CycleCount;
             double aged = Priority * (1.0 - reduction);
-            // Clamp : max 50% de réduction pour éviter une inversion trop brutale
+            // Clamp: max 50% reduction to avoid a too-abrupt inversion
             return Math.Clamp(aged, Priority * 0.5, Priority);
         }
     }

@@ -15,7 +15,7 @@ using SolarDistribution.Worker.Logging;
 using SolarDistribution.Worker.Services;
 using System.Net.Http.Headers;
 
-// ── Chargement config YAML ────────────────────────────────────────────────────
+// ── YAML config loading ───────────────────────────────────────────────────────
 SolarConfig config;
 try
 {
@@ -39,7 +39,7 @@ var logLevel = config.Logging.Level.ToLower() switch
 
 var loggerConfig = new LoggerConfiguration()
     .MinimumLevel.Is(logLevel)
-    // Silence les logs verbeux de la stack HTTP .NET (HttpClient lifecycle, Polly retries)
+    // Silence verbose logs from the .NET HTTP stack (HttpClient lifecycle, Polly retries)
     .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
     .MinimumLevel.Override("Microsoft.EntityFrameworkCore", LogEventLevel.Warning)
     .MinimumLevel.Override("System.Net.Http", LogEventLevel.Warning)
@@ -47,11 +47,11 @@ var loggerConfig = new LoggerConfiguration()
     .MinimumLevel.Override("Polly", LogEventLevel.Warning)
     .MinimumLevel.Override("Microsoft.Extensions.Http.Resilience", LogEventLevel.Warning)
     .Enrich.FromLogContext()
-    // Console — lisible pour docker logs / stdout
+    // Console — readable for docker logs / stdout
     .WriteTo.Console(outputTemplate:
         "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}");
 
-// ── Sink Fichier (JSON structuré, rolling daily) ──────────────────────────────
+// ── File sink (structured JSON, daily rolling) ───────────────────────────────
 if (config.Logging.FilePath is not null)
 {
     loggerConfig.WriteTo.File(
@@ -61,13 +61,13 @@ if (config.Logging.FilePath is not null)
         retainedFileCountLimit: 14);
 }
 
-// ── Sink Loki (JSON structuré via LokiJsonFormatter) ─────────────────────────
-// Package : Serilog.Sinks.Grafana.Loki v8 (serilog-contrib — package officiel)
-// LokiJsonFormatter sérialise chaque LogEvent avec System.Text.Json → JSON
-// garanti valide même si le message contient ":", ",", guillemets...
+// ── Loki sink (structured JSON via LokiJsonFormatter) ───────────────────────
+// Package: Serilog.Sinks.Grafana.Loki v8 (serilog-contrib — official package)
+// LokiJsonFormatter serializes each LogEvent with System.Text.Json → JSON
+// guaranteed valid even when messages contain ":", ",", quotes...
 if (!string.IsNullOrWhiteSpace(config.Logging.LokiUrl))
 {
-    // Convertir le Dictionary<string,string> YAML → LokiLabel[] attendu par v8
+    // Convert YAML Dictionary<string,string> → LokiLabel[] expected by v8
     var lokiLabels = config.Logging.LokiLabels
         .Select(kv => new LokiLabel { Key = kv.Key, Value = kv.Value })
         .ToArray();
@@ -80,7 +80,7 @@ if (!string.IsNullOrWhiteSpace(config.Logging.LokiUrl))
         period: TimeSpan.FromSeconds(2),
         queueLimit: 10_000);
 
-    Console.WriteLine($"[Serilog] Loki sink actif → {config.Logging.LokiUrl}");
+    Console.WriteLine($"[Serilog] Loki sink active → {config.Logging.LokiUrl}");
 }
 
 Log.Logger = loggerConfig.CreateLogger();
@@ -96,21 +96,21 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddSingleton(config.HomeAssistant);
         services.AddSingleton(config.Polling);
 
-        // ── Database ──────────────────────────────────────────────────────────
+        // ── Database ─────────────────────────────────────────────────────────
         services.AddDbContext<SolarDbContext>(opts =>
             opts.UseMySql(
                 config.Database.ConnectionString,
                 ServerVersion.AutoDetect(config.Database.ConnectionString),
                 mysqlOpts => mysqlOpts.CommandTimeout(30)));
 
-        // ── Repositories & services ───────────────────────────────────────────
+        // ── Repositories & services ──────────────────────────────────────────
         services.AddScoped<IDistributionRepository, DistributionRepository>();
         services.AddSingleton<IBatteryDistributionService, BatteryDistributionService>();
         services.AddSingleton<IDistributionSessionFactory, DistributionSessionFactory>();
         services.AddSingleton<TariffEngine>();
         services.AddSingleton<SmartDistributionService>();
 
-        // ── ML ────────────────────────────────────────────────────────────────
+        // ── ML ───────────────────────────────────────────────────────────────
         services.AddSingleton<IDistributionMLService>(sp =>
             new DistributionMLService(
                 sp.GetRequiredService<IDistributionRepository>(),
@@ -120,7 +120,7 @@ var host = Host.CreateDefaultBuilder(args)
                 config.Ml.TrainingDecayHalfLifeDays,
                 config.Ml.TrainingDecayFloor));
 
-        // ── Weather ───────────────────────────────────────────────────────────
+        // ── Weather ──────────────────────────────────────────────────────────
         services.AddHttpClient<IWeatherService, OpenMeteoWeatherService>(client =>
         {
             client.Timeout = TimeSpan.FromSeconds(10);
@@ -128,7 +128,7 @@ var host = Host.CreateDefaultBuilder(args)
         });
         services.AddSingleton<WeatherCacheService>();
 
-        // ── Home Assistant ────────────────────────────────────────────────────
+        // ── Home Assistant ───────────────────────────────────────────────────
         services.AddHttpClient<IHomeAssistantClient, HomeAssistantClient>(client =>
         {
             client.BaseAddress = new Uri(config.HomeAssistant.Url);
@@ -148,13 +148,13 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddSingleton<CommandStateCache>();
         services.AddSingleton<HomeAssistantCommandSender>();
 
-        // ── Daily Summary (Feature 6) ──────────────────────────────────────────
+        // ── Daily Summary (Feature 6) ─────────────────────────────────────────
         services.AddSingleton<DailySummaryService>();
 
         // ── Live status (Feature 10) — expose small in-memory status for API / HA templates
         services.AddSingleton<SolarDistribution.Core.Services.IStatusService, SolarDistribution.Core.Services.StatusService>();
 
-        // ── Workers ───────────────────────────────────────────────────────────
+        // ── Workers ──────────────────────────────────────────────────────────
         services.AddHostedService<SolarWorker>();
         services.AddHostedService<WeatherCacheService>(sp =>
             sp.GetRequiredService<WeatherCacheService>());
@@ -163,7 +163,7 @@ var host = Host.CreateDefaultBuilder(args)
     })
     .Build();
 
-// ── Migrations EF auto ────────────────────────────────────────────────────────
+// ── Automatic EF migrations ──────────────────────────────────────────────────
 using (var scope = host.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<SolarDbContext>();

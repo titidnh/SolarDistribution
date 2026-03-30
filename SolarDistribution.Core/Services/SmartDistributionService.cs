@@ -15,10 +15,10 @@ public class SmartDistributionService
     private readonly IDistributionSessionFactory _sessionFactory;
     private readonly ILogger<SmartDistributionService> _logger;
 
-    // ── Feature 6 — Cache autosuffisance J-1 ─────────────────────────────────
-    // Rechargé une fois par jour (changement de date UTC) pour éviter une requête
-    // DB à chaque cycle de distribution (~1 min). Null = pas encore chargé ou
-    // Solcast non configuré.
+    // ── Feature 6 — Yesterday self-sufficiency cache ───────────────────────────
+    // Refreshed once per day (UTC date change) to avoid a DB query
+    // on every distribution cycle (~1 min). Null = not yet loaded or
+    // Solcast not configured.
     private double? _cachedYesterdaySelfSufficiency;
     private int _cachedYesterdayDoy = -1;
 
@@ -52,12 +52,12 @@ public class SmartDistributionService
         double? forecastTodayWhAtStartOfDay = null,
         CancellationToken ct = default)
     {
-        // ── 1. Météo ──────────────────────────────────────────────────────────
+        // ── 1. Weather ───────────────────────────────────────────────────────
         var wx = weatherSnapshot ?? await _weather.GetCurrentWeatherAsync(latitude, longitude, ct);
         if (wx is null)
             _logger.LogWarning("Weather unavailable — proceeding without weather context");
 
-        // ── 2. Contexte tarifaire ─────────────────────────────────────────────
+        // ── 2. Tariff context ────────────────────────────────────────────────
         var localNow = DateTime.Now;
         var radForecast = wx?.RadiationForecast12h ?? Array.Empty<double>();
         var tariffCtx = _tariff.EvaluateContext(
@@ -71,7 +71,7 @@ public class SmartDistributionService
 
         LogTariffContext(tariffCtx, surplusW);
 
-        // ── 2b. Feature 6 — Autosuffisance J-1 (cache quotidien) ─────────────
+        // ── 2b. Feature 6 — Yesterday self-sufficiency (daily cache) ─────────────
         int todayDoy = DateTime.UtcNow.DayOfYear;
         if (todayDoy != _cachedYesterdayDoy)
         {
@@ -94,7 +94,7 @@ public class SmartDistributionService
             mlReco = await _ml.PredictAsync(features, ct);
         }
 
-        // ── 4. Batteries effectives ───────────────────────────────────────────
+        // ── 4. Effective batteries ───────────────────────────────────────────
         IList<Battery> effective;
 
         if (mlReco is not null)
@@ -136,7 +136,7 @@ public class SmartDistributionService
                 tariffCtx.HasHaForecast ? " [HA forecast]" : " [Open-Meteo]");
         }
 
-        // Log lazy charge : batteries éligibles mais en attente (GridChargeAllowedW == 0 en HC)
+        // Log lazy charge: eligible batteries waiting (GridChargeAllowedW == 0 in off-peak)
         if (tariffCtx.GridChargeAllowed)
         {
             foreach (var b in effective.Where(b => b.GridChargeAllowedW == 0
@@ -159,7 +159,7 @@ public class SmartDistributionService
                 "Grid charge: {W:F0}W [{Slot}] {Price:F3}€/kWh",
                 result.GridChargedW, tariffCtx.ActiveSlotName, tariffCtx.CurrentPricePerKwh);
 
-        // ── 7. Persistance ────────────────────────────────────────────────────
+        // ── 7. Persistence ───────────────────────────────────────────────────
         var session = _sessionFactory.Build(result, wx, mlReco, decisionEngine, batteries, tariffCtx,
             measuredConsumptionW, forecastTodayWhAtStartOfDay);
         await _repo.SaveSessionAsync(session, ct);
@@ -171,20 +171,20 @@ public class SmartDistributionService
         return new SmartDistributionResult(result, decisionEngine, mlReco, wx, tariffCtx, session.Id);
     }
 
-    // ── Apply: calcule GridChargeAllowedW par batterie ────────────────────────
+    // ── Apply: compute GridChargeAllowedW per battery ───────────────────────────────
 
     /// <summary>
-    /// Priorité de décision :
-    ///   1. AUTOCONSOMMATION : soleil arrive avant fin du slot ET batterie peut tenir → 0W réseau
-    ///   2. URGENCE SOC : SOC critique + soleil absent → MaxChargeRateW (indépendant du tarif)
-    ///   3. CHARGE INTELLIGENTE HC : puissance adaptative calculée par ComputeAdaptiveGridChargeW
+    /// Decision priority:
+    ///   1. SELF-CONSUMPTION: solar arrives before slot end AND battery can wait → 0W grid
+    ///   2. SOC EMERGENCY: critical SOC + no solar → MaxChargeRateW (regardless of tariff)
+    ///   3. SMART OFF-PEAK CHARGE: adaptive power computed by ComputeAdaptiveGridChargeW
     ///
-    /// FIX Bug #4 — IdleChargeW sans surplus solaire :
-    ///   IdleChargeW est mis à 0 dès que surplusW = 0, qu'on soit en HP ou HC.
-    ///   Son rôle est d'absorber les micro-surplus résiduels du compteur P1 (bruit +-50W)
-    ///   quand la batterie est déjà à sa cible — pas de tirer du réseau.
-    ///   En HC sans surplus, c'est ComputeAdaptiveGridChargeW qui décide si une charge
-    ///   réseau est justifiée (météo, forecast J+1, heures restantes dans le slot).
+    /// FIX Bug #4 — IdleChargeW without solar surplus:
+    ///   IdleChargeW is set to 0 as soon as surplusW = 0, whether peak or off-peak.
+    ///   Its purpose is to absorb residual P1 meter micro-surpluses (noise ±50W)
+    ///   when the battery is already at its target — not to pull from the grid.
+    ///   In off-peak without surplus, ComputeAdaptiveGridChargeW decides if grid
+    ///   charging is warranted (weather, J+1 forecast, hours remaining in slot).
     /// </summary>
     private static IList<Battery> Apply(
         IList<Battery> src,
@@ -200,12 +200,12 @@ public class SmartDistributionService
         {
             double softMax = reco?.RecommendedSoftMaxPercent ?? b.SoftMaxPercent;
 
-            // ── Boost J+1 : demain mauvais + tarif favorable → charger plus fort maintenant ──
-            // Logique : si ForecastTomorrow < seuil ET on est dans un créneau pas cher (HC ou
-            // tout slot IsFavorableForGrid), on monte le SoftMax pour maximiser la réserve.
-            // S'applique à n'importe quelle heure tant que le tarif est avantageux
-            // (nuit HC à 2h, soirée creuse, week-end, etc.).
-            // Le boost est plafonné à HardMaxPercent pour ne jamais dépasser la limite batterie.
+            // ── J+1 Boost: bad tomorrow + favourable tariff → charge harder now ──
+            // Logic: if ForecastTomorrow < threshold AND we are in a cheap slot (off-peak or
+            // any IsFavorableForGrid slot), raise SoftMax to maximise the reserve.
+            // Applies at any hour as long as the tariff is advantageous
+            // (night off-peak at 2 AM, evening off-peak, weekends, etc.).
+            // The boost is capped at HardMaxPercent to never exceed the battery limit.
             if (tariff.HasLowForecastTomorrow && tariff.IsFavorableForGrid)
             {
                 double boosted = softMax + tariff.EveningBoostPercent;
@@ -219,7 +219,7 @@ public class SmartDistributionService
                 && b.CurrentPercent < b.EmergencyGridChargeBelowPercent.Value
                 && !solarWillArrive;
 
-            // Autoconsommation possible avant fin du slot ?
+            // Can self-consume before the slot ends?
             bool solarBeforeSlotEnd = false;
             if (!isEmergency
                 && tariff.IsFavorableForGrid
@@ -244,17 +244,17 @@ public class SmartDistributionService
                 gridAllowedW = ComputeAdaptiveGridChargeW(
                     b, softMax, tariff, minGridChargeW, urgencyThresholdHours, lazyBufferHours: tariff.LazyBufferHours);
 
-            // ── FIX Bug #4 — IdleChargeW : surplus solaire uniquement ────────────
-            // IdleChargeW a une seule vocation : absorber les micro-surplus résiduels
-            // du compteur P1 quand la batterie est à sa cible (bruit ±50W, cycling BMS).
-            // Il ne doit JAMAIS tirer du réseau, que ce soit en HP ou en HC.
+            // ── FIX Bug #4 — IdleChargeW: solar surplus only ────────────────
+            // IdleChargeW has a single purpose: absorb residual P1 meter micro-surpluses
+            // when the battery is at its target (noise ±50W, BMS cycling).
+            // It must NEVER pull from the grid, whether at peak or off-peak.
             //
-            // En HC sans surplus, c'est ComputeAdaptiveGridChargeW qui décide si on
-            // charge (selon météo, forecast J+1, heures restantes dans le slot).
-            // Court-circuiter cette logique avec IdleChargeW en HC serait incorrect :
-            // on chargerait même quand le forecast prédit assez de solaire demain.
+            // In off-peak without surplus, ComputeAdaptiveGridChargeW decides whether to
+            // charge (based on weather, J+1 forecast, hours remaining in slot).
+            // Bypassing that logic with IdleChargeW at off-peak would be wrong:
+            // we would charge even when the forecast predicts enough solar tomorrow.
             //
-            // Règle : IdleChargeW > 0 seulement si surplus solaire réel > 0.
+            // Rule: IdleChargeW > 0 only if actual solar surplus > 0.
             double effectiveIdleChargeW = surplusW > 0 ? b.IdleChargeW : 0;
 
             return new Battery
@@ -271,7 +271,7 @@ public class SmartDistributionService
                 Priority = b.Priority,
                 HardwareMinChargeW = b.HardwareMinChargeW,
                 IdleChargeW = effectiveIdleChargeW,
-                // Propagation nécessaire pour que ComputeAdaptiveGridChargeW accède à l'hystérésis
+                // Propagation needed so ComputeAdaptiveGridChargeW can access hysteresis
                 SocHysteresisPercent = b.SocHysteresisPercent,
                 GridChargeAllowedW = gridAllowedW,
                 EmergencyGridChargeBelowPercent = b.EmergencyGridChargeBelowPercent,
@@ -282,34 +282,35 @@ public class SmartDistributionService
     }
 
     /// <summary>
-    /// Puissance de charge réseau adaptative en HC — avec Lazy Charging.
+    /// Adaptive grid charge power in off-peak — with Lazy Charging.
     ///
-    /// Principe du Lazy Charging :
-    ///   Plutôt que de charger dès l'ouverture du créneau HC à faible puissance,
-    ///   on calcule l'heure limite à partir de laquelle il FAUT démarrer pour
-    ///   atteindre la cible avant la fin du slot, puis on attend jusque-là.
+    /// Lazy Charging principle:
+    ///   Rather than charging immediately at low power when the off-peak slot opens,
+    ///   compute the latest start time needed to reach the target before the slot ends,
+    ///   then wait until that moment.
     ///
     ///   hoursNeeded = energyNeeded / MaxChargeRateW
     ///   hoursBeforeStart = hoursRemaining - hoursNeeded - lazyBuffer
-    ///   → Si hoursBeforeStart > 0 : trop tôt, retourner 0 (attendre)
-    ///   → Sinon : démarrer à pleine puissance adaptative
+    ///   → If hoursBeforeStart > 0: too early, return 0 (wait)
+    ///   → Otherwise: start charging at full adaptive power
     ///
-    /// Avantages :
-    ///   - Maximise le temps de décharge sur batterie (self-powered) avant de charger
-    ///   - La charge se fait en fin de nuit, juste avant le retour en HP (6h-7h)
-    ///   - Puissance plus élevée sur une courte durée = moins de cycles partiels BMS
+    /// Benefits:
+    ///   - Maximises battery self-powered time before charging starts
+    ///   - Charging happens at the end of the night, just before peak tariff returns (6h–7h)
+    ///   - Higher power over a shorter duration = fewer partial BMS cycles
+    ///   - Higher power over a short duration = fewer partial BMS cycles
     ///
-    /// Si des prévisions HA sont disponibles (ForecastTodayWh), elles remplacent
-    /// le calcul générique Open-Meteo × 0.15 pour l'estimation de l'énergie solaire
-    /// attendue pendant le créneau restant.
+    /// If HA forecasts are available (ForecastTodayWh), they replace
+    /// the generic Open-Meteo × 0.15 calculation for estimating expected solar
+    /// energy during the remaining slot.
     ///
-    /// Logique :
-    ///   énergie brute = (SoftMax - SOC) × CapacityWh
-    ///   énergie solaire attendue (créneau restant) :
-    ///     - si HA forecast dispo → proratisation de ForecastTodayWh sur les heures restantes
-    ///     - sinon → Σ forecast[h] × solarEfficiencyFactor
-    ///   énergie nette = max(0, brute - solaire)
-    ///   puissance = clamp(nette / hoursNeeded, minGridChargeW, MaxChargeRateW)
+    /// Logic:
+    ///   gross energy = (SoftMax - SOC) × CapacityWh
+    ///   expected solar (remaining slot):
+    ///     - if HA forecast available → prorate ForecastTodayWh over remaining hours
+    ///     - otherwise → Σ forecast[h] × solarEfficiencyFactor
+    ///   net energy = max(0, gross - solar)
+    ///   power = clamp(net / hoursNeeded, minGridChargeW, MaxChargeRateW)
     /// </summary>
     private static double ComputeAdaptiveGridChargeW(
         Battery b,
@@ -331,19 +332,18 @@ public class SmartDistributionService
         if (solarAfterSlot && hoursRemaining <= urgencyThresholdHours * 2)
             return b.MaxChargeRateW;
 
-        // ── FIX Bug #1 : Hystérésis SOC ──────────────────────────────────────
-        // Problème original : quand le SOC atteint 90% puis redescend à 89.9%
-        // (auto-décharge EcoFlow self-powered), le calcul produisait energyNeeded=1Wh
-        // → targetW=0.18W → clampé à minGridChargeW=100W, MAIS DistributeGridToGroup
-        // fait Math.Min(spaceToTarget=1Wh, gridLeft=100W) → commande finale = 1W.
-        // Résultat : 50+ micro-commandes ignorées par l'EcoFlow mais comptées comme
-        // cycles BMS.
+        // ── FIX Bug #1: SOC hysteresis ────────────────────────────────────────────────────────
+        // Original problem: when SOC reaches 90% then drops to 89.9%
+        // (EcoFlow self-powered self-discharge), the calculation produced energyNeeded=1Wh
+        // → targetW=0.18W → clamped to minGridChargeW=100W, BUT DistributeGridToGroup
+        // does Math.Min(spaceToTarget=1Wh, gridLeft=100W) → final command = 1W.
+        // Result: 50+ micro-commands ignored by the EcoFlow but counted as BMS cycles.
         //
-        // Avec SocHysteresisPercent = 2% :
-        //   · Seuil effectif = softMax - hysteresis = 90% - 2% = 88%
-        //   · Entre 88% et 90% → return 0  (zone morte, auto-décharge acceptée)
-        //   · SOC descend à 87.9% → energyNeeded = ~21Wh → commande ≥ 100W (efficace)
-        //   · SocHysteresisPercent = 0 → comportement identique à l'original
+        // With SocHysteresisPercent = 2%:
+        //   · Effective threshold = softMax - hysteresis = 90% - 2% = 88%
+        //   · Between 88% and 90% → return 0 (dead zone, self-discharge accepted)
+        //   · SOC drops to 87.9% → energyNeeded = ~21Wh → command ≥ 100W (effective)
+        //   · SocHysteresisPercent = 0 → behaviour identical to the original
         double rechargeThreshold = softMaxPercent - b.SocHysteresisPercent;
         if (b.CurrentPercent >= rechargeThreshold)
             return 0;
@@ -351,22 +351,22 @@ public class SmartDistributionService
 
         double energyNeededWh = (softMaxPercent - b.CurrentPercent) / 100.0 * b.CapacityWh;
 
-        // ── Énergie solaire attendue pendant les heures restantes ─────────────
+        // ── Expected solar energy during remaining hours ─────────────────────
         double solarExpectedWh;
 
         if (tariff.HasIntradayForecast && tariff.SolcastHourlyCurveWh is not null)
         {
-            // ── Courbe Solcast horaire réelle (Feature 3) ─────────────────────
-            // Remplace le profil sinusoïdal simplifié : on utilise les données Wh/h
-            // réelles de Solcast pour calculer l'énergie attendue heure par heure.
+            // ── Real Solcast hourly curve (Feature 3) ────────────────────────────────────────
+            // Replaces the simplified sinusoidal profile: uses real Wh/h Solcast data
+            // to compute the expected energy hour by hour.
             //
-            // Avantages vs sinusoïde :
-            //   · Tient compte des nuages prévus à des heures spécifiques
-            //   · Intègre l'orientation/inclinaison réelle de l'installation
-            //   · Précision horaire vs approximation journalière
+            // Advantages vs sinusoid:
+            //   · Accounts for forecast cloud cover at specific hours
+            //   · Integrates the actual orientation/tilt of the installation
+            //   · Hourly precision vs daily approximation
             //
-            // On intègre la courbe Solcast sur la fenêtre [now, now + hoursRemaining],
-            // en pondérant la fraction d'heure pour la dernière tranche partielle.
+            // Integrate the Solcast curve over [now, now + hoursRemaining],
+            // weighting the last partial-hour fraction.
             double solarStartH = tariff.HoursUntilSolar.HasValue
                                  && tariff.HoursUntilSolar.Value < double.MaxValue
                 ? tariff.HoursUntilSolar.Value : 0.0;
@@ -381,8 +381,8 @@ public class SmartDistributionService
                 solarExpectedWh += curve[h] * hourFraction;
             }
 
-            // Si la courbe ne couvre pas tout l'horizon (ex: seulement 3h alors qu'il reste 6h),
-            // on extrapole via le fallback sinusoïdal avec ForecastTodayWh pour les heures manquantes.
+            // If the curve does not cover the full horizon (e.g. only 3h while 6h remain),
+            // extrapolate via the sinusoidal fallback with ForecastTodayWh for the missing hours.
             if (curve.Length < hoursRemaining && tariff.ForecastTodayWh.HasValue)
             {
                 double coveredH = curve.Length;
@@ -397,7 +397,7 @@ public class SmartDistributionService
         }
         else if (tariff.HasHaForecast && tariff.ForecastTodayWh.HasValue)
         {
-            // Profil sinusoïdal avec ForecastTodayWh (pas d'entités intraday configurées)
+            // Sinusoidal profile with ForecastTodayWh (no intraday entities configured)
             double solarStartH = tariff.HoursUntilSolar.HasValue
                                  && tariff.HoursUntilSolar.Value < double.MaxValue
                 ? tariff.HoursUntilSolar.Value : 24.0;
@@ -412,7 +412,7 @@ public class SmartDistributionService
 
             solarExpectedWh = tariff.ForecastTodayWh.Value * solarFraction;
 
-            // Si le slot traverse minuit et que demain est configuré, ajouter la part de J+1
+            // If the slot crosses midnight and tomorrow is configured, add the J+1 share
             if (tariff.ForecastTomorrowWh.HasValue && solarStartH >= hoursRemaining && hoursRemaining > 0)
             {
                 double tomorrowFraction = SolarFractionBetweenHours(0, solarHoursInSlot, 0, 12.0);
@@ -421,7 +421,7 @@ public class SmartDistributionService
         }
         else
         {
-            // Fallback Open-Meteo : W/m² × facteur d'efficacité
+            // Fallback Open-Meteo: W/m² × efficiency factor
             solarExpectedWh = 0;
             double solarStartH = tariff.HoursUntilSolar.HasValue
                                  && tariff.HoursUntilSolar.Value < double.MaxValue
@@ -440,17 +440,17 @@ public class SmartDistributionService
 
         double netEnergyNeededWh = Math.Max(0, energyNeededWh - solarExpectedWh);
 
-        // ── Ajustement consommation maison estimée ────────────────────────────
-        // Le surplus solaire estimé alimentera d'abord la consommation maison avant les batteries.
-        // Si la consommation prévue dépasse le solaire attendu, les batteries ne seront pas
-        // rechargées par le solaire → on augmente la charge réseau en conséquence.
+        // ── Home consumption adjustment ───────────────────────────────────────────────────────────────
+        // The estimated solar surplus will first supply home consumption before batteries.
+        // If the expected consumption exceeds the expected solar, batteries won't be charged
+        // from solar → increase grid charge accordingly.
         //
-        // Exemple : solar attendu = 800Wh, conso estimée = 600Wh, déficit batterie = 500Wh
-        //   → solar net pour batteries = max(0, 800 - 600) = 200Wh
-        //   → netEnergyNeededWh = max(0, 500 - 200) = 300Wh (réseau nécessaire)
+        // Example: expected solar = 800Wh, estimated consumption = 600Wh, battery deficit = 500Wh
+        //   → net solar for batteries = max(0, 800 - 600) = 200Wh
+        //   → netEnergyNeededWh = max(0, 500 - 200) = 300Wh (grid needed)
         //
-        // Sans ce correctif : netEnergyNeededWh = max(0, 500 - 800) = 0Wh (trop optimiste)
-        // → les batteries arrivent vides à la HP car le solaire a été absorbé par la conso maison.
+        // Without this correction: netEnergyNeededWh = max(0, 500 - 800) = 0Wh (too optimistic)
+        // → batteries arrive empty at peak because solar was absorbed by home consumption.
         if (tariff.EstimatedConsumptionNextHoursWh.HasValue && solarExpectedWh > 0)
         {
             double consumptionLoad = tariff.EstimatedConsumptionNextHoursWh.Value;
@@ -461,20 +461,20 @@ public class SmartDistributionService
         if (netEnergyNeededWh <= 0)
             return 0;
 
-        // ── Réduction charge réseau si solaire arrive dans < 2h (Feature 3) ──
-        // Si les prévisions Solcast intraday montrent une production significative
-        // dans les prochaines heures, on réduit la charge réseau proportionnellement.
-        // L'idée : ne pas charger 1000W depuis le réseau si 800Wh arrivent dans 1h30.
+        // ── Reduce grid charge if solar arrives within < 2h (Feature 3) ───────────────────
+        // If Solcast intraday forecasts show significant production in the coming hours,
+        // proportionally reduce grid charging.
+        // Idea: don't charge 1000W from the grid if 800Wh arrive in 1h30.
         //
-        // Réduction proportionnelle : targetW × max(0, 1 - solarCoverage)
-        //   où solarCoverage = ForecastNext3HoursWh / netEnergyNeededWh (clampé à 1)
+        // Proportional reduction: targetW × max(0, 1 - solarCoverage)
+        //   where solarCoverage = ForecastNext3HoursWh / netEnergyNeededWh (clamped to 1)
         //
-        // Exemple : netEnergyNeeded = 500Wh, next3h = 400Wh
-        //   → solarCoverage = 0.80 → réduction = 80% → charge réseau = 20% de targetW
+        // Example: netEnergyNeeded = 500Wh, next3h = 400Wh
+        //   → solarCoverage = 0.80 → reduction = 80% → grid charge = 20% of targetW
         //
-        // La réduction ne s'applique QUE si les entités intraday sont configurées
-        // ET si le solaire prévu dépasse le seuil MinSolarNext3HoursWhForGridReduction.
-        // En urgence (hoursRemaining ≤ urgencyThresholdHours), pas de réduction.
+        // Reduction applies ONLY if intraday entities are configured
+        // AND if the forecast solar exceeds MinSolarNext3HoursWhForGridReduction threshold.
+        // In emergency (hoursRemaining ≤ urgencyThresholdHours), no reduction.
         double intradaySolarReductionFactor = 1.0;
 
         if (tariff.HasIntradayForecast
@@ -487,40 +487,40 @@ public class SmartDistributionService
             if (next3hWh > 0 && netEnergyNeededWh > 0)
             {
                 double solarCoverage = Math.Min(1.0, next3hWh / netEnergyNeededWh);
-                // Réduction douce : on garde au minimum 30% de la charge pour l'urgence
+                // Soft reduction: keep at least 30% of the charge for emergencies
                 intradaySolarReductionFactor = Math.Max(0.30, 1.0 - solarCoverage * 0.7);
             }
         }
-        // Calcule la durée minimale nécessaire pour charger à MaxChargeRateW,
-        // puis vérifie si on a encore le temps d'attendre avant de démarrer.
+        // Compute the minimum duration needed to charge at MaxChargeRateW,
+        // then check whether there is still time to wait before starting.
         //
-        // hoursNeeded   = énergie nette / puissance max
-        // hoursBeforeStart = heures restantes - hoursNeeded - lazyBuffer
+        // hoursNeeded      = net energy / max power
+        // hoursBeforeStart = remaining hours - hoursNeeded - lazyBuffer
         //
-        // Si hoursBeforeStart > 0 → on est encore trop tôt → retourner 0 (veille)
-        // Si hoursBeforeStart ≤ 0 → il est temps de démarrer → puissance adaptative
+        // If hoursBeforeStart > 0 → too early → return 0 (standby)
+        // If hoursBeforeStart ≤ 0 → time to start → adaptive power
         //
-        // Exemple : slot HC 22h→7h (9h), batterie a besoin de 0.5h à 1000W.
-        //   À 22h00 : hoursRemaining=9h, hoursNeeded=0.5h, lazyBuffer=0.5h
-        //             → hoursBeforeStart = 9 - 0.5 - 0.5 = 8h → on attend
-        //   À 06h00 : hoursRemaining=1h → ≤ urgencyThreshold → charge max (cas traité plus haut)
-        //   À 05h30 : hoursRemaining=1.5h, hoursNeeded=0.5h, lazyBuffer=0.5h
-        //             → hoursBeforeStart = 1.5 - 0.5 - 0.5 = 0.5h → encore positif → on attend
-        //   À 06h00 : urgencyThreshold → charge max
+        // Example: off-peak slot 22h→7h (9h), battery needs 0.5h at 1000W.
+        //   At 22h00: hoursRemaining=9h, hoursNeeded=0.5h, lazyBuffer=0.5h
+        //             → hoursBeforeStart = 9 - 0.5 - 0.5 = 8h → waiting
+        //   At 06h00: hoursRemaining=1h → ≤ urgencyThreshold → max charge (case handled above)
+        //   At 05h30: hoursRemaining=1.5h, hoursNeeded=0.5h, lazyBuffer=0.5h
+        //             → hoursBeforeStart = 1.5 - 0.5 - 0.5 = 0.5h → still positive → waiting
+        //   At 06h00: urgencyThreshold → max charge
         //
-        // Le lazyBuffer est une marge de sécurité pour absorber les incertitudes
-        // (SOC qui dérive, cycle BMS, légère sous-estimation de l'énergie nécessaire).
+        // lazyBuffer is a safety margin to absorb uncertainties
+        // (drifting SOC, BMS cycle, slight underestimate of needed energy).
         double hoursNeeded = netEnergyNeededWh / b.MaxChargeRateW;
         double hoursBeforeStart = hoursRemaining - hoursNeeded - lazyBufferHours;
 
         if (hoursBeforeStart > 0)
-            return 0; // Trop tôt — on attend, les batteries travaillent en self-powered
+            return 0; // Too early — waiting, batteries running in self-powered mode
 
-        // C'est l'heure de démarrer : puissance adaptative sur le temps qui reste
+        // Time to start: adaptive power over the remaining time
         double hoursToCharge = Math.Max(hoursNeeded, urgencyThresholdHours);
         double targetW = netEnergyNeededWh / hoursToCharge;
 
-        // Appliquer la réduction intraday si le solaire arrive bientôt
+        // Apply intraday reduction if solar is arriving soon
         targetW *= intradaySolarReductionFactor;
 
         return Math.Clamp(targetW, minGridChargeW, b.MaxChargeRateW);
@@ -594,29 +594,29 @@ public class SmartDistributionService
                     / Math.Max(1, batteries.Average(b => b.MaxChargeRateW)), 0, 1)
                 : 0f,
 
-            // ML-8: HA forecasts — normalisés par capacité totale pour être sans dimension
+            // ML-8: HA forecasts — normalized by total capacity to be unitless
             ForecastTodayNormalized = totalCap > 0 && tariff.ForecastTodayWh.HasValue
                 ? (float)Math.Clamp(tariff.ForecastTodayWh.Value / totalCap, 0, 5) : 0f,
             ForecastTomorrowNormalized = totalCap > 0 && tariff.ForecastTomorrowWh.HasValue
                 ? (float)Math.Clamp(tariff.ForecastTomorrowWh.Value / totalCap, 0, 5) : 0f,
             HasHaForecast = tariff.HasHaForecast ? 1f : 0f,
 
-            // ML-9: ratio J+1 / J — encode la tendance solaire
-            // > 1 : demain meilleur → moins urgent de charger maintenant
-            // < 1 : demain pire    → préserver / charger plus fort ce soir
-            // = 0 : données absentes (HasHaForecast = 0 dans ce cas)
+            // ML-9: solar trend ratio J / J+1 — encodes the solar trend
+            // > 1: tomorrow better → less urgent to charge now
+            // < 1: tomorrow worse  → preserve / charge harder tonight
+            // = 0: data absent (HasHaForecast = 0 in that case)
             ForecastRatioTomorrowVsToday = tariff.ForecastTodayWh.HasValue
                 && tariff.ForecastTodayWh.Value > 0
                 && tariff.ForecastTomorrowWh.HasValue
                 ? (float)Math.Clamp(tariff.ForecastTomorrowWh.Value / tariff.ForecastTodayWh.Value, 0, 3)
                 : 1f,
 
-            // ML-9: signal explicite "le blocage de la charge réseau vient du forecast HA"
-            // Permet au ML de différencier "soleil Open-Meteo" vs "soleil Solcast précis"
+            // ML-9: explicit signal "grid charge was blocked by HA forecast"
+            // Allows the ML to differentiate "Open-Meteo sun" vs "precise Solcast sun"
             SolarBlockedByHaForecast = tariff.SolarExpectedFromHa ? 1f : 0f,
 
-            // Feature 6 — Autosuffisance J-1, normalisée [0–1]
-            // 0.0 si aucune donnée (Solcast non configuré ou première journée)
+            // Feature 6 — Yesterday self-sufficiency, normalised [0–1]
+            // 0.0 if no data (Solcast not configured or first day)
             YesterdaySelfSufficiencyPct = yesterdaySelfSufficiencyPct.HasValue
                 ? (float)Math.Clamp(yesterdaySelfSufficiencyPct.Value / 100.0, 0, 1)
                 : 0f,
@@ -635,15 +635,15 @@ public class SmartDistributionService
     }
 
     /// <summary>
-    /// Calcule la fraction d'énergie solaire produite entre [startH, endH]
-    /// en supposant un profil sinusoïdal normalisé sur [sunriseH, sunsetH].
+    /// Computes the fraction of solar energy produced between [startH, endH]
+    /// assuming a sinusoidal profile normalised over [sunriseH, sunsetH].
     ///
-    /// Production solaire ≈ sin(π × (t - sunrise) / daylightDuration)
-    /// → L'intégrale sur [a, b] normalisée vaut (cos(πa/D) - cos(πb/D)) / 2
-    ///   avec D = daylightDuration, a/b = décalages par rapport au lever.
+    /// Solar production ≈ sin(π × (t - sunrise) / daylightDuration)
+    /// → The integral over [a, b] normalised equals (cos(πa/D) - cos(πb/D)) / 2
+    ///   with D = daylightDuration, a/b = offsets from sunrise.
     ///
-    /// Avantage vs fraction linéaire : correctement pondère le pic de midi
-    /// (les 4h centrales représentent ~60% de l'énergie journalière).
+    /// Advantage over a linear fraction: correctly weights the noon peak
+    /// (the 4 central hours represent ~60% of the daily energy).
     /// </summary>
     private static double SolarFractionBetweenHours(
         double startH, double endH, double sunriseH, double sunsetH)
@@ -651,12 +651,12 @@ public class SmartDistributionService
         double duration = sunsetH - sunriseH;
         if (duration <= 0 || endH <= startH) return 0;
 
-        // Clamp dans la fenêtre solaire
+        // Clamp within the solar window
         double a = Math.Max(0, startH - sunriseH);
         double b = Math.Min(duration, endH - sunriseH);
         if (b <= a) return 0;
 
-        // Intégrale de sin(π×t/D) entre a et b, normalisée sur [0, D] (intégrale totale = 2D/π)
+        // Integral of sin(π×t/D) between a and b, normalized over [0, D] (total integral = 2D/π)
         double integralTotal = 2.0 * duration / Math.PI;
         double integralSlice = (duration / Math.PI)
             * (Math.Cos(Math.PI * a / duration) - Math.Cos(Math.PI * b / duration));
@@ -688,9 +688,9 @@ public class SmartDistributionService
         string balanceBlockInfo = ctx.GridChargeBlockedBySolarSufficiency
             ? " [BLOCKED: solar sufficient today]" : string.Empty;
 
-        // ── Feature 5 — Prix et mode tarifaire utilisé ───────────────────────
+        // ── Feature 5 — Price and tariff mode used ───────────────────────────
         string tariffModeInfo = ctx.IsDynamicTariff
-            ? $" [SPOT {ctx.SpotPricePerKwh:F4}€/kWh | seuil={ctx.DynamicThresholdPerKwh:F4}€/kWh dyn]"
+            ? $" [SPOT {ctx.SpotPricePerKwh:F4}€/kWh | threshold={ctx.DynamicThresholdPerKwh:F4}€/kWh dyn]"
             : $" [slot '{ctx.ActiveSlotName}' YAML]";
 
         if (ctx.GridChargeAllowed)

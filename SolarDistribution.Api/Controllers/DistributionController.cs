@@ -23,7 +23,7 @@ public class DistributionController : ControllerBase
     private readonly IDistributionRepository _repo;
     private readonly ILogger<DistributionController> _logger;
 
-    // Coordonnées par défaut (Bruxelles) — utilisées si non fournies dans la requête
+    // Default coordinates (Brussels) — used if not provided in the request
     private const double DefaultLatitude = 50.85;
     private const double DefaultLongitude = 4.35;
 
@@ -80,15 +80,15 @@ public class DistributionController : ControllerBase
     /// **Weather:** if latitude/longitude are provided, Open-Meteo data is fetched
     /// and stored. Otherwise, Brussels is used as default.
     /// </remarks>
-    /// <response code="200">Distribution calculée, session persistée</response>
-    /// <response code="400">Paramètres invalides</response>
+    /// <response code="200">Distribution computed, session persisted</response>
+    /// <response code="400">Invalid parameters</response>
     [HttpPost("calculate")]
     [ProducesResponseType(typeof(DistributionResponseDto), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     public async Task<ActionResult<DistributionResponseDto>> Calculate(
         [FromBody] DistributionRequestDto request)
     {
-        // Validation métier
+        // Business validation
         var ids = request.Batteries.Select(b => b.Id).ToList();
         if (ids.Distinct().Count() != ids.Count)
             return BadRequest(new { error = "Battery IDs must be unique." });
@@ -119,7 +119,7 @@ public class DistributionController : ControllerBase
             return Ok(smartWrapper.ToDto());
         }
 
-        // Fix #2 : méthode async — plus de GetAwaiter().GetResult() qui risquait un deadlock
+        // Fix #2 : async method — no more GetAwaiter().GetResult() that could cause a deadlock
         var result = await _smartService.DistributeAsync(request.SurplusW, batteries, lat, lon);
 
         return Ok(result.ToDto());

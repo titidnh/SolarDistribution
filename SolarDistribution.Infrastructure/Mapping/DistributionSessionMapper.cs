@@ -28,7 +28,7 @@ public static class DistributionSessionMapper
             DecisionEngine = decisionEngine,
             MlConfidenceScore = mlReco?.ConfidenceScore,
 
-            // Contexte tarifaire standard
+            // Standard tariff context
             TariffSlotName = tariff.ActiveSlotName,
             TariffPricePerKwh = tariff.CurrentPricePerKwh,
             WasGridChargeFavorable = tariff.IsFavorableForGrid,
@@ -37,13 +37,13 @@ public static class DistributionSessionMapper
             AvgSolarForecastWm2 = tariff.AvgSolarForecastWm2,
             TariffMaxSavingsPerKwh = tariff.MaxSavingsPerKwh,
 
-            // Contexte adaptatif étendu (ML-7)
+            // Extended adaptive context (ML-7)
             HoursRemainingInSlot = tariff.HoursRemainingInSlot,
             HoursUntilSolar = tariff.HoursUntilSolar.HasValue
                                          && tariff.HoursUntilSolar.Value < double.MaxValue
                 ? tariff.HoursUntilSolar.Value : null,
 
-            // Prévisions HA installation-spécifiques (ML-8)
+            // Installation-specific HA forecasts (ML-8)
             ForecastTodayWh = tariff.ForecastTodayWh,
             ForecastTomorrowWh = tariff.ForecastTomorrowWh,
 
@@ -51,11 +51,11 @@ public static class DistributionSessionMapper
             EstimatedConsumptionNextHoursWh = tariff.EstimatedConsumptionNextHoursWh,
             MeasuredConsumptionW = measuredConsumptionW,
 
-            // Intraday + bilan journalier (Feature 3 & 4)
+            // Intraday + daily balance (Feature 3 & 4)
             ForecastRemainingTodayWh = tariff.ForecastRemainingTodayWh,
             EnergyDeficitTodayWh = tariff.EnergyDeficitTodayWh,
-            // DailySolarConsumedWh = ForecastToday(début journée) − ForecastRemainingToday
-            // forecastTodayWhAtStartOfDay est la valeur lue en début de journée (stockée par le worker)
+            // DailySolarConsumedWh = ForecastToday(start of day) - ForecastRemainingToday
+            // forecastTodayWhAtStartOfDay is the value read at start of day (stored by worker)
             DailySolarConsumedWh =
                 forecastTodayWhAtStartOfDay.HasValue && tariff.ForecastRemainingTodayWh.HasValue
                     ? Math.Max(0, forecastTodayWhAtStartOfDay.Value - tariff.ForecastRemainingTodayWh.Value)
@@ -81,12 +81,12 @@ public static class DistributionSessionMapper
                 IsEmergencyGridCharge = alloc.IsEmergencyGridCharge,
                 GridChargeAllowedW = orig?.GridChargeAllowedW ?? 0,
                 Reason = alloc.Reason,
-                // ML-8 : cycle de vie — persisté pour traçabilité et recalcul ML historique
+                // ML-8: lifecycle — persisted for traceability and historical ML recomputation
                 CycleCount = orig?.CycleCount ?? 0,
             };
         }).ToList();
 
-        // Champs de synthèse session
+        // Session summary fields
         session.HadEmergencyGridCharge = result.Allocations.Any(a => a.IsEmergencyGridCharge);
 
         var hcBatteries = originalBatteries

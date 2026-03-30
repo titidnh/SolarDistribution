@@ -12,17 +12,17 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace SolarDistribution.Tests.Unit;
 
 /// <summary>
-/// Tests unitaires pour les formules de calcul de <see cref="FeedbackEvaluator"/>.
+/// Unit tests for <see cref="FeedbackEvaluator"/> calculation formulas.
 ///
-/// STRATÉGIE : On teste les méthodes de calcul en construisant des sessions
-/// et en vérifiant les scores produits par CollectPendingFeedbacksAsync,
-/// via un IHomeAssistantClient mocké qui retourne des SOC contrôlés.
+/// STRATEGY: test calculation methods by creating sessions
+/// and verifying scores produced by CollectPendingFeedbacksAsync,
+/// through a mocked IHomeAssistantClient returning controlled SOC values.
 ///
-/// Les tests couvrent :
-///   - ComputeEnergyEfficiency (toute l'énergie absorbée / partielle / aucune)
-///   - ComputeAvailabilityScore (batteries au-dessus / en-dessous de MinPercent)
-///   - ComputeObservedOptimalSoftMax (trop bas → correction, trop haut → réduction, équilibre)
-///   - ComputeObservedOptimalPreventive (batterie tombée sous min, très au-dessus, équilibre)
+/// Tests cover:
+///   - ComputeEnergyEfficiency (all energy absorbed / partial / none)
+///   - ComputeAvailabilityScore (batteries above / below MinPercent)
+///   - ComputeObservedOptimalSoftMax (too low → correction, too high → reduction, balanced)
+///   - ComputeObservedOptimalPreventive (battery below min, far above, balanced)
 /// </summary>
 [TestFixture]
 public class FeedbackEvaluatorTests
@@ -166,7 +166,7 @@ public class FeedbackEvaluatorTests
             .Returns(new List<DistributionSession> { session });
 
         ha.GetNumericStateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
-            .Returns(45.0); // bien au-dessus des 20%
+            .Returns(45.0); // well above 20%
 
         SessionFeedback? saved = null;
         await repo.SaveFeedbackAsync(Arg.Do<SessionFeedback>(f => saved = f), Arg.Any<CancellationToken>());
@@ -185,7 +185,7 @@ public class FeedbackEvaluatorTests
         repo.GetSessionsPendingFeedbackAsync(Arg.Any<double>(), Arg.Any<CancellationToken>())
             .Returns(new List<DistributionSession> { session });
 
-        // SOC tombe à 10% alors que MinPercent = 20% → score = 10/20 = 0.5
+        // SOC drops to 10% while MinPercent = 20% → score = 10/20 = 0.5
         ha.GetNumericStateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(10.0);
 
@@ -202,14 +202,14 @@ public class FeedbackEvaluatorTests
     [Test]
     public async Task CollectFeedback_LowAvailability_SoftMaxIncreasedAboveApplied()
     {
-        // AvailabilityScore < 0.7 → le SoftMax doit être augmenté
+        // AvailabilityScore < 0.7 → SoftMax should be increased
         var (ev, repo, ha) = CreateEvaluator(MakeConfig(minPct: 20));
         var session = MakeSession(1000, 1000, 0, softMaxPct: 80);
 
         repo.GetSessionsPendingFeedbackAsync(Arg.Any<double>(), Arg.Any<CancellationToken>())
             .Returns(new List<DistributionSession> { session });
 
-        // SOC observé = 5% << 20% MinPercent → availability très basse
+        // Observed SOC = 5% << 20% MinPercent → very low availability
         ha.GetNumericStateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(5.0);
 
@@ -219,21 +219,21 @@ public class FeedbackEvaluatorTests
         await ev.CollectPendingFeedbacksAsync();
 
         saved!.ObservedOptimalSoftMax.Should().BeGreaterThan(80,
-            "le SoftMax appliqué était trop bas — on doit recommander plus haut");
+            "applied SoftMax was too low — should recommend higher");
         saved.ObservedOptimalSoftMax.Should().BeLessOrEqualTo(95);
     }
 
     [Test]
     public async Task CollectFeedback_GoodAvailabilityEquilibrium_SoftMaxUnchanged()
     {
-        // SOC observé > MinPercent → availability OK → SoftMax conservé
+        // Observed SOC > MinPercent → availability OK → SoftMax unchanged
         var (ev, repo, ha) = CreateEvaluator(MakeConfig(minPct: 20));
         var session = MakeSession(1000, 700, 300, softMaxPct: 80);
 
         repo.GetSessionsPendingFeedbackAsync(Arg.Any<double>(), Arg.Any<CancellationToken>())
             .Returns(new List<DistributionSession> { session });
 
-        // SOC à 60% : bien au-dessus de 20% min et pas >> softMax+5 = 85
+        // SOC at 60%: well above 20% min and not >> softMax+5 = 85
         ha.GetNumericStateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(60.0);
 
@@ -243,20 +243,20 @@ public class FeedbackEvaluatorTests
         await ev.CollectPendingFeedbacksAsync();
 
         saved!.ObservedOptimalSoftMax.Should().BeApproximately(80, 1.0,
-            "équilibre → SoftMax appliqué est bon");
+            "balanced case → applied SoftMax is good");
     }
 
     [Test]
     public async Task CollectFeedback_BatteriesUnnecessarilyHigh_SoftMaxReduced()
     {
-        // avgSocNow > appliedSoftMax + 5 ET UnusedSurplusW > 0 → réduction
+        // avgSocNow > appliedSoftMax + 5 AND UnusedSurplusW > 0 → reduction
         var (ev, repo, ha) = CreateEvaluator(MakeConfig(minPct: 20));
         var session = MakeSession(1000, 1000, 200, softMaxPct: 80); // unused > 0
 
         repo.GetSessionsPendingFeedbackAsync(Arg.Any<double>(), Arg.Any<CancellationToken>())
             .Returns(new List<DistributionSession> { session });
 
-        // SOC à 90% >> 80 + 5 = 85 ET unused > 0 → SoftMax trop élevé
+        // SOC at 90% >> 80 + 5 = 85 AND unused > 0 → SoftMax too high
         ha.GetNumericStateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(90.0);
 
@@ -266,7 +266,7 @@ public class FeedbackEvaluatorTests
         await ev.CollectPendingFeedbacksAsync();
 
         saved!.ObservedOptimalSoftMax.Should().BeLessThan(80,
-            "batteries inutilement hautes → SoftMax devrait être réduit");
+            "batteries unnecessarily high → SoftMax should be reduced");
     }
 
     // ── ObservedOptimalPreventive ─────────────────────────────────────────────
@@ -280,7 +280,7 @@ public class FeedbackEvaluatorTests
         repo.GetSessionsPendingFeedbackAsync(Arg.Any<double>(), Arg.Any<CancellationToken>())
             .Returns(new List<DistributionSession> { session });
 
-        // Batterie tombée à 10% < 20% MinPercent
+        // Battery dropped to 10% < 20% MinPercent
         ha.GetNumericStateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(10.0);
 
@@ -290,7 +290,7 @@ public class FeedbackEvaluatorTests
         await ev.CollectPendingFeedbacksAsync();
 
         saved!.ObservedOptimalPreventive.Should().BeGreaterThan(20,
-            "batterie passée sous MinPercent → seuil préventif trop bas");
+            "battery dropped below MinPercent → preventive threshold too low");
         saved.ObservedOptimalPreventive.Should().BeLessOrEqualTo(50);
     }
 
@@ -303,7 +303,7 @@ public class FeedbackEvaluatorTests
         repo.GetSessionsPendingFeedbackAsync(Arg.Any<double>(), Arg.Any<CancellationToken>())
             .Returns(new List<DistributionSession> { session });
 
-        // Batterie à 50% >> 20 + 20 = 40% → seuil trop conservateur
+        // Battery at 50% >> 20 + 20 = 40% → threshold too conservative
         ha.GetNumericStateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(50.0);
 
@@ -313,10 +313,10 @@ public class FeedbackEvaluatorTests
         await ev.CollectPendingFeedbacksAsync();
 
         saved!.ObservedOptimalPreventive.Should().BeLessThan(20,
-            "batterie très au-dessus → seuil préventif peut être réduit");
+            "battery far above target → preventive threshold can be reduced");
     }
 
-    // ── HA lecture échouée ────────────────────────────────────────────────────
+    // ── HA read failure ─────────────────────────────────────────────────────
 
     [Test]
     public async Task CollectFeedback_AllHaReadsFail_FeedbackIsInvalid()
@@ -327,7 +327,7 @@ public class FeedbackEvaluatorTests
         repo.GetSessionsPendingFeedbackAsync(Arg.Any<double>(), Arg.Any<CancellationToken>())
             .Returns(new List<DistributionSession> { session });
 
-        // Toutes les lectures HA échouent → null
+        // All HA reads fail → null
         ha.GetNumericStateAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns((double?)null);
 

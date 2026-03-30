@@ -12,81 +12,81 @@ public class TariffConfig
     public int SolarForecastHorizonHours { get; set; } = 4;
 
     /// <summary>
-    /// [HA Forecast] Seuil en Wh en dessous duquel la journée est considérée « peu solaire ».
-    /// Si ForecastTodayWh >= cette valeur → bloque la charge réseau (le soleil couvrira la demande).
-    /// Défaut 500 Wh : en dessous, on ne compte pas sur le solaire pour remplir les batteries.
-    /// Exemple : installation 2 kWc → mettre ~800 Wh ; 4 kWc → ~1500 Wh.
+    /// [HA Forecast] Wh threshold below which the day is considered "low solar".
+    /// If ForecastTodayWh >= this value → blocks grid charging (solar will cover demand).
+    /// Default 500 Wh: below this, we do not rely on solar to fill the batteries.
+    /// Example: 2 kWp installation → set ~800 Wh; 4 kWp → ~1500 Wh.
     /// </summary>
     public double MinHaForecastWhForGridBlock { get; set; } = 500.0;
 
     /// <summary>
-    /// [HA Forecast J+1] En dessous de ce seuil (Wh), demain est considéré « mauvais ».
-    /// Quand on est dans un créneau tarifaire favorable (IsFavorableForGrid), le SoftMax
-    /// des batteries est augmenté de EveningBoostPercent pour maximiser la réserve.
-    /// Défaut 1000 Wh.
+    /// [HA Forecast J+1] Below this threshold (Wh), tomorrow is considered "bad".
+    /// When in a favourable tariff slot (IsFavorableForGrid), the batteries' SoftMax
+    /// is increased by EveningBoostPercent to maximise the reserve.
+    /// Default 1000 Wh.
     /// </summary>
     public double LowForecastTomorrowWh { get; set; } = 1000.0;
 
     /// <summary>
-    /// Bonus SoftMax (points de %) ajouté quand demain est prévu mauvais
-    /// ET qu'on est dans un créneau tarifaire favorable (HC, week-end, etc.).
-    /// Défaut 10% → si SoftMax = 80%, passe à 90% pendant les heures creuses.
+    /// SoftMax bonus (percentage points) added when tomorrow is forecast bad
+    /// AND we are in a favourable tariff slot (off-peak, weekend, etc.).
+    /// Default 10% → if SoftMax = 80%, rises to 90% during off-peak hours.
     /// </summary>
     public double EveningBoostPercent { get; set; } = 10.0;
 
     /// <summary>
-    /// Lazy Charging — marge de sécurité (en heures) ajoutée à la durée de charge estimée
-    /// pour calculer l'heure de démarrage optimale en HC.
+    /// Lazy Charging — safety buffer (in hours) added to the estimated charge duration
+    /// to compute the optimal start time in off-peak.
     ///
-    /// Principe : plutôt que de charger dès l'ouverture du slot HC à faible puissance,
-    /// le worker attend l'heure la plus tardive possible, puis charge à pleine puissance
-    /// juste avant la fin du slot (maximise le temps en self-powered, réduit les cycles BMS).
+    /// Principle: rather than charging immediately when the off-peak slot opens at low power,
+    /// the worker waits until the latest possible time, then charges at full power
+    /// just before the slot ends (maximises self-powered time, reduces BMS cycles).
     ///
-    ///   heure de démarrage = fin_du_slot - hoursNeeded - lazy_buffer_hours
+    ///   start time = slot_end - hoursNeeded - lazy_buffer_hours
     ///
-    /// Exemple : slot HC 22h→7h (9h), besoin de 0.5h à 1000W, buffer=0.5h
-    ///   → démarrage à 06h00 (9h - 0.5h - 0.5h = 8h d'attente depuis 22h)
+    /// Example: off-peak slot 22h→7h (9h), needs 0.5h at 1000W, buffer=0.5h
+    ///   → start at 06h00 (9h - 0.5h - 0.5h = 8h waiting from 22h)
     ///
-    /// Valeur recommandée : 0.5 (30 min).
-    /// Augmenter si les batteries décrochent souvent (SOC surestime ou dérive).
-    /// Mettre à 0 pour désactiver le lazy charging (comportement original).
+    /// Recommended value: 0.5 (30 min).
+    /// Increase if batteries frequently fail to reach target (SOC overestimation or drift).
+    /// Set to 0 to disable lazy charging (original behaviour).
     /// </summary>
     public double LazyBufferHours { get; set; } = 0.5;
 
     /// <summary>
-    /// [OPTIONNEL] Entité HA exposant le prix spot courant en €/kWh.
+    /// [OPTIONAL] HA entity exposing the current spot price in €/kWh.
     /// Ex : "sensor.tibber_current_price", "sensor.eneco_current_price",
     ///      "sensor.belpower_current_price", "sensor.epex_current_price"
     ///
-    /// Quand cette entité est configurée ET lisible, son prix remplace la
-    /// lecture du créneau YAML actif dans GetCurrentPricePerKwh().
-    /// Les créneaux YAML restent utilisés comme fallback si la lecture échoue.
+    /// When this entity is configured AND readable, its price overrides the
+    /// active YAML slot in GetCurrentPricePerKwh().
+    /// YAML slots are still used as fallback if the read fails.
     ///
-    /// Laisser null (ou commenter dans config.yaml) pour désactiver le mode dynamique.
+    /// Leave null (or comment out in config.yaml) to disable dynamic mode.
     /// </summary>
     public string? CurrentPriceEntity { get; set; }
 
     /// <summary>
-    /// Facteur multiplicateur pour le seuil de charge réseau en mode dynamique.
-    /// grid_charge_threshold = moyenne_24h × DynamicThresholdFactor
+    /// Multiplier for the dynamic grid charge threshold.
+    /// grid_charge_threshold = avg_24h × DynamicThresholdFactor
     ///
-    /// Exemple : prix moyen 24h = 0.20 €/kWh, factor = 0.8
-    ///   → seuil dynamique = 0.16 €/kWh
-    ///   → autorise la charge quand le prix est 20% sous la moyenne journalière
+    /// Example: 24h average price = 0.20 €/kWh, factor = 0.8
+    ///   → dynamic threshold = 0.16 €/kWh
+    ///   → allows charging when price is 20% below the daily average
     ///
-    /// Valeur recommandée : 0.8 (charge quand prix < 80% de la moyenne).
-    /// Mettre 1.0 pour charger dès que le prix est sous la moyenne.
-    /// Ignoré si CurrentPriceEntity est null.
+    /// Recommended value: 0.8 (charge when price < 80% of average).
+    /// Set 1.0 to charge whenever price is below average.
+    /// Ignored if CurrentPriceEntity is null.
     /// </summary>
     public double DynamicThresholdFactor { get; set; } = 0.8;
 
     public List<TariffSlot> Slots { get; set; } = new List<TariffSlot>();
 
     /// <summary>
-    /// [Intraday] Seuil Wh sur les 3 prochaines heures au-dessus duquel la charge réseau
-    /// est réduite car le solaire arrive bientôt.
-    /// Si ForecastNext3HoursWh >= cette valeur → on réduit la charge réseau proportionnellement.
-    /// Défaut 200 Wh (= 200W moyen sur 1h ≈ une production solaire modeste).
+    /// [Intraday] Wh threshold over the next 3 hours above which grid charging
+    /// is reduced because solar is arriving soon.
+    /// If ForecastNext3HoursWh >= this value → grid charging is proportionally reduced.
+    /// Default 200 Wh (= 200W average over 1h ≈ modest solar production).
     /// </summary>
     public double MinSolarNext3HoursWhForGridReduction { get; set; } = 200.0;
 }
@@ -127,13 +127,13 @@ public class TariffEngine
     private readonly TariffConfig _config;
     private readonly ILogger<TariffEngine> _logger;
 
-    // ── Prix spot dynamique (Feature 5) ──────────────────────────────────────
-    // Alimenté par HomeAssistantDataReader à chaque cycle si CurrentPriceEntity
-    // est configuré. Null = pas de prix spot disponible → fallback sur les slots YAML.
+    // ── Dynamic spot price (Feature 5) ───────────────────────────────────────
+    // Fed by HomeAssistantDataReader each cycle if CurrentPriceEntity is configured.
+    // Null = no spot price available → fallback to YAML slots.
     private double? _liveSpotPrice;
 
-    // Rolling 24h des prix spot pour calculer le seuil dynamique.
-    // Chaque entrée = (timestamp UTC, prix €/kWh). On conserve max 24h de données.
+    // Rolling 24h spot price history for computing the dynamic threshold.
+    // Each entry = (UTC timestamp, price €/kWh). Maximum 24h of data retained.
     private readonly List<(DateTime Ts, double Price)> _spotPriceHistory = new();
     private const int SpotHistoryMaxHours = 24;
 
@@ -144,9 +144,9 @@ public class TariffEngine
     }
 
     /// <summary>
-    /// Met à jour le prix spot live venant de HA.
-    /// Appelé par HomeAssistantDataReader après chaque lecture réussie.
-    /// Alimente aussi l'historique rolling 24h pour le calcul du seuil dynamique.
+    /// Updates the live spot price from HA.
+    /// Called by HomeAssistantDataReader after each successful read.
+    /// Also feeds the rolling 24h history for dynamic threshold computation.
     /// </summary>
     public void UpdateSpotPrice(double? pricePerKwh)
     {
@@ -157,15 +157,15 @@ public class TariffEngine
             var now = DateTime.UtcNow;
             _spotPriceHistory.Add((now, pricePerKwh.Value));
 
-            // Purge des entrées > 24h
+            // Purge entries older than 24h
             var cutoff = now.AddHours(-SpotHistoryMaxHours);
             _spotPriceHistory.RemoveAll(e => e.Ts < cutoff);
         }
     }
 
     /// <summary>
-    /// Calcule le seuil de charge réseau dynamique = moyenne_24h × DynamicThresholdFactor.
-    /// Retourne null si moins de 3 points d'historique (fallback sur seuil statique YAML).
+    /// Computes the dynamic grid charge threshold = avg_24h × DynamicThresholdFactor.
+    /// Returns null if fewer than 3 history points exist (fallback to static YAML threshold).
     /// </summary>
     public double? ComputeDynamicThreshold()
     {
@@ -199,9 +199,9 @@ public class TariffEngine
     public string? LastSlotConflict { get; private set; }
 
     /// <summary>
-    /// Prix courant en €/kWh.
-    /// Priorité : prix spot live HA (si CurrentPriceEntity configuré ET lecture OK)
-    ///            → fallback : créneau YAML actif → null si aucun créneau actif.
+    /// Current price in €/kWh.
+    /// Priority: live HA spot price (if CurrentPriceEntity configured AND read OK)
+    ///           → fallback: active YAML slot → null if no active slot.
     /// </summary>
     public double? GetCurrentPricePerKwh(DateTime localTime)
     {
@@ -212,10 +212,10 @@ public class TariffEngine
     }
 
     /// <summary>
-    /// True si le tarif courant est favorable pour charger depuis le réseau.
-    /// En mode dynamique : prix spot &lt; seuil_dynamique (rolling 24h × factor).
-    ///   → Log du seuil utilisé pour traçabilité de la décision.
-    /// En mode statique  : prix actuel &lt; GridChargeThresholdPerKwh (YAML).
+    /// True if the current tariff is favourable for charging from the grid.
+    /// Dynamic mode: spot price &lt; dynamic_threshold (rolling 24h × factor).
+    ///   → Logs the threshold used for decision traceability.
+    /// Static mode: current price &lt; GridChargeThresholdPerKwh (YAML).
     /// </summary>
     public bool IsGridChargeFavorable(DateTime localTime)
     {
@@ -277,20 +277,20 @@ public class TariffEngine
         int horizon = _config.SolarForecastHorizonHours;
         double avgSolar = solarForecastWm2.Take(horizon).DefaultIfEmpty(0).Average();
 
-        // Open-Meteo W/m² : signal générique
+        // Open-Meteo W/m²: generic signal
         bool solarExpectedFromMeteo = avgSolar >= _config.MinSolarForecastForGridBlock;
 
-        // HA Forecast Wh : signal installation-spécifique, plus précis
-        // Si le forecast HA prédit assez d'énergie aujourd'hui → le solaire couvrira la demande
+        // HA Forecast Wh: installation-specific signal, more precise
+        // If HA forecast predicts enough energy today → solar will cover demand
         bool solarExpectedFromHa = forecastTodayWh.HasValue
             && forecastTodayWh.Value >= _config.MinHaForecastWhForGridBlock;
 
-        // OR logique : si l'un ou l'autre signal prédit du solaire → bloquer la charge réseau
+        // Logical OR: if either signal predicts solar → block grid charging
         bool solarExpected = solarExpectedFromMeteo || solarExpectedFromHa;
 
-        // ── Bilan énergétique journalier (Feature 4) ─────────────────────────
-        // EnergyDeficitTodayWh = énergie nécessaire pour remplir les batteries - solaire restant.
-        // Si le solaire restant couvre le déficit → bloquer la charge réseau même en HC.
+        // ── Daily energy balance (Feature 4) ─────────────────────────────────
+        // EnergyDeficitTodayWh = energy needed to fill batteries - remaining solar.
+        // If remaining solar covers the deficit → block grid charging even in off-peak.
         double? energyDeficitTodayWh = null;
         bool gridChargeBlockedBySolarSufficiency = false;
 
@@ -302,7 +302,7 @@ public class TariffEngine
 
             energyDeficitTodayWh = energyNeededWh - forecastRemainingTodayWh.Value;
 
-            // Si le solaire restant couvre le besoin batterie → pas besoin de charger du réseau
+            // If remaining solar covers battery need → no grid charge needed
             if (energyDeficitTodayWh <= 0)
             {
                 gridChargeBlockedBySolarSufficiency = true;
@@ -320,7 +320,7 @@ public class TariffEngine
             }
         }
 
-        // GridChargeAllowed : bloqué aussi si le bilan journalier est positif (solaire suffisant)
+        // GridChargeAllowed: also blocked if the daily balance is positive (solar sufficient)
         bool gridChargeAllowed = isFavorable
             && !solarExpected
             && !gridChargeBlockedBySolarSufficiency
@@ -336,9 +336,9 @@ public class TariffEngine
         double? hoursUntilSolar = ComputeHoursUntilSolar(localTime, solarForecastWm2);
 
         // ── Intraday Solcast curve (Feature 3) ───────────────────────────────
-        // On construit un tableau [Wh/h] à partir des entités Solcast HA :
-        //   [0] = this_hour, [1] = next_hour, [2] = extrapolation linéaire (decay de next_hour)
-        // Cette courbe remplace SolarFractionBetweenHours() quand elle est disponible.
+            // Build a [Wh/h] array from HA Solcast entities:
+            //   [0] = this_hour, [1] = next_hour, [2] = linear extrapolation (decay from next_hour)
+            // This curve replaces SolarFractionBetweenHours() when available.
         double[]? solcastHourlyCurveWh = null;
         double? forecastNext3HoursWh = null;
 
@@ -346,8 +346,8 @@ public class TariffEngine
         {
             double thisH = forecastThisHourWh ?? forecastNextHourWh.Value;
             double nextH = forecastNextHourWh.Value;
-            // Extrapolation heure+2 : moyenne pondérée (decay vers next_hour)
-            double h2 = nextH * 0.85; // légère décroissance conservative
+            // Hour+2 extrapolation: weighted average (decay toward next_hour)
+            double h2 = nextH * 0.85; // slight conservative decay
 
             solcastHourlyCurveWh = [thisH, nextH, h2];
             forecastNext3HoursWh = thisH + nextH + h2;
@@ -443,7 +443,7 @@ public record TariffContext(
     bool GridChargeAllowed,
     double AvgSolarForecastWm2,
     bool SolarExpectedSoon,
-    /// <summary>True si le blocage vient spécifiquement du forecast HA (plus précis qu'Open-Meteo).</summary>
+    /// <summary>True if the block comes specifically from HA forecast (more precise than Open-Meteo).</summary>
     bool SolarExpectedFromHa,
     double? HoursToNextFavorable,
     double MaxSavingsPerKwh,
@@ -458,82 +458,82 @@ public record TariffContext(
     double? ForecastTodayWh,
     /// <summary>HA solar forecast tomorrow (Wh) — installation-specific. Null if not configured.</summary>
     double? ForecastTomorrowWh,
-    /// <summary>True si demain est prévu sous le seuil LowForecastTomorrowWh → boost SoftMax en HC.</summary>
+    /// <summary>True if tomorrow is forecast below LowForecastTomorrowWh threshold → boost SoftMax in off-peak.</summary>
     bool HasLowForecastTomorrow,
-    /// <summary>Bonus SoftMax (%) quand demain est mauvais et qu'on est dans un créneau favorable.</summary>
+    /// <summary>SoftMax bonus (%) when tomorrow is poor and current slot is favorable.</summary>
     double EveningBoostPercent,
-    /// <summary>Marge de sécurité en heures pour le Lazy Charging (décalage du démarrage vers la fin du slot HC).</summary>
+    /// <summary>Safety margin in hours for Lazy Charging (delays start toward end of off-peak slot).</summary>
     double LazyBufferHours,
     /// <summary>
-    /// Consommation maison estimée sur les prochaines heures (Wh).
-    /// Calculée par rolling average des N derniers cycles × horizon de projection.
-    /// Null si aucune entité de consommation n'est configurée ou si insuffisamment de données.
-    /// Utilisée dans ComputeAdaptiveGridChargeW pour augmenter la charge réseau en anticipation
-    /// d'une forte conso prévue (ex: four, EV) qui réduirait l'autoconsommation solaire.
+    /// Estimated home consumption over the next hours (Wh).
+    /// Computed from rolling average over last N cycles × projection horizon.
+    /// Null if no consumption entity is configured or insufficient data.
+    /// Used in ComputeAdaptiveGridChargeW to increase grid charging in anticipation
+    /// of high expected load (e.g., oven, EV) that would reduce solar self-consumption.
     /// </summary>
     double? EstimatedConsumptionNextHoursWh,
 
     // ── Intraday Solcast forecast ────────────────────────────────────────────
     /// <summary>
-    /// Production Solcast CETTE HEURE (Wh). Null si non configuré.
-    /// Permet de savoir si le solaire monte en ce moment.
+    /// Solcast production THIS HOUR (Wh). Null if not configured.
+    /// Helps determine whether solar is ramping up now.
     /// </summary>
     double? ForecastThisHourWh,
     /// <summary>
-    /// Production Solcast L'HEURE SUIVANTE (Wh). Null si non configuré.
-    /// Si élevé → ne pas charger depuis le réseau, le solaire arrive dans &lt; 1h.
+    /// Solcast production NEXT HOUR (Wh). Null if not configured.
+    /// If high → do not charge from grid, solar arrives in &lt; 1h.
     /// </summary>
     double? ForecastNextHourWh,
     /// <summary>
-    /// Somme des 3 prochaines heures Solcast (Wh) : this_hour + next_hour + heure_après.
-    /// Construit depuis ForecastThisHourWh + ForecastNextHourWh + extrapolation linéaire.
+    /// Sum of next 3 Solcast hours (Wh): this_hour + next_hour + hour_after.
+    /// Built from ForecastThisHourWh + ForecastNextHourWh + linear extrapolation.
     /// Null si ForecastNextHourWh est absent.
     /// </summary>
     double? ForecastNext3HoursWh,
     /// <summary>
-    /// Production Solcast RESTANTE AUJOURD'HUI (Wh). Null si non configuré.
-    /// Utilisé pour le bilan énergétique journalier (Feature 4).
+    /// REMAINING Solcast production TODAY (Wh). Null if not configured.
+    /// Used for daily energy balance (Feature 4).
     /// </summary>
     double? ForecastRemainingTodayWh,
     /// <summary>
-    /// Courbe Solcast horaire réelle [Wh/h] reconstituée depuis les entités HA.
-    /// Index 0 = heure courante, 1 = heure suivante, etc.
-    /// Null si les entités intraday ne sont pas configurées.
+    /// Real hourly Solcast curve [Wh/h] rebuilt from HA entities.
+    /// Index 0 = current hour, 1 = next hour, etc.
+    /// Null if intraday entities are not configured.
     /// Remplace SolarFractionBetweenHours() dans ComputeAdaptiveGridChargeW.
     /// </summary>
     double[]? SolcastHourlyCurveWh,
 
-    // ── Bilan énergétique journalier (Feature 4) ─────────────────────────────
+    // ── Daily energy balance (Feature 4) ────────────────────────────────────
     /// <summary>
-    /// Déficit énergétique aujourd'hui (Wh) :
+    /// Energy deficit today (Wh):
     ///   capacity × (softMax − avgSoc) − ForecastRemainingTodayWh
-    /// Positif → les batteries ne seront pas remplies par le solaire seul → charge réseau justifiée.
-    /// Négatif/nul → le solaire restant suffit → bloquer la charge réseau même en HC.
+    /// Positive → batteries will not be filled by solar alone → grid charge justified.
+    /// Negative/zero → remaining solar is sufficient → block grid charging even in off-peak.
     /// Null si ForecastRemainingTodayWh est absent (pas de calcul possible).
     /// </summary>
     double? EnergyDeficitTodayWh,
     /// <summary>
-    /// True si la charge réseau est bloquée car le solaire restant aujourd'hui
-    /// est suffisant pour couvrir le déficit batterie (EnergyDeficitTodayWh ≤ 0).
-    /// Motif de blocage plus précis que SolarExpectedSoon (qui est binaire).
+    /// True if grid charging is blocked because remaining solar today
+    /// is sufficient to cover battery deficit (EnergyDeficitTodayWh <= 0).
+    /// More precise block reason than SolarExpectedSoon (binary).
     /// </summary>
     bool GridChargeBlockedBySolarSufficiency,
 
-    // ── Tarif dynamique SPOT (Feature 5) ─────────────────────────────────────
+    // ── Dynamic SPOT tariff (Feature 5) ─────────────────────────────────────
     /// <summary>
-    /// True si le prix provient d'une entité HA live (mode dynamique SPOT).
-    /// False = mode statique YAML (créneaux HC/HP codés en dur).
+    /// True if price comes from a live HA entity (dynamic SPOT mode).
+    /// False = static YAML mode (hard-coded off-peak/peak slots).
     /// </summary>
     bool IsDynamicTariff,
     /// <summary>
-    /// Prix spot courant lu depuis HA (€/kWh). Null si non configuré ou lecture échouée.
-    /// En mode dynamique, ce prix remplace le créneau YAML dans toutes les décisions.
+    /// Current spot price read from HA (€/kWh). Null if not configured or read failed.
+    /// In dynamic mode, this price replaces YAML slot price in all decisions.
     /// </summary>
     double? SpotPricePerKwh,
     /// <summary>
-    /// Seuil de charge réseau calculé dynamiquement = moyenne_24h × DynamicThresholdFactor.
-    /// Null si moins de 3 points d'historique (fallback sur GridChargeThresholdPerKwh YAML).
-    /// Affiché dans les logs pour traçabilité de la décision de charge réseau.
+    /// Dynamically computed grid charge threshold = avg_24h × DynamicThresholdFactor.
+    /// Null if fewer than 3 history points (fallback to YAML GridChargeThresholdPerKwh).
+    /// Logged for traceability of grid-charge decisions.
     /// </summary>
     double? DynamicThresholdPerKwh
 )
@@ -543,21 +543,21 @@ public record TariffContext(
         : 0.5;
 
     /// <summary>
-    /// True si des prévisions HA de haute qualité (installation-spécifiques) sont disponibles.
-    /// Quand true, l'algo utilise ForecastTodayWh/TomorrowWh plutôt que le modèle générique.
+    /// True if high-quality HA forecasts (installation-specific) are available.
+    /// When true, algorithm uses ForecastTodayWh/TomorrowWh instead of generic model.
     /// </summary>
     public bool HasHaForecast => ForecastTodayWh.HasValue || ForecastTomorrowWh.HasValue;
 
     /// <summary>
-    /// True si les entités Solcast intraday sont disponibles.
-    /// Quand true, SolcastHourlyCurveWh remplace SolarFractionBetweenHours() dans le calcul adaptatif.
+    /// True if intraday Solcast entities are available.
+    /// When true, SolcastHourlyCurveWh replaces SolarFractionBetweenHours() in adaptive computation.
     /// </summary>
     public bool HasIntradayForecast => SolcastHourlyCurveWh is { Length: > 0 };
 
     /// <summary>
-    /// True si le solaire est suffisant dans les prochaines heures selon Solcast intraday.
-    /// Utilisé pour bloquer la charge réseau quand le solaire arrive dans &lt; 2h.
-    /// Seuil configurable via MinSolarNextHoursWhForGridBlock dans TariffConfig.
+    /// True if solar is sufficient in the next hours according to intraday Solcast.
+    /// Used to block grid charging when solar arrives within &lt; 2h.
+    /// Threshold configurable via MinSolarNextHoursWhForGridBlock in TariffConfig.
     /// </summary>
     public bool SolarSufficientSoon =>
         ForecastNext3HoursWh.HasValue && ForecastNext3HoursWh.Value > 0;

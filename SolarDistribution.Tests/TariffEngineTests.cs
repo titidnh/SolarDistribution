@@ -5,9 +5,9 @@ using SolarDistribution.Core.Services;
 namespace SolarDistribution.Tests.Unit;
 
 /// <summary>
-/// Tests unitaires pour <see cref="TariffEngine"/>.
+/// Unit tests for <see cref="TariffEngine"/>.
 ///
-/// Convention jours ISO 8601 : 1=Lundi 2=Mardi 3=Mercredi 4=Jeudi 5=Vendredi 6=Samedi 7=Dimanche
+/// ISO 8601 day convention: 1=Monday 2=Tuesday 3=Wednesday 4=Thursday 5=Friday 6=Saturday 7=Sunday
 /// </summary>
 [TestFixture]
 public class TariffEngineTests
@@ -26,8 +26,8 @@ public class TariffEngineTests
         };
 
     /// <summary>
-    /// Config de base : HC 22h-06h à 0.10 €, HP 06h-22h à 0.25 €, seuil charge=0.15 €.
-    /// Aucun filtre jour → actif tous les jours.
+    /// Base config: HC 22:00-06:00 at 0.10 EUR, HP 06:00-22:00 at 0.25 EUR, charge threshold=0.15 EUR.
+    /// No day filter -> active every day.
     /// </summary>
     private static TariffConfig BaseConfig() => new()
     {
@@ -113,19 +113,19 @@ public class TariffEngineTests
         engine.LastSlotConflict.Should().BeNull();
     }
 
-    // ── DaysOfWeek ISO 8601 ───────────────────────────────────────────────────
+    // ── ISO 8601 DaysOfWeek ───────────────────────────────────────────────────
 
     [Test]
     public void GetActiveSlot_IsoWeekend_Saturday_IsDay6()
     {
-        // Samedi ISO = 6
+        // ISO Saturday = 6
         var config = new TariffConfig
         {
             Slots = new() { Slot("Week-end", 0.12, "00:00", "00:00", new[] { 6, 7 }) }
         };
 
         var engine   = new TariffEngine(config);
-        // 2025-06-07 = Samedi
+        // 2025-06-07 = Saturday
         var saturday = new DateTime(2025, 6, 7, 10, 0, 0);
         engine.GetActiveSlot(saturday)!.Name.Should().Be("Week-end");
     }
@@ -133,14 +133,14 @@ public class TariffEngineTests
     [Test]
     public void GetActiveSlot_IsoWeekend_Sunday_IsDay7()
     {
-        // Dimanche ISO = 7
+        // ISO Sunday = 7
         var config = new TariffConfig
         {
             Slots = new() { Slot("Week-end", 0.12, "00:00", "00:00", new[] { 6, 7 }) }
         };
 
         var engine = new TariffEngine(config);
-        // 2025-06-08 = Dimanche
+        // 2025-06-08 = Sunday
         var sunday = new DateTime(2025, 6, 8, 14, 0, 0);
         engine.GetActiveSlot(sunday)!.Name.Should().Be("Week-end");
     }
@@ -158,7 +158,7 @@ public class TariffEngineTests
         };
 
         var engine = new TariffEngine(config);
-        // 2025-06-02 = Lundi (ISO 1)
+        // 2025-06-02 = Monday (ISO 1)
         var monday = new DateTime(2025, 6, 2, 14, 0, 0);
         engine.GetActiveSlot(monday)!.Name.Should().Be("HP Semaine");
     }
@@ -176,7 +176,7 @@ public class TariffEngineTests
         };
 
         var engine = new TariffEngine(config);
-        // 2025-06-06 = Vendredi (ISO 5), 23h → HC
+        // 2025-06-06 = Friday (ISO 5), 23:00 -> HC
         var fridayNight = new DateTime(2025, 6, 6, 23, 0, 0);
         engine.GetActiveSlot(fridayNight)!.Name.Should().Be("HC Semaine");
     }
@@ -190,15 +190,15 @@ public class TariffEngineTests
         };
 
         var engine = new TariffEngine(config);
-        // 2025-06-02 = Lundi
+        // 2025-06-02 = Monday
         var monday = new DateTime(2025, 6, 2, 10, 0, 0);
-        engine.GetActiveSlot(monday).Should().BeNull("le slot n'est actif que le week-end");
+        engine.GetActiveSlot(monday).Should().BeNull("the slot is only active on weekends");
     }
 
     [Test]
     public void GetActiveSlot_NoDaysFilter_ActiveAllWeek()
     {
-        // Sans days_of_week → actif tous les jours
+        // Without days_of_week -> active every day
         var config = new TariffConfig
         {
             Slots = new() { Slot("Toujours", 0.20, "00:00", "00:00") }
@@ -206,7 +206,7 @@ public class TariffEngineTests
 
         var engine = new TariffEngine(config);
 
-        // Tester lundi(2), mercredi(4), samedi(7), dimanche(8) juin 2025
+        // Test Monday(2), Wednesday(4), Saturday(7), Sunday(8) June 2025
         engine.GetActiveSlot(new DateTime(2025, 6, 2, 12, 0, 0))!.Name.Should().Be("Toujours");
         engine.GetActiveSlot(new DateTime(2025, 6, 4, 12, 0, 0))!.Name.Should().Be("Toujours");
         engine.GetActiveSlot(new DateTime(2025, 6, 7, 12, 0, 0))!.Name.Should().Be("Toujours");
@@ -256,7 +256,7 @@ public class TariffEngineTests
     public void HoursUntilNextFavorable_DuringHP_ReturnsPositiveHours()
     {
         var engine = new TariffEngine(BaseConfig());
-        // À 12h, HC commence à 22h → ~10h
+        // At 12:00, HC starts at 22:00 -> ~10h
         var result = engine.HoursUntilNextFavorableTariff(new DateTime(2025, 6, 1, 12, 0, 0));
         result.Should().NotBeNull();
         result!.Value.Should().BeApproximately(10.0, 0.5);
@@ -338,15 +338,15 @@ public class TariffEngineTests
     }
 }
 
-// ── Tests configuration week-end (ISO) ───────────────────────────────────────
+// ── Weekend configuration tests (ISO) ───────────────────────────────────────
 
 [TestFixture]
 public class TariffEngineWeekendTests
 {
     /// <summary>
-    /// Config réaliste avec days_of_week en convention ISO.
-    ///   Semaine  : HC 22h→6h [1-5], HP 6h→22h [1-5]
-    ///   Week-end : tarif fixe toute la journée [6,7]
+    /// Realistic config with days_of_week in ISO convention.
+    ///   Weekdays: HC 22:00->6:00 [1-5], HP 6:00->22:00 [1-5]
+    ///   Weekend : fixed tariff all day [6,7]
     /// </summary>
     private static TariffConfig WeekendConfig() => new()
     {
@@ -363,7 +363,7 @@ public class TariffEngineWeekendTests
     [Test]
     public void Saturday14h_ReturnsWeekendSlot()
     {
-        // 2025-06-07 = Samedi (ISO 6)
+        // 2025-06-07 = Saturday (ISO 6)
         new TariffEngine(WeekendConfig())
             .GetActiveSlot(new DateTime(2025, 6, 7, 14, 0, 0))!
             .Name.Should().Be("Week-end");
@@ -372,7 +372,7 @@ public class TariffEngineWeekendTests
     [Test]
     public void Sunday03h_ReturnsWeekendSlot()
     {
-        // 2025-06-08 = Dimanche (ISO 7)
+        // 2025-06-08 = Sunday (ISO 7)
         new TariffEngine(WeekendConfig())
             .GetActiveSlot(new DateTime(2025, 6, 8, 3, 0, 0))!
             .Name.Should().Be("Week-end");
@@ -381,7 +381,7 @@ public class TariffEngineWeekendTests
     [Test]
     public void Monday23h_ReturnsHcSemaine()
     {
-        // 2025-06-02 = Lundi (ISO 1)
+        // 2025-06-02 = Monday (ISO 1)
         new TariffEngine(WeekendConfig())
             .GetActiveSlot(new DateTime(2025, 6, 2, 23, 0, 0))!
             .Name.Should().Be("HC Semaine");
@@ -390,7 +390,7 @@ public class TariffEngineWeekendTests
     [Test]
     public void Friday14h_ReturnsHpSemaine()
     {
-        // 2025-06-06 = Vendredi (ISO 5)
+        // 2025-06-06 = Friday (ISO 5)
         new TariffEngine(WeekendConfig())
             .GetActiveSlot(new DateTime(2025, 6, 6, 14, 0, 0))!
             .Name.Should().Be("HP Semaine");
@@ -399,7 +399,7 @@ public class TariffEngineWeekendTests
     [Test]
     public void Saturday_GridChargeAllowed_WhenNoSolar()
     {
-        // Week-end 0.12 < seuil 0.15 → charge réseau autorisée
+        // Weekend 0.12 < threshold 0.15 -> grid charging allowed
         var ctx = new TariffEngine(WeekendConfig())
             .EvaluateContext(new DateTime(2025, 6, 7, 10, 0, 0), new double[12]);
 
@@ -410,7 +410,7 @@ public class TariffEngineWeekendTests
     [Test]
     public void NightWeekend_SeparateSlots_NoOverlap()
     {
-        // Config avec nuit/jour séparés le week-end — pas de chevauchement
+        // Config with separate day/night weekend slots - no overlap
         var config = new TariffConfig
         {
             GridChargeThresholdPerKwh = 0.15,
@@ -423,17 +423,17 @@ public class TariffEngineWeekendTests
 
         var engine = new TariffEngine(config);
 
-        // Samedi 23h → seul "Week-end Nuit" (Jour se termine à 22h)
+        // Saturday 23:00 -> only the weekend night slot (day slot ends at 22:00)
         var slot = engine.GetActiveSlot(new DateTime(2025, 6, 7, 23, 0, 0));
         slot!.Name.Should().Be("Week-end Nuit");
         slot.PricePerKwh.Should().Be(0.07);
-        engine.LastSlotConflict.Should().BeNull("un seul slot actif");
+        engine.LastSlotConflict.Should().BeNull("only one active slot");
     }
 
     [Test]
     public void Sunday_NoWeekdaySlot_ReturnsWeekendOnly()
     {
-        // Le dimanche ISO=7 ne doit pas matcher les slots [1-5]
+        // ISO Sunday=7 must not match weekday slots [1-5]
         var ctx = new TariffEngine(WeekendConfig())
             .EvaluateContext(new DateTime(2025, 6, 8, 14, 0, 0), new double[12]);
 

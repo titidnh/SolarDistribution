@@ -14,7 +14,7 @@ public class DistributionSession
     public string   DecisionEngine  { get; set; } = "Deterministic";
     public double?  MlConfidenceScore { get; set; }
 
-    // Contexte tarifaire standard
+    // Standard tariff context
     public string? TariffSlotName            { get; set; }
     public double? TariffPricePerKwh         { get; set; }
     public bool    WasGridChargeFavorable     { get; set; }
@@ -23,20 +23,20 @@ public class DistributionSession
     public double? AvgSolarForecastWm2        { get; set; }
     public double? TariffMaxSavingsPerKwh     { get; set; }
 
-    // Contexte adaptatif étendu (ML-7)
-    /// <summary>Heures restantes dans le créneau HC au moment de la session.</summary>
+    // Extended adaptive context (ML-7)
+    /// <summary>Hours remaining in the off-peak slot at session time.</summary>
     public double? HoursRemainingInSlot       { get; set; }
-    /// <summary>Heures avant le prochain ensoleillement (null si pas prévu ou nuit totale).</summary>
+    /// <summary>Hours before next sunlight (null if not forecast or full night).</summary>
     public double? HoursUntilSolar            { get; set; }
-    /// <summary>True si au moins une batterie était en charge d'urgence réseau.</summary>
+    /// <summary>True if at least one battery was in emergency grid charging.</summary>
     public bool    HadEmergencyGridCharge     { get; set; }
-    /// <summary>Puissance réseau adaptative effective moyenne (W), hors urgence.</summary>
+    /// <summary>Average effective adaptive grid power (W), excluding emergency.</summary>
     public double? EffectiveGridChargeW       { get; set; }
 
-    // Prévisions HA installation-spécifiques (ML-8)
-    /// <summary>Production solaire estimée aujourd'hui depuis HA (Wh). Null si non configuré.</summary>
+    // Installation-specific HA forecasts (ML-8)
+    /// <summary>Estimated solar production today from HA (Wh). Null if not configured.</summary>
     public double? ForecastTodayWh            { get; set; }
-    /// <summary>Production solaire estimée demain depuis HA (Wh). Null si non configuré.</summary>
+    /// <summary>Estimated solar production tomorrow from HA (Wh). Null if not configured.</summary>
     public double? ForecastTomorrowWh         { get; set; }
 
     public ICollection<BatterySnapshot> BatterySnapshots { get; set; } = new List<BatterySnapshot>();

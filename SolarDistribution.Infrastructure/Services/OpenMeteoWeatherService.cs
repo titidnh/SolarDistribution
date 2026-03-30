@@ -36,7 +36,7 @@ public class OpenMeteoWeatherService : IWeatherService
             + $"?latitude={latitude:F4}&longitude={longitude:F4}"
             + $"&current={current}"
             + $"&hourly={hourly}"
-            + $"&forecast_days=2"   // 2 jours pour voir la production du lendemain matin
+            + $"&forecast_days=2"   // 2 days to capture next-morning production
             + $"&timezone=auto";
 
         try
@@ -133,7 +133,7 @@ public class OpenMeteoWeatherService : IWeatherService
     private static double EstimateHoursUntilSunset(double latitude, double longitude, DateTime utcNow)
     {
         double daylightHours = EstimateDaylightHours(latitude, utcNow);
-        // Midi solaire UTC corrigé par la longitude (15° = 1 heure)
+        // UTC solar noon corrected by longitude (15° = 1 hour)
         double solarNoon   = 12.0 - longitude / 15.0;
         double sunset      = solarNoon + daylightHours / 2.0;
         double currentHour = utcNow.Hour + utcNow.Minute / 60.0;

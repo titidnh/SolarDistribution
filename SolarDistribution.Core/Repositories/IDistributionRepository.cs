@@ -7,21 +7,21 @@ public interface IDistributionRepository
     Task SaveSessionAsync(DistributionSession session, CancellationToken ct = default);
 
     /// <summary>
-    /// Sessions avec feedback valide — les seules utilisées pour l'entraînement ML.
-    /// Labels = ObservedOptimalSoftMax + ObservedOptimalPreventive issus de l'observation réelle.
-    /// Utilise un sampling stratifié par mois/heure pour garantir une couverture calendaire
-    /// uniforme sur toute la fenêtre d'entraînement, indépendamment du volume en DB.
+    /// Sessions with valid feedback — the only ones used for ML training.
+    /// Labels = ObservedOptimalSoftMax + ObservedOptimalPreventive derived from real observations.
+    /// Uses stratified sampling by month/hour to guarantee uniform calendar coverage
+    /// across the entire training window, regardless of the volume in the DB.
     /// </summary>
     Task<List<DistributionSession>> GetSessionsForTrainingAsync(int maxRecords = 5000, CancellationToken ct = default);
 
     /// <summary>
-    /// Compresse les anciennes sessions pour réduire le stockage DB :
-    ///   - Sessions > compressionAgeDays : on garde 1 par tranche de slotMinutes,
-    ///     SAUF les sessions à fort poids qualité (surplusWasted, import réseau)
-    ///     qui sont toujours conservées car elles portent un signal rare.
-    ///   - Sessions > hardDeleteAgeDays : suppression définitive.
-    /// Les DailySummaries ne sont jamais touchés (déjà agrégés, volume négligeable).
-    /// Retourne le nombre de sessions supprimées.
+    /// Compresses old sessions to reduce DB storage:
+    ///   - Sessions older than compressionAgeDays: keeps 1 per slotMinutes slot,
+    ///     EXCEPT sessions with high quality weight (surplusWasted, grid import)
+    ///     which are always kept because they carry a rare signal.
+    ///   - Sessions older than hardDeleteAgeDays: permanently deleted.
+    /// DailySummaries are never touched (already aggregated, negligible volume).
+    /// Returns the number of sessions deleted.
     /// </summary>
     Task<int> PurgeOldSessionsAsync(
         int compressionAgeDays,
@@ -30,7 +30,7 @@ public interface IDistributionRepository
         CancellationToken ct = default);
 
     /// <summary>
-    /// Sessions dont le feedback est encore pending et dont le délai de collecte est dépassé.
+    /// Sessions whose feedback is still pending and whose collection delay has elapsed.
     /// </summary>
     Task<List<DistributionSession>> GetSessionsPendingFeedbackAsync(double feedbackDelayHours, CancellationToken ct = default);
 
@@ -41,32 +41,32 @@ public interface IDistributionRepository
     Task<int> CountValidFeedbacksAsync(CancellationToken ct = default);
 
     /// <summary>
-    /// Retourne la moyenne de consommation maison (W) sur les N derniers cycles persistés.
-    /// Null si aucun cycle avec consommation mesurée n'existe encore.
-    /// Utilisé pour projeter EstimatedConsumptionNextHoursWh.
+    /// Returns the average home consumption (W) over the last N persisted cycles.
+    /// Null if no cycle with measured consumption exists yet.
+    /// Used to project EstimatedConsumptionNextHoursWh.
     /// </summary>
     Task<double?> GetRecentConsumptionAvgWAsync(int lastNCycles, CancellationToken ct = default);
 
-    // ── Feature 6 — Bilan énergétique journalier ──────────────────────────────
+    // ── Feature 6 — Daily energy summary ────────────────────────────────────
 
     /// <summary>
-    /// Crée ou met à jour le bilan journalier pour une date donnée (upsert par Date).
-    /// Calcule les agrégats à partir des sessions de la journée : Wh solar, grid,
-    /// surplus non utilisé, économies estimées, taux d'autosuffisance.
+    /// Creates or updates the daily summary for a given date (upsert by Date).
+    /// Computes aggregates from the day's sessions: solar Wh, grid,
+    /// unused surplus, estimated savings, self-sufficiency rate.
     /// </summary>
     Task UpsertDailySummaryAsync(DateTime date, CancellationToken ct = default);
 
     /// <summary>
-    /// Retourne les bilans journaliers sur une plage de dates (incluses).
-    /// Utilisé par GET /api/summary/daily?from=&amp;to=
+    /// Returns daily summaries over a date range (inclusive).
+    /// Used by GET /api/summary/daily?from=&amp;to=
     /// </summary>
     Task<List<DailySummary>> GetDailySummariesAsync(
         DateTime from, DateTime to, CancellationToken ct = default);
 
     /// <summary>
-    /// Taux d'autosuffisance de la journée précédente (%).
-    /// Null si aucune donnée Solcast n'est disponible pour hier.
-    /// Feature ML YesterdaySelfSufficiencyPct.
+    /// Self-sufficiency rate for the previous day (%).
+    /// Null if no Solcast data is available for yesterday.
+    /// ML feature YesterdaySelfSufficiencyPct.
     /// </summary>
     Task<double?> GetYesterdaySelfSufficiencyAsync(CancellationToken ct = default);
 }

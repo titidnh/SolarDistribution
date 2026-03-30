@@ -3,72 +3,72 @@ using System;
 namespace SolarDistribution.Core.Data.Entities;
 
 /// <summary>
-/// Bilan énergétique journalier agrégé — une ligne par date calendaire (UTC).
+/// Aggregated daily energy summary — one row per calendar date (UTC).
 ///
-/// Calculé en fin de journée solaire (coucher du soleil ou minuit) par
-/// DailySummaryService, déclenché depuis MlRetrainScheduler.
+/// Computed at the end of the solar day (sunset or midnight) by
+/// DailySummaryService, triggered from MlRetrainScheduler.
 ///
-/// Permet de répondre à :
-///   "Combien d'énergie solaire ai-je autoconsommée ce mois-ci ?"
-///   "Quel était mon taux d'autosuffisance hier ?"
-///   "Le ML doit-il être plus ou moins agressif vu le ratio J-1 ?"
+/// Allows answering:
+///   "How much solar energy did I self-consume this month?"
+///   "What was my self-sufficiency rate yesterday?"
+///   "Should the ML be more or less aggressive given the J-1 ratio?"
 /// </summary>
 public class DailySummary
 {
     public long Id { get; set; }
 
-    /// <summary>Date calendaire UTC (sans heure). Clé métier unique.</summary>
+    /// <summary>UTC calendar date (no time component). Unique business key.</summary>
     public DateTime Date { get; set; }
 
     /// <summary>
-    /// Énergie solaire effectivement autoconsommée (Wh).
-    /// Calculée : ForecastTodayWh(début_journée) − ForecastRemainingTodayWh(fin_journée).
-    /// Null si les entités Solcast ne sont pas configurées.
+    /// Solar energy actually self-consumed (Wh).
+    /// Computed as: ForecastTodayWh(start_of_day) − ForecastRemainingTodayWh(end_of_day).
+    /// Null if Solcast entities are not configured.
     /// </summary>
     public double? SolarConsumedWh { get; set; }
 
     /// <summary>
-    /// Énergie soutirée depuis le réseau sur toute la journée (Wh).
-    /// Somme de GridChargedW × durée_cycle sur toutes les sessions du jour.
+    /// Total energy drawn from the grid over the day (Wh).
+    /// Sum of GridChargedW × cycle_duration across all sessions of the day.
     /// </summary>
     public double GridConsumedWh { get; set; }
 
     /// <summary>
-    /// Énergie chargée dans les batteries depuis le réseau (Wh).
-    /// Somme de GridChargedW × durée_cycle — sous-ensemble de GridConsumedWh.
+    /// Energy charged into batteries from the grid (Wh).
+    /// Sum of GridChargedW × cycle_duration — subset of GridConsumedWh.
     /// </summary>
     public double GridChargedWh { get; set; }
 
     /// <summary>
-    /// Énergie totale distribuée aux batteries depuis le surplus solaire (Wh).
-    /// Somme de TotalAllocatedW × durée_cycle sur toutes les sessions du jour.
+    /// Total energy distributed to batteries from solar surplus (Wh).
+    /// Sum of TotalAllocatedW × cycle_duration across all sessions of the day.
     /// </summary>
     public double SolarAllocatedWh { get; set; }
 
     /// <summary>
-    /// Surplus solaire non utilisé (batteries pleines ou aucune batterie éligible) (Wh).
-    /// Somme de UnusedSurplusW × durée_cycle.
+    /// Unused solar surplus (batteries full or no eligible battery) (Wh).
+    /// Sum of UnusedSurplusW × cycle_duration.
     /// </summary>
     public double UnusedSurplusWh { get; set; }
 
     /// <summary>
-    /// Économies estimées en € = GridChargedWh × (tarif_HP − tarif_HC).
-    /// Calcul simplifié : GridChargedWh / 1000 × MaxSavingsPerKwh moyen du jour.
-    /// Null si aucun contexte tarifaire n'est disponible pour la journée.
+    /// Estimated savings in EUR = GridChargedWh × (peak_rate − off_peak_rate).
+    /// Simplified calculation: GridChargedWh / 1000 × average MaxSavingsPerKwh for the day.
+    /// Null if no tariff context is available for the day.
     /// </summary>
     public double? EstimatedSavingsEur { get; set; }
 
     /// <summary>
-    /// Taux d'autosuffisance (%) = SolarConsumedWh / (SolarConsumedWh + GridConsumedWh) × 100.
-    /// Null si SolarConsumedWh est absent (Solcast non configuré).
-    /// Feature ML YesterdaySelfSufficiencyPct : permet au modèle d'apprendre depuis
-    /// la performance réelle de la journée précédente.
+    /// Self-sufficiency rate (%) = SolarConsumedWh / (SolarConsumedWh + GridConsumedWh) × 100.
+    /// Null if SolarConsumedWh is absent (Solcast not configured).
+    /// ML feature YesterdaySelfSufficiencyPct: allows the model to learn from
+    /// the actual performance of the previous day.
     /// </summary>
     public double? SelfSufficiencyPct { get; set; }
 
-    /// <summary>Nombre de sessions de distribution sur cette journée.</summary>
+    /// <summary>Number of distribution sessions for this day.</summary>
     public int SessionCount { get; set; }
 
-    /// <summary>Timestamp UTC de la dernière mise à jour de cet enregistrement.</summary>
+    /// <summary>UTC timestamp of the last update of this record.</summary>
     public DateTime ComputedAt { get; set; } = DateTime.UtcNow;
 }

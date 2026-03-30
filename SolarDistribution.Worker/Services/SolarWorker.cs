@@ -21,31 +21,31 @@ public class SolarWorker : BackgroundService
     private int _consecutiveHaErrors = 0;
     private const int MaxBackoffSeconds = 300;
 
-    // ── État anti-oscillation surplus (Fix Bug #3) ────────────────────────────
+    // ── Surplus anti-oscillation state (Fix Bug #3) ─────────────────────────
     private bool _isChargingFromSurplus = false;
     private int _consecutiveChargeCycles = 0;
 
     // ── Rolling-window surplus smoother (Item 2 — P1 correction) ─────────────
-    // Moyenne mobile sur les 3 derniers cycles pour filtrer les pics P1 bruités.
-    // Un pic soudain (ex: chauffe-eau qui démarre) est lissé avant d'être distribué.
+    // Moving average over last 3 cycles to filter noisy P1 spikes.
+    // A sudden spike (e.g., water heater turning on) is smoothed before distribution.
     private readonly Queue<double> _surplusWindow = new();
     private const int SurplusSmootherWindowSize = 3;
 
-    // ── Bilan énergétique journalier (Feature 4) ──────────────────────────────
-    // On retient la valeur ForecastTodayWh lue en début de journée pour calculer
-    // DailySolarConsumedWh = ForecastToday(début) − ForecastRemainingToday(maintenant).
+    // ── Daily energy balance (Feature 4) ─────────────────────────────────────
+    // Keep ForecastTodayWh value read at day start to compute
+    // DailySolarConsumedWh = ForecastToday(start) - ForecastRemainingToday(now).
     private double? _forecastTodayWhAtStartOfDay = null;
     private int _lastDayOfYear = -1;
 
-    // ── Hystérésis IdleCharge par batterie ────────────────────────────────────
-    // Délégué à IdleChargeHysteresis pour être testable indépendamment.
+    // ── Per-battery IdleCharge hysteresis ───────────────────────────────────
+    // Delegated to IdleChargeHysteresis to stay independently testable.
     private readonly IdleChargeHysteresis _idleHysteresis;
     private readonly SolarDistribution.Core.Services.IStatusService _statusService;
     // ── Surplus anomaly detection (Item 9) ─────────────────────────────────
     private int _consecutiveSurplusAnomalies = 0;
-    // ── ML-8 : Cycle lifecycle alert guard ─────────────────────────────────
-    // Ensemble des batteryId pour lesquels une alerte HA de cycle a déjà été émise
-    // pendant cette session du worker. Évite le spam de notifications à chaque cycle.
+    // ── ML-8: cycle lifecycle alert guard ───────────────────────────────────
+    // Set of batteryId values for which a cycle HA alert has already been emitted
+    // during this worker session. Avoids notification spam each cycle.
     private readonly HashSet<int> _cycleAlertSent = new();
 
     public SolarWorker(
@@ -84,9 +84,9 @@ public class SolarWorker : BackgroundService
                 "  [{Name}] maxRate={Rate}W idle={Idle}W idleStop={IdleStop}W softMax={SoftMax}% hysteresis={Hyst}%",
                 b.Name, b.MaxChargeRateW, b.IdleChargeW, b.IdleStopBufferW, b.SoftMaxPercent, b.SocHysteresisPercent);
 
-        // ── Item 2 — Warning si current_charge_power_entity absent ───────────
-        // Sans cette entité le surplus brut P1 n'est pas corrigé : le Worker
-        // sous-estime le disponible et envoie moins de puissance aux batteries.
+        // ── Item 2 — Warning if current_charge_power_entity is missing ───────
+        // Without this entity raw P1 surplus is not corrected: Worker
+        // underestimates available power and sends less to batteries.
         foreach (var b in _config.Batteries.Where(b => b.Entities.CurrentChargePowerEntity is null))
             _logger.LogWarning(
                 "⚠️  Battery [{Name}]: 'current_charge_power_entity' is not configured. " +
@@ -165,18 +165,18 @@ public class SolarWorker : BackgroundService
                 "{Failed} battery(ies) could not be read — continuing with {Valid} valid batteries",
                 snapshot.Batteries.Count - validReadings.Count, validReadings.Count);
 
-        // ── Correction du surplus brut ─────────────────────────────────────────
-        // Le surplus HA (P1 ou sensor) est déjà NET de la charge batterie actuelle.
-        // Exemple : batteries chargent à 200W + 200W = 400W, P1 = -912W
-        //   → surplus brut = 912W, mais 400W de ça sont déjà des batteries
-        //   → surplus réel disponible pour redistribuer = 912 + 400 = 1312W
-        //   → le Worker peut alors ordonner 1312W aux batteries
-        //   → gain réel pour les batteries = 1312W (au lieu de 912W sans correction)
+        // ── Raw surplus correction ────────────────────────────────────────────
+        // HA surplus (P1 or sensor) is already NET of current battery charge.
+        // Example: batteries charging at 200W + 200W = 400W, P1 = -912W
+        //   → raw surplus = 912W, but 400W of that is already battery load
+        //   → real surplus available to redistribute = 912 + 400 = 1312W
+        //   → Worker can then command 1312W to batteries
+        //   → real gain for batteries = 1312W (instead of 912W without correction)
         //
-        // Sans correction : order 912W → les batteries reçoivent 912W au lieu de 1312W
-        // Avec correction : order 1312W → les batteries reçoivent 1312W (correct)
+        // Without correction: order 912W → batteries receive 912W instead of 1312W
+        // With correction: order 1312W → batteries receive 1312W (correct)
         //
-        // La correction n'est appliquée que si current_charge_power_entity est configurée.
+        // Correction is applied only if current_charge_power_entity is configured.
         double currentBatteriesChargeW = validReadings
             .Where(r => r.CurrentChargeW.HasValue)
             .Sum(r => r.CurrentChargeW!.Value);
@@ -184,25 +184,25 @@ public class SolarWorker : BackgroundService
         double rawSurplus = snapshot.SurplusW;
         double correctedSurplus = rawSurplus + currentBatteriesChargeW;
 
-        // ── Item 2c — Warning si surplus négatif après correction ─────────────
-        // Un surplus négatif après ajout de la charge batterie signale une
-        // misconfiguration : soit le signe de current_charge_power_multiplier est
-        // inversé, soit l'entité surplus_entity retourne de l'import au lieu de
-        // l'export. On log et on clamp à 0 pour ne pas envoyer de commandes aberrantes.
+        // ── Item 2c — Warning if surplus is negative after correction ─────────
+        // Negative surplus after adding battery charge indicates a
+        // misconfiguration: either current_charge_power_multiplier sign is
+        // inverted, or surplus_entity returns import instead of
+        // export. Log and clamp to 0 to avoid sending aberrant commands.
         if (correctedSurplus < 0)
         {
             _logger.LogWarning(
-                "⚠️  Surplus négatif après correction : P1={Raw:F0}W + batteries_now={Bat:F0}W = {Corrected:F0}W. " +
-                "Vérifier le signe de 'current_charge_power_multiplier' ou le mode 'surplus_mode'. " +
-                "Surplus forcé à 0 pour ce cycle.",
+                "⚠️  Negative surplus after correction: P1={Raw:F0}W + batteries_now={Bat:F0}W = {Corrected:F0}W. " +
+                "Check sign of 'current_charge_power_multiplier' or 'surplus_mode'. " +
+                "Surplus forced to 0 for this cycle.",
                 rawSurplus, currentBatteriesChargeW, correctedSurplus);
             correctedSurplus = 0;
         }
 
-        // ── Item 2b — Rolling-window surplus smoother (moyenne mobile 3 cycles) ─
-        // Filtre les pics P1 soudains (latence ~10s, pic de consommation brusque)
-        // avant de distribuer. La décision est prise sur la moyenne des N derniers
-        // cycles plutôt que sur la valeur instantanée, ce qui évite d'envoyer
+        // ── Item 2b — Rolling-window surplus smoother (3-cycle moving average) ─
+        // Filters sudden P1 spikes (latency ~10s, abrupt consumption spikes)
+        // before distribution. Decision is based on average of last N
+        // cycles instead of instant value, avoiding sending
         // 3000W aux batteries lors d'un spike d'une seule lecture.
         _surplusWindow.Enqueue(correctedSurplus);
         if (_surplusWindow.Count > SurplusSmootherWindowSize)
@@ -269,12 +269,12 @@ public class SolarWorker : BackgroundService
         // clear anomaly counter on normal cycle
         _consecutiveSurplusAnomalies = 0;
 
-        // ── Fix Bug #3 : double seuil anti-oscillation ─────────────────────────
+        // ── Fix Bug #3: anti-oscillation dual threshold ─────────────────────
         // Remplace l'ancien : effectiveSurplus = Max(0, corrected - bufferW)
-        // qui causait des ON/OFF toutes les 5 min quand le soleil fluctue autour
-        // du seuil (ex: nuages passagers). Voir ComputeEffectiveSurplus().
-        // Le smoothedSurplus (moyenne mobile) est passé à la place du correctedSurplus
-        // brut pour absorber les pics P1 avant l'hystérésis de démarrage/arrêt.
+        // which caused ON/OFF every 5 min when sunlight fluctuated around
+        // threshold (e.g., passing clouds). See ComputeEffectiveSurplus().
+        // smoothedSurplus (moving average) is used instead of raw correctedSurplus
+        // to absorb P1 spikes before start/stop hysteresis.
         double effectiveSurplus = ComputeEffectiveSurplus(smoothedSurplus);
 
         if (currentBatteriesChargeW > 0)
@@ -289,12 +289,12 @@ public class SolarWorker : BackgroundService
                 "(no current_charge_power_entity configured — correction skipped)",
                 rawSurplus, smoothedSurplus, _config.Polling.SurplusBufferW, effectiveSurplus);
 
-        // BuildBatteries doit être appelé APRÈS effectiveSurplus pour que l'hystérésis
-        // IdleCharge (IdleChargeHysteresis) puisse évaluer le seuil correct.
+        // BuildBatteries must be called AFTER effectiveSurplus so IdleCharge
+        // hysteresis (IdleChargeHysteresis) can evaluate correct threshold.
         var batteries = BuildBatteries(validReadings, effectiveSurplus);
 
-        // ML-8 : notification HA persistante si une batterie dépasse MaxRecommendedCycles
-        // (une seule notification par batterie par redémarrage — guard via _cycleAlertSent)
+        // ML-8: persistent HA notification if battery exceeds MaxRecommendedCycles
+        // (one notification per battery per restart — guarded by _cycleAlertSent)
         foreach (var reading in validReadings.Where(r => r.CycleCount > 0))
         {
             var bc = _config.Batteries.First(b => b.Id == reading.BatteryId);
@@ -321,8 +321,8 @@ public class SolarWorker : BackgroundService
 
         var wxSnapshot = _weatherCache.GetCurrent();
 
-        // ── Bilan énergétique journalier : tracker ForecastTodayWh au lever du jour ──
-        // On mémorise la première valeur de ForecastTodayWh de la journée pour calculer
+        // ── Daily energy balance: track ForecastTodayWh at day start ─────────
+        // Store first ForecastTodayWh value of day to compute
         // DailySolarConsumedWh = forecastAtStartOfDay − forecastRemainingNow.
         int todayDoy = DateTime.Now.DayOfYear;
         if (todayDoy != _lastDayOfYear)
@@ -423,13 +423,13 @@ public class SolarWorker : BackgroundService
                     "Battery {Id} ({Name}): MaxChargeRate live={Live:F0}W vs static={Static:F0}W — using live",
                     bc.Id, bc.Name, reading.MaxChargeRateW, bc.MaxChargeRateW);
 
-            // ── Hystérésis IdleChargeW (Anti-oscillation IdleCharge) ─────────
+            // ── IdleChargeW hysteresis (IdleCharge anti-oscillation) ─────────
             double effectiveIdleChargeW = _idleHysteresis.Compute(bc, effectiveSurplus);
 
-            // ── ML-8 : Cycle de vie — pondération de priorité ────────────────
-            // Si CycleCountEntity est configurée, le cycle count a été lu depuis HA.
-            // On l'injecte dans Battery pour que EffectivePriority applique la pondération.
-            // L'alerte MaxRecommendedCycles est émise ici (une fois par cycle).
+            // ── ML-8: lifecycle — priority weighting ─────────────────────────
+            // If CycleCountEntity is configured, cycle count was read from HA.
+            // Inject it into Battery so EffectivePriority applies weighting.
+            // MaxRecommendedCycles alert is emitted here (once per cycle).
             if (bc.MaxRecommendedCycles.HasValue && reading.CycleCount > 0
                 && reading.CycleCount >= bc.MaxRecommendedCycles.Value)
             {
@@ -454,7 +454,7 @@ public class SolarWorker : BackgroundService
                 SocHysteresisPercent = bc.SocHysteresisPercent,
                 EmergencyGridChargeBelowPercent = bc.EmergencyGridChargeBelowPercent,
                 EmergencyGridChargeTargetPercent = bc.EmergencyGridChargeTargetPercent,
-                // ML-8 : lifecycle
+                // ML-8: lifecycle
                 CycleCount = reading.CycleCount,
                 CycleAgingFactor = bc.CycleAgingFactor,
             };
@@ -462,22 +462,22 @@ public class SolarWorker : BackgroundService
     }
 
     /// <summary>
-    /// Calcule le surplus effectif à distribuer avec hystérésis double-seuil (Fix Bug #3).
+    /// Computes effective surplus to distribute using dual-threshold hysteresis (Fix Bug #3).
     ///
     /// Transitions :
     ///   Idle → Charging   : correctedSurplus &gt; SurplusBufferW (200W)
     ///   Charging → Idle   : correctedSurplus &lt; SurplusStopBufferW (80W)
     ///                       ET _consecutiveChargeCycles ≥ MinChargeDurationCycles
-    ///   Zone [80W–200W]   : état maintenu (pas de transition)
+    ///   Zone [80W–200W]   : state maintained (no transition)
     ///
-    /// Résultat : plus d'ON/OFF toutes les 5 min lors des passages nuageux.
+    /// Result: no more ON/OFF every 5 min during cloud passages.
     /// </summary>
     private double ComputeEffectiveSurplus(double correctedSurplus)
     {
         double startThreshold = _config.Polling.SurplusBufferW;
         double stopThreshold = _config.Polling.SurplusStopBufferW;
 
-        // Config invalide → fallback comportement original
+        // Invalid config → fallback to original behavior
         if (stopThreshold >= startThreshold)
             return Math.Max(0, correctedSurplus - startThreshold);
 

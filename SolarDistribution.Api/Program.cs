@@ -29,7 +29,7 @@ builder.Services.AddScoped<IDistributionRepository, DistributionRepository>();
 // ── Core services ─────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<IBatteryDistributionService, BatteryDistributionService>();
 builder.Services.AddScoped<SmartDistributionService>();
-// Fix #6 : factory de sessions (mapping métier → entités EF)
+// Fix #6 : session factory (business model → EF entities mapping)
 builder.Services.AddScoped<IDistributionSessionFactory, DistributionSessionFactory>();
 // TariffEngine — inject an empty TariffConfig by default (API standalone without config.yaml).
 // In production the Worker injects the real config loaded from config.yaml.
@@ -115,8 +115,8 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 // ── CORS — Fix #3 : configurable via appsettings.json ────────────────────────
-// Dev  : Cors:AllowAnyOrigin = true  → tous les origines autorisés (pratique local)
-// Prod : Cors:AllowAnyOrigin = false → uniquement les origines listées dans Cors:AllowedOrigins
+// Dev  : Cors:AllowAnyOrigin = true  → all origins allowed (convenient for local dev)
+// Prod : Cors:AllowAnyOrigin = false → only the origins listed in Cors:AllowedOrigins
 builder.Services.AddCors(options =>
     options.AddDefaultPolicy(policy =>
     {
@@ -146,7 +146,7 @@ builder.Services.AddHealthChecks()
 // ── Build ─────────────────────────────────────────────────────────────────────
 var app = builder.Build();
 
-// Migration automatique au démarrage (dev uniquement — utiliser le script SQL en prod)
+// Automatic migration on startup (dev only — use the SQL script in production)
 if (app.Environment.IsDevelopment())
 {
     using var scope = app.Services.CreateScope();
@@ -166,7 +166,7 @@ if (swaggerEnabled)
     var routePrefix  = builder.Configuration.GetValue<string>("Swagger:RoutePrefix") ?? "swagger";
     var swaggerTitle = builder.Configuration.GetValue<string>("Swagger:Title") ?? "Solar Distribution API v1";
 
-    // ── API Key guard — protège l'accès à l'UI et au JSON Swagger
+    // ── API Key guard — protects access to the Swagger UI and JSON
     bool apiKeyEnabled = builder.Configuration.GetValue<bool>("Swagger:ApiKey:Enabled");
     if (apiKeyEnabled)
     {
@@ -175,7 +175,7 @@ if (swaggerEnabled)
 
         app.Use(async (context, next) =>
         {
-            // Applique le guard uniquement sur les routes Swagger
+            // Apply the guard only to Swagger routes
             var path = context.Request.Path.Value ?? "";
             bool isSwaggerPath = path.StartsWith("/swagger", StringComparison.OrdinalIgnoreCase);
 
