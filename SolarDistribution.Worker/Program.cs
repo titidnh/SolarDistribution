@@ -95,6 +95,7 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddSingleton(config.Ml);
         services.AddSingleton(config.HomeAssistant);
         services.AddSingleton(config.Polling);
+        services.AddSingleton(config.Heating);
 
         // ── Database ─────────────────────────────────────────────────────────
         services.AddDbContext<SolarDbContext>(opts =>
@@ -105,10 +106,24 @@ var host = Host.CreateDefaultBuilder(args)
 
         // ── Repositories & services ──────────────────────────────────────────
         services.AddScoped<IDistributionRepository, DistributionRepository>();
-        services.AddSingleton<IBatteryDistributionService, BatteryDistributionService>();
+        services.AddSingleton<IBatteryDistributionService>(_ =>
+            new BatteryDistributionService(TimeSpan.FromSeconds(config.Polling.IntervalSeconds)));
         services.AddSingleton<IDistributionSessionFactory, DistributionSessionFactory>();
         services.AddSingleton<TariffEngine>();
         services.AddSingleton<SmartDistributionService>();
+        services.AddSingleton<IHeatingPreheatMlService>(sp =>
+            new HeatingPreheatMlService(
+                sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<HeatingPreheatMlService>>(),
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                new HeatingMlOptions
+                {
+                    TrainingWindowDays = config.Heating.MlTrainingWindowDays,
+                    TargetSamples = config.Heating.MlTargetSamples,
+                    MinSamplesForRetrain = config.Heating.MlMinSamplesForRetrain,
+                }));
+        services.AddSingleton<IHeatingOrchestratorService, HeatingOrchestratorService>();
+        services.AddSingleton<IHeatingStatusService, HeatingStatusService>();
+        services.AddSingleton<IHeatingSourceSelectorService, HeatingSourceSelectorService>();
 
         // ── ML ───────────────────────────────────────────────────────────────
         services.AddSingleton<IDistributionMLService>(sp =>

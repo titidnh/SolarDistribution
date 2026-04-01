@@ -46,14 +46,12 @@ public class BatteryDistributionServiceTests
     // ── UC1 ──────────────────────────────────────────────────────────────────
 
     [Test]
-    [Description("UC1 — 500W surplus, all batteries at 50% — proportional split")]
+    [Description("UC1 — 500W surplus, all batteries at 50% — priority group absorbs full surplus when one cycle can absorb it")]
     public void UC1_500W_AllAt50Pct_ProportionalSplit()
     {
-        // B1(prio1, alone in its group):
-        //   SpaceToSoftMax = (80-50)% * 1024 = 307.2Wh → gets 307.2W, remaining=192.8W
-        // B2+B3(prio2, proportional):
-        //   B2 space=307.2Wh (33.3%), B3 space=614.4Wh (66.7%)
-        //   B2 = 192.8 * 0.333 = 64.3W,  B3 = 192.8 * 0.667 = 128.5W
+        // With per-cycle capping (60s worker loop), B1 still has 307.2Wh of room
+        // to SoftMax, which is far more than enough to absorb 500W over a single cycle.
+        // Since B1 is alone in the highest-priority group, it takes the full surplus.
         var result = _sut.Distribute(500, new[]
         {
             B(1, 1024, 500, 20, 50, 1),
@@ -63,9 +61,9 @@ public class BatteryDistributionServiceTests
 
         result.UnusedSurplusW.Should().BeApproximately(0, Tolerance);
         result.TotalAllocatedW.Should().BeApproximately(500, Tolerance);
-        Alloc(result, 1).Should().BeApproximately(307.2, Tolerance);
-        Alloc(result, 2).Should().BeApproximately(64.3, Tolerance);
-        Alloc(result, 3).Should().BeApproximately(128.5, Tolerance);
+        Alloc(result, 1).Should().BeApproximately(500, Tolerance);
+        Alloc(result, 2).Should().BeApproximately(0, Tolerance);
+        Alloc(result, 3).Should().BeApproximately(0, Tolerance);
     }
 
     // ── UC2 ──────────────────────────────────────────────────────────────────
@@ -91,15 +89,11 @@ public class BatteryDistributionServiceTests
     // ── UC3 ──────────────────────────────────────────────────────────────────
 
     [Test]
-    [Description("UC3 — 1200W surplus, B1 at 60% — less space in B1, B2+B3 proportional")]
+    [Description("UC3 — 1200W surplus, B1 at 60% — high-priority battery charges at max rate, remaining group shares the rest")]
     public void UC3_1200W_B1At60Pct_ProportionalWithRateCap()
     {
-        // B1(prio1) : SpaceToSoftMax=(80-60)%*1024=204.8Wh → 204.8W, restant=995.2W
-        // B2+B3(prio2) proportional:
-        //   B2 space=307.2 (33.3%) → capped@307.2W (reaches 80%), B3 share=663.5W → capped@500W (MaxRate)
-        //   Redistribution → B3 rate exhausted → pass2 with 188W
-        // Pass2: B1(prio1) receives remaining 188W
-        // Total : B1=204.8+188=392.8W, B2=307.2W, B3=500W
+        // Per-cycle capping lets B1 use its full 500W max rate during PASS 1.
+        // The remaining 700W then go to the next group proportionally to available space.
         var result = _sut.Distribute(1200, new[]
         {
             B(1, 1024, 500, 20, 60, 1),
@@ -109,9 +103,9 @@ public class BatteryDistributionServiceTests
 
         result.UnusedSurplusW.Should().BeApproximately(0, Tolerance);
         result.TotalAllocatedW.Should().BeApproximately(1200, Tolerance);
-        Alloc(result, 1).Should().BeApproximately(392.8, Tolerance, "B1 receives pass1 + pass2");
-        Alloc(result, 2).Should().BeApproximately(307.2, Tolerance, "B2 reaches exactly 80%");
-        Alloc(result, 3).Should().BeApproximately(500.0, Tolerance, "B3 capped by MaxChargeRate");
+        Alloc(result, 1).Should().BeApproximately(500.0, Tolerance, "B1 can absorb its full rate during the current cycle");
+        Alloc(result, 2).Should().BeApproximately(233.3, Tolerance, "remaining surplus is shared proportionally in the second group");
+        Alloc(result, 3).Should().BeApproximately(466.7, Tolerance, "remaining surplus is shared proportionally in the second group");
     }
 
     // ── UC4 ──────────────────────────────────────────────────────────────────
@@ -173,7 +167,8 @@ public class BatteryDistributionServiceTests
 
         result.TotalAllocatedW.Should().BeLessThan(9999);
         result.UnusedSurplusW.Should().BeGreaterThan(0);
-        result.Allocations[0].NewPercent.Should().BeApproximately(100, 0.1);
+        result.Allocations[0].NewPercent.Should().BeApproximately(90.81, 0.05,
+            "NewPercent projects one worker cycle, not one full hour of sustained power");
     }
 
     [Test]
@@ -398,5 +393,33 @@ public class BatteryDistributionServiceTests
             .Should().BeTrue();
         result.GridChargedW.Should().BeGreaterThan(0,
             "emergency grid charge ignore HardwareMinChargeW");
+    }
+
+    [Test]
+    [Description("Near full battery — still uses max charge rate when remaining energy fits in one worker cycle")]
+    public void NearFullBattery_UsesMaxRate_WhenCycleCanAbsorbIt()
+    {
+        var battery = B(1, 1024, 500, 20, 95, 1);
+
+        var result = _sut.Distribute(500, new[] { battery });
+
+        Alloc(result, 1).Should().BeApproximately(500, Tolerance,
+            "5% remaining equals 51.2Wh, which can absorb 500W over a 60s cycle");
+        result.Allocations[0].NewPercent.Should().BeApproximately(95.81, 0.05,
+            "500W over 60s adds about 8.33Wh, not a full 500Wh");
+    }
+
+    [Test]
+    [Description("Near full battery — power is capped only to avoid overfilling within the current worker cycle")]
+    public void NearFullBattery_CapsOnlyToCurrentCycleAbsorption()
+    {
+        var battery = B(1, 1024, 500, 20, 99.5, 1);
+
+        var result = _sut.Distribute(500, new[] { battery });
+
+        Alloc(result, 1).Should().BeApproximately(307.2, Tolerance,
+            "0.5% remaining equals 5.12Wh, so a 60s cycle should cap power around 307W");
+        result.Allocations[0].NewPercent.Should().BeApproximately(100, 0.05);
+        result.UnusedSurplusW.Should().BeApproximately(192.8, Tolerance);
     }
 }

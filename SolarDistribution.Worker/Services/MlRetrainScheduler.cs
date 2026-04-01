@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using SolarDistribution.Core.Repositories;
+using SolarDistribution.Core.Services;
 using SolarDistribution.Core.Services.ML;
 using SolarDistribution.Worker.Configuration;
 
@@ -31,26 +32,33 @@ public class MlRetrainScheduler : BackgroundService
     private readonly IDistributionMLService _mlService;
     private readonly IDistributionRepository _repo;
     private readonly MlConfig _mlConfig;
+    private readonly HeatingConfig _heatingConfig;
+    private readonly IHeatingPreheatMlService _heatingMlService;
     private readonly DailySummaryService _dailySummaryService;
     private readonly ILogger<MlRetrainScheduler> _logger;
 
     // Last retrain performed — avoids duplicates if scheduler restarts
     private DateTime _lastRetrainAt = DateTime.MinValue;
+    private DateTime _lastHeatingRetrainAt = DateTime.MinValue;
     // Last purge — once per week is enough
     private DateTime _lastPurgeAt = DateTime.MinValue;
 
     public MlRetrainScheduler(
         FeedbackEvaluator feedbackEvaluator,
         IDistributionMLService mlService,
+        IHeatingPreheatMlService heatingMlService,
         IDistributionRepository repo,
         MlConfig mlConfig,
+        HeatingConfig heatingConfig,
         DailySummaryService dailySummaryService,
         ILogger<MlRetrainScheduler> logger)
     {
         _feedbackEvaluator = feedbackEvaluator;
         _mlService = mlService;
+        _heatingMlService = heatingMlService;
         _repo = repo;
         _mlConfig = mlConfig;
+        _heatingConfig = heatingConfig;
         _dailySummaryService = dailySummaryService;
         _logger = logger;
     }
@@ -139,7 +147,22 @@ public class MlRetrainScheduler : BackgroundService
                 _logger.LogError(ex, "ML retrain failed");
             }
 
-            // ── 4. DB purge and compression (weekly) ─────────────────────────
+            // ── 4. Heating ML retrain (6.2) ─────────────────────────────────
+            try
+            {
+                if (_heatingConfig.Enabled
+                    && (now - _lastHeatingRetrainAt).TotalHours >= Math.Max(1, _heatingConfig.MlRetrainIntervalHours))
+                {
+                    await RunHeatingRetrainAsync(stoppingToken);
+                    _lastHeatingRetrainAt = now;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Heating ML retrain failed");
+            }
+
+            // ── 5. DB purge and compression (weekly) ─────────────────────────
             // Triggered after retrain to avoid impacting normal-cycle performance.
             // Purge runs at most once per week.
             try
@@ -166,21 +189,51 @@ public class MlRetrainScheduler : BackgroundService
     private async Task RunPurgeAsync(CancellationToken ct)
     {
         _logger.LogInformation(
-            "DB purge starting | compression after {C}d (slot={S}min) | hard delete after {H}d",
+            "DB purge starting | sessions: compression after {C}d (slot={S}min) | hard delete after {H}d",
             _mlConfig.PurgeCompressionAgeDays,
             _mlConfig.PurgeCompressionSlotMinutes,
             _mlConfig.PurgeHardDeleteAgeDays);
 
-        int deleted = await _repo.PurgeOldSessionsAsync(
+        int deletedSessions = await _repo.PurgeOldSessionsAsync(
             _mlConfig.PurgeCompressionAgeDays,
             _mlConfig.PurgeCompressionSlotMinutes,
             _mlConfig.PurgeHardDeleteAgeDays,
             ct);
 
-        if (deleted > 0)
-            _logger.LogInformation("DB purge complete: {N} sessions removed", deleted);
+        int deletedHeating = 0;
+        if (_heatingConfig.Enabled)
+        {
+            deletedHeating = await _repo.PurgeOldHeatingSamplesAsync(
+                _heatingConfig.PurgeCompressionAgeDays,
+                _heatingConfig.PurgeCompressionSlotMinutes,
+                _heatingConfig.PurgeHardDeleteAgeDays,
+                ct);
+        }
+
+        if (deletedSessions + deletedHeating > 0)
+            _logger.LogInformation("DB purge complete: {S} sessions + {H} heating samples removed", deletedSessions, deletedHeating);
         else
             _logger.LogDebug("DB purge: nothing to remove");
+    }
+
+    private async Task RunHeatingRetrainAsync(CancellationToken ct)
+    {
+        _logger.LogInformation("Heating ML retrain starting (interval {Hours}h)", _heatingConfig.MlRetrainIntervalHours);
+
+        var result = await _heatingMlService.RetrainAsync(ct);
+        if (result.Success)
+        {
+            _logger.LogInformation(
+                "Heating ML retrained: version={Version} samples={Samples} R2={R2:F3} MAE={MAE:F2}m",
+                result.ModelVersion,
+                result.TrainingSamples,
+                result.RSquared,
+                result.MeanAbsoluteErrorMinutes);
+        }
+        else
+        {
+            _logger.LogWarning("Heating ML retrain skipped/failed: {Error}", result.ErrorMessage ?? "unknown");
+        }
     }
 
     // ── Retrain decision logic ───────────────────────────────────────────────

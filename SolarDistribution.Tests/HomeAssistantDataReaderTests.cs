@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using NSubstitute;
 using NUnit.Framework;
 using SolarDistribution.Core.Repositories;
+using SolarDistribution.Core.Services;
 using SolarDistribution.Worker.Configuration;
 using SolarDistribution.Worker.HA;
 
@@ -31,6 +32,8 @@ public class HomeAssistantDataReaderTests
 
         var reader = new HomeAssistantDataReader(client, config, provider.GetRequiredService<IServiceScopeFactory>(),
             new SolarDistribution.Core.Services.TariffEngine(new SolarDistribution.Core.Services.TariffConfig()),
+            Substitute.For<IHeatingSourceSelectorService>(),
+            Substitute.For<IHeatingPreheatMlService>(),
             Substitute.For<ILogger<HomeAssistantDataReader>>());
 
         var snapshot = await reader.ReadAllAsync();
@@ -83,7 +86,10 @@ public class HomeAssistantDataReaderTests
         var tariffEngine = new SolarDistribution.Core.Services.TariffEngine(new SolarDistribution.Core.Services.TariffConfig());
 
         var reader = new HomeAssistantDataReader(client, config, provider.GetRequiredService<IServiceScopeFactory>(),
-            tariffEngine, Substitute.For<ILogger<HomeAssistantDataReader>>());
+            tariffEngine,
+            Substitute.For<IHeatingSourceSelectorService>(),
+            Substitute.For<IHeatingPreheatMlService>(),
+            Substitute.For<ILogger<HomeAssistantDataReader>>());
 
         var snapshot = await reader.ReadAllAsync();
         snapshot.Should().NotBeNull();

@@ -35,6 +35,22 @@ namespace SolarDistribution.Core.Services;
 /// </summary>
 public class BatteryDistributionService : IBatteryDistributionService
 {
+    private const double DefaultAllocationWindowSeconds = 60;
+    private readonly double _allocationWindowHours;
+
+    public BatteryDistributionService()
+        : this(TimeSpan.FromSeconds(DefaultAllocationWindowSeconds))
+    {
+    }
+
+    public BatteryDistributionService(TimeSpan allocationWindow)
+    {
+        if (allocationWindow <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(allocationWindow), "Allocation window must be > 0.");
+
+        _allocationWindowHours = allocationWindow.TotalHours;
+    }
+
     /// <inheritdoc/>
     public DistributionResult Distribute(double surplusW, IEnumerable<Battery> batteries)
     {
@@ -56,7 +72,7 @@ public class BatteryDistributionService : IBatteryDistributionService
         {
             if (remaining <= 0.01) break;
             remaining = DistributeSurplusToGroup(
-                group.ToList(), remaining, allocated, gridAlloc, currentPct, useSoftMax: true);
+                group.ToList(), remaining, allocated, gridAlloc, currentPct, useSoftMax: true, _allocationWindowHours);
         }
 
         // ── PASS 2 : surplus restant → HardMax ───────────────────────────────
@@ -66,7 +82,7 @@ public class BatteryDistributionService : IBatteryDistributionService
             {
                 if (remaining <= 0.01) break;
                 remaining = DistributeSurplusToGroup(
-                    group.ToList(), remaining, allocated, gridAlloc, currentPct, useSoftMax: false);
+                    group.ToList(), remaining, allocated, gridAlloc, currentPct, useSoftMax: false, _allocationWindowHours);
             }
         }
 
@@ -82,7 +98,7 @@ public class BatteryDistributionService : IBatteryDistributionService
         foreach (var group in gridGroups)
         {
             double consumed = DistributeGridToGroup(
-                group.ToList(), allocated, gridAlloc, currentPct);
+                group.ToList(), allocated, gridAlloc, currentPct, _allocationWindowHours);
             gridCharged += consumed;
         }
 
@@ -129,14 +145,7 @@ public class BatteryDistributionService : IBatteryDistributionService
                        && solar > 0.01 && solar <= b.IdleChargeW + 0.01
                        && currentPct[b.Id] >= b.SoftMaxPercent - 0.5;
 
-            double newPct = isIdle
-                ? b.CurrentPercent   // idle: projected SOC unchanged
-                : Math.Clamp(
-                    b.CurrentPercent + ((solar - (isIdle ? solar : 0) + grid) / b.CapacityWh * 100.0),
-                    0.0, b.HardMaxPercent);
-
-            // Clean recalculation without ambiguity
-            double energyForSoc = isIdle ? 0 : (solar + grid);
+            double energyForSoc = isIdle ? 0 : (solar + grid) * _allocationWindowHours;
             double projectedPct = Math.Clamp(
                 b.CurrentPercent + (energyForSoc / b.CapacityWh * 100.0),
                 0.0, b.HardMaxPercent);
@@ -170,7 +179,8 @@ public class BatteryDistributionService : IBatteryDistributionService
         Dictionary<int, double> allocated,
         Dictionary<int, double> gridAlloc,
         Dictionary<int, double> currentPct,
-        bool useSoftMax)
+        bool useSoftMax,
+        double allocationWindowHours)
     {
         double remaining = surplusW;
 
@@ -205,7 +215,7 @@ public class BatteryDistributionService : IBatteryDistributionService
                 double weight = spaces[b.Id] / totalSpace;
                 double share = remaining * weight;
                 double rateLeft = b.MaxChargeRateW - allocated[b.Id] - gridAlloc[b.Id];
-                double cap = spaces[b.Id];
+                double cap = ComputeCyclePowerCap(spaces[b.Id], allocationWindowHours);
                 double give = Math.Min(share, Math.Max(0, rateLeft));
                 give = Math.Min(give, cap);
 
@@ -229,7 +239,8 @@ public class BatteryDistributionService : IBatteryDistributionService
         List<Battery> group,
         Dictionary<int, double> solarAllocated,
         Dictionary<int, double> gridAllocated,
-        Dictionary<int, double> currentPct)
+        Dictionary<int, double> currentPct,
+        double allocationWindowHours)
     {
         double totalConsumed = 0;
         var active = group.ToList();
@@ -245,7 +256,8 @@ public class BatteryDistributionService : IBatteryDistributionService
                     (gridTarget - currentPct[b.Id]) / 100.0 * b.CapacityWh);
                 double rateUsed = solarAllocated[b.Id] + gridAllocated[b.Id];
                 double gridLeft = Math.Max(0, b.GridChargeAllowedW - rateUsed);
-                return Math.Min(spaceToTarget, gridLeft);
+                double cycleCap = ComputeCyclePowerCap(spaceToTarget, allocationWindowHours);
+                return Math.Min(cycleCap, gridLeft);
             });
 
             double totalBudget = budgets.Values.Sum();
@@ -269,6 +281,14 @@ public class BatteryDistributionService : IBatteryDistributionService
         }
 
         return totalConsumed;
+    }
+
+    private static double ComputeCyclePowerCap(double remainingEnergyWh, double allocationWindowHours)
+    {
+        if (remainingEnergyWh <= 0.01)
+            return 0;
+
+        return remainingEnergyWh / allocationWindowHours;
     }
 
     private static string BuildReason(Battery b, double solar, double grid, double newPct, bool isIdle)

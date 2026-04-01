@@ -20,6 +20,115 @@ public class DistributionRepository : IDistributionRepository
         await _db.SaveChangesAsync(ct);
     }
 
+    public async Task SaveHeatingSampleAsync(HeatingSample sample, CancellationToken ct = default)
+    {
+        _db.HeatingSamples.Add(sample);
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task<List<HeatingSample>> GetHeatingSamplesForTrainingAsync(
+        int maxRecords = 20000,
+        int windowDays = 180,
+        CancellationToken ct = default)
+    {
+        var cutoff = DateTime.UtcNow.AddDays(-Math.Max(1, windowDays));
+
+        return await _db.HeatingSamples
+            .Where(x => x.SampledAtUtc >= cutoff)
+            .OrderByDescending(x => x.SampledAtUtc)
+            .Take(Math.Max(100, maxRecords))
+            .AsNoTracking()
+            .ToListAsync(ct);
+    }
+
+    public async Task<int> CountHeatingSamplesAsync(CancellationToken ct = default)
+        => await _db.HeatingSamples.CountAsync(ct);
+
+    public async Task<int> PurgeOldHeatingSamplesAsync(
+        int compressionAgeDays,
+        int compressionSlotMinutes,
+        int hardDeleteAgeDays,
+        CancellationToken ct = default)
+    {
+        int totalDeleted = 0;
+        var now = DateTime.UtcNow;
+
+        var compressionEnd = now.AddDays(-compressionAgeDays);
+        var compressionStart = now.AddDays(-hardDeleteAgeDays);
+
+        var toCompress = await _db.HeatingSamples
+            .Where(s => s.SampledAtUtc < compressionEnd
+                     && s.SampledAtUtc >= compressionStart)
+            .Select(s => new { s.Id, s.SampledAtUtc })
+            .AsNoTracking()
+            .ToListAsync(ct);
+
+        if (toCompress.Any())
+        {
+            var slotMs = (long)TimeSpan.FromMinutes(Math.Max(1, compressionSlotMinutes)).TotalMilliseconds;
+            var grouped = toCompress.GroupBy(s => ((DateTimeOffset)s.SampledAtUtc).ToUnixTimeMilliseconds() / slotMs);
+            var idsToDelete = new List<long>();
+
+            foreach (var group in grouped)
+            {
+                var keepId = group
+                    .OrderByDescending(x => x.SampledAtUtc)
+                    .Select(x => x.Id)
+                    .First();
+
+                idsToDelete.AddRange(group.Where(x => x.Id != keepId).Select(x => x.Id));
+            }
+
+            const int DeleteBatch = 500;
+            for (int i = 0; i < idsToDelete.Count; i += DeleteBatch)
+            {
+                var batch = idsToDelete.Skip(i).Take(DeleteBatch).ToList();
+                int deleted = await _db.HeatingSamples
+                    .Where(s => batch.Contains(s.Id))
+                    .ExecuteDeleteAsync(ct);
+                totalDeleted += deleted;
+            }
+        }
+
+        var hardDeleteCutoff = now.AddDays(-hardDeleteAgeDays);
+        const int HardDeleteBatch = 1000;
+
+        int hardDeleted;
+        do
+        {
+            hardDeleted = await _db.HeatingSamples
+                .Where(s => s.SampledAtUtc < hardDeleteCutoff)
+                .OrderBy(s => s.SampledAtUtc)
+                .ThenBy(s => s.Id)
+                .Take(HardDeleteBatch)
+                .ExecuteDeleteAsync(ct);
+            totalDeleted += hardDeleted;
+        }
+        while (hardDeleted == HardDeleteBatch && !ct.IsCancellationRequested);
+
+        return totalDeleted;
+    }
+
+    public async Task SaveGasMeterReadingAsync(GasMeterReading reading, CancellationToken ct = default)
+    {
+        _db.GasMeterReadings.Add(reading);
+        await _db.SaveChangesAsync(ct);
+    }
+
+    public async Task<List<GasMeterReading>> GetRecentGasMeterReadingsAsync(
+        int count = 100, CancellationToken ct = default)
+        => await _db.GasMeterReadings
+            .OrderByDescending(r => r.ReadAtUtc)
+            .Take(count)
+            .ToListAsync(ct);
+
+    public async Task<GasMeterReading?> GetLastGasMeterReadingBeforeAsync(
+        DateTime utcBefore, CancellationToken ct = default)
+        => await _db.GasMeterReadings
+            .Where(r => r.ReadAtUtc <= utcBefore)
+            .OrderByDescending(r => r.ReadAtUtc)
+            .FirstOrDefaultAsync(ct);
+
     /// <summary>
     /// Loads sessions for ML training using calendar-stratified sampling.
     ///

@@ -1,5 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using System.Globalization;
+using System.Text.Json;
+using SolarDistribution.Core.Data.Entities;
 using SolarDistribution.Core.Repositories;
 using SolarDistribution.Core.Services;
 using SolarDistribution.Worker.Configuration;
@@ -64,19 +67,29 @@ public class HomeAssistantDataReader
     private readonly SolarConfig _config;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly TariffEngine _tariffEngine;
+    private readonly IHeatingSourceSelectorService _heatingSourceSelector;
+    private readonly IHeatingPreheatMlService _heatingPreheatMl;
     private readonly ILogger<HomeAssistantDataReader> _logger;
+    private DateTime _lastHeatingSamplePersistedAtUtc = DateTime.MinValue;
+    private DateTime _lastLearningRefreshUtc = DateTime.MinValue;
+    private Dictionary<string, double> _learnedSpeedDegPerHour = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, int> _learnedSpeedSampleCount = new(StringComparer.OrdinalIgnoreCase);
 
     public HomeAssistantDataReader(
         IHomeAssistantClient client,
         SolarConfig config,
         IServiceScopeFactory scopeFactory,
         TariffEngine tariffEngine,
+        IHeatingSourceSelectorService heatingSourceSelector,
+        IHeatingPreheatMlService heatingPreheatMl,
         ILogger<HomeAssistantDataReader> logger)
     {
         _client = client;
         _config = config;
         _scopeFactory = scopeFactory;
         _tariffEngine = tariffEngine;
+        _heatingSourceSelector = heatingSourceSelector;
+        _heatingPreheatMl = heatingPreheatMl;
         _logger = logger;
     }
 
@@ -373,11 +386,591 @@ public class HomeAssistantDataReader
             }
         }
 
+        await ReadAndPersistHeatingSampleAsync(ct);
+
         return new HaSnapshot(surplusW, productionW, consumptionW,
             forecastTodayWh, forecastTomorrowWh,
             forecastThisHourWh, forecastNextHourWh, forecastRemainingTodayWh,
             zoneConsumptionW, estimatedConsumptionNextHoursWh,
             readings, DateTime.UtcNow);
+    }
+
+    private async Task ReadAndPersistHeatingSampleAsync(CancellationToken ct)
+    {
+        if (!_config.Heating.Enabled)
+            return;
+
+        var nowUtc = DateTime.UtcNow;
+        int samplingSeconds = Math.Max(60, _config.Heating.SamplingIntervalSeconds);
+        if (_lastHeatingSamplePersistedAtUtc != DateTime.MinValue
+            && (nowUtc - _lastHeatingSamplePersistedAtUtc).TotalSeconds < samplingSeconds)
+        {
+            return;
+        }
+
+        var thermostatStates = await GetThermostatStatesAsync(ct);
+
+        var aggregationMode = (_config.Heating.ZoneAggregationMode ?? "average").Trim().ToLowerInvariant();
+
+        double? indoorTempC = await ReadAggregatedNumericAsync(
+            _config.Heating.IndoorTemperatureEntity,
+            _config.Heating.IndoorTemperatureEntities,
+            thermostatStates,
+            attributeName: "current_temperature",
+            aggregationMode,
+            ct);
+
+        double? targetTempC = await ReadAggregatedNumericAsync(
+            _config.Heating.TargetTemperatureEntity,
+            _config.Heating.TargetTemperatureEntities,
+            thermostatStates,
+            attributeName: "temperature",
+            aggregationMode,
+            ct);
+
+        double? outdoorTempC = await ReadOptionalNumericAsync(_config.Heating.OutdoorTemperatureEntity, ct);
+        double? outdoorHumidityPct = await ReadOptionalNumericAsync(_config.Heating.OutdoorHumidityEntity, ct);
+        double? windSpeedMs = await ReadOptionalNumericAsync(_config.Heating.WindSpeedEntity, ct);
+        double? solarIrradianceWm2 = await ReadOptionalNumericAsync(_config.Heating.SolarIrradianceEntity, ct);
+
+        double? forecastH1 = await ReadOptionalNumericAsync(_config.Heating.ForecastOutdoorTempNextHourEntity, ct);
+        double? forecastH2 = await ReadOptionalNumericAsync(_config.Heating.ForecastOutdoorTempNext2HoursEntity, ct);
+        double? forecastH3 = await ReadOptionalNumericAsync(_config.Heating.ForecastOutdoorTempNext3HoursEntity, ct);
+
+        string? thermostatMode = await ReadTextFromEitherAsync(
+            _config.Heating.HvacModeEntity,
+            thermostatStates,
+            attributeName: "hvac_mode",
+            ct);
+
+        string? hvacAction = await ReadTextFromEitherAsync(
+            _config.Heating.HvacActionEntity,
+            thermostatStates,
+            attributeName: "hvac_action",
+            ct);
+
+        if (string.IsNullOrWhiteSpace(hvacAction) && _config.Heating.HvacActionEntities.Count > 0)
+        {
+            hvacAction = await ReadTextFromEntitiesAsync(_config.Heating.HvacActionEntities, ct);
+        }
+
+        bool? isHeatingOn = InterpretHeatingOn(hvacAction);
+        string? presenceMode = await ReadOptionalTextAsync(_config.Heating.PresenceModeEntity, ct);
+        bool? isNearHome = await ReadOptionalBoolAsync(_config.Heating.NearHomeEntity, ct);
+        bool? isOffPeak = await ReadOptionalBoolAsync(_config.Heating.IsOffPeakEntity, ct);
+        double? currentPricePerKwh = await ReadOptionalNumericAsync(_config.Heating.CurrentPriceEntity, ct);
+
+        // Energy prices: electricity comes from current_price_entity (existing),
+        // gas can come from a dedicated HA sensor or fixed config value.
+        double gasPricePerKwh = _config.Heating.Gas.GasPricePerKwh;
+        if (!string.IsNullOrWhiteSpace(_config.Heating.Gas.GasPriceEntity))
+        {
+            var gasPriceFromHa = await ReadOptionalNumericAsync(_config.Heating.Gas.GasPriceEntity, ct);
+            if (gasPriceFromHa.HasValue && gasPriceFromHa.Value > 0)
+                gasPricePerKwh = gasPriceFromHa.Value;
+        }
+
+        var heatingSources = _config.Heating.Sources
+            .Where(s => !string.IsNullOrWhiteSpace(s.Name))
+            .Select(s => new HeatingSourceDefinition(
+                Name: s.Name,
+                Type: s.Type,
+                Enabled: s.Enabled,
+                Priority: s.Priority,
+                CopRefTempC: s.CopRefTempC,
+                CopAtRefTemp: s.CopAtRefTemp,
+                CopSlopePerDegC: s.CopSlopePerDegC,
+                CopMinValue: s.CopMinValue,
+                BoilerEfficiency: s.BoilerEfficiency))
+            .ToList();
+
+        var sourceSelection = _heatingSourceSelector.SelectOptimalSource(
+            heatingSources,
+            outdoorTempC ?? 7.0,
+            currentPricePerKwh ?? 0.25,
+            gasPricePerKwh);
+
+        sourceSelection ??= new HeatingSourceCostResult(
+            BestSourceName: null,
+            BestSourceType: null,
+            BestCop: 0,
+            BestCostPerKwhThermal: 0,
+            AllSources: Array.Empty<HeatingSourceBreakdown>(),
+            Reason: "No source selection");
+
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var repo = scope.ServiceProvider.GetRequiredService<IDistributionRepository>();
+
+        await RefreshLearnedSourceSpeedAsync(repo, nowUtc, ct);
+
+        var mlContext = new HeatingOrchestratorContext(
+            CurrentTempC: indoorTempC ?? targetTempC ?? _config.Heating.ComfortSetpointC,
+            TargetTempC: targetTempC ?? _config.Heating.ComfortSetpointC,
+            OutsideTempC: outdoorTempC ?? 7.0,
+            NowLocal: DateTime.Now,
+            DesiredReadyAtLocal: null,
+            PresenceMode: ParsePresenceMode(presenceMode),
+            IsOffPeak: isOffPeak == true,
+            CurrentPricePerKwh: currentPricePerKwh ?? 0.25,
+            IsWeatherWarmingSoon: (forecastH3 ?? outdoorTempC ?? 7.0) > (forecastH1 ?? outdoorTempC ?? 7.0));
+
+        var mlEstimate = await _heatingPreheatMl.EstimateAsync(mlContext, ct);
+        var selected = ApplyAdvancedSourceSwitching(
+            sourceSelection,
+            nowLocal: DateTime.Now,
+            currentTempC: indoorTempC,
+            targetTempC: targetTempC,
+            mlEstimate: mlEstimate,
+            minLearningSamples: _config.Heating.ComfortConstraints.MinSamplesForLearning);
+
+        var selectedBreakdown = sourceSelection.AllSources
+            .FirstOrDefault(x => string.Equals(x.Name, selected.BestSourceName, StringComparison.OrdinalIgnoreCase));
+        selectedBreakdown ??= sourceSelection.AllSources.FirstOrDefault();
+
+        _logger.LogDebug(
+            "Heating source selected: {Name}/{Type} at {Cost:F4} €/kWh_th (reason: {Reason}; ML p90={P90:F1}m)",
+            selected.BestSourceName ?? "n/a",
+            selected.BestSourceType ?? "n/a",
+            selected.BestCostPerKwhThermal,
+            selected.Reason,
+            mlEstimate.P90Minutes);
+
+        double? gasConsumptionM3h = null;
+        if (string.Equals(selected.BestSourceType, "gas", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(selected.BestSourceName))
+        {
+            var selectedGasSource = _config.Heating.Sources.FirstOrDefault(s =>
+                string.Equals(s.Name, selected.BestSourceName, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(selectedGasSource?.GasConsumptionEntity))
+                gasConsumptionM3h = await ReadOptionalNumericAsync(selectedGasSource.GasConsumptionEntity, ct);
+        }
+
+        var forecastJson = JsonSerializer.Serialize(new
+        {
+            next1h = forecastH1,
+            next2h = forecastH2,
+            next3h = forecastH3
+        });
+
+        var sample = new HeatingSample
+        {
+            SampledAtUtc = nowUtc,
+            IndoorTempC = indoorTempC,
+            TargetTempC = targetTempC,
+            OutdoorTempC = outdoorTempC,
+            OutdoorHumidityPct = outdoorHumidityPct,
+            WindSpeedMs = windSpeedMs,
+            SolarIrradianceWm2 = solarIrradianceWm2,
+            ForecastOutdoorTempNextHoursJson = forecastJson,
+            ThermostatMode = NormalizeText(thermostatMode),
+            HvacAction = NormalizeText(hvacAction),
+            IsHeatingOn = isHeatingOn,
+            PresenceMode = NormalizeText(presenceMode),
+            IsNearHome = isNearHome,
+            IsOffPeak = isOffPeak,
+            CurrentPricePerKwh = currentPricePerKwh,
+
+            ActiveSourceName = NormalizeText(selected.BestSourceName),
+            ActiveSourceType = NormalizeText(selected.BestSourceType),
+            GasConsumptionM3h = gasConsumptionM3h,
+            HeatPumpCop = string.Equals(selected.BestSourceType, "heat_pump", StringComparison.OrdinalIgnoreCase)
+                ? selected.BestCop
+                : null,
+            EstimatedCostPerKwhThermal = (selectedBreakdown?.CostPerKwhThermal ?? selected.BestCostPerKwhThermal) > 0
+                ? (selectedBreakdown?.CostPerKwhThermal ?? selected.BestCostPerKwhThermal)
+                : null
+        };
+
+        await repo.SaveHeatingSampleAsync(sample, ct);
+
+        // Optional gas meter persistence from HA cumulative meter.
+        if (_config.Heating.Gas.Enabled
+            && string.Equals(_config.Heating.Gas.MeterMode, "ha_entity", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(_config.Heating.Gas.MeterEntity))
+        {
+            var meterReadingM3 = await ReadOptionalNumericAsync(_config.Heating.Gas.MeterEntity, ct);
+            if (meterReadingM3.HasValue)
+            {
+                var lastMeter = await repo.GetLastGasMeterReadingBeforeAsync(nowUtc, ct);
+                bool changed = lastMeter is null || Math.Abs(lastMeter.ReadingM3 - meterReadingM3.Value) > 0.0001;
+                if (changed)
+                {
+                    await repo.SaveGasMeterReadingAsync(new GasMeterReading
+                    {
+                        ReadAtUtc = nowUtc,
+                        ReadingM3 = meterReadingM3.Value,
+                        Source = "ha_auto",
+                        Note = null
+                    }, ct);
+                }
+            }
+        }
+
+        _lastHeatingSamplePersistedAtUtc = nowUtc;
+
+        _logger.LogDebug(
+            "Heating sample persisted: indoor={Indoor}C target={Target}C outside={Outside}C mode={Mode} action={Action} presence={Presence} offpeak={OffPeak} price={Price}",
+            sample.IndoorTempC?.ToString("F1") ?? "n/a",
+            sample.TargetTempC?.ToString("F1") ?? "n/a",
+            sample.OutdoorTempC?.ToString("F1") ?? "n/a",
+            sample.ThermostatMode ?? "n/a",
+            sample.HvacAction ?? "n/a",
+            sample.PresenceMode ?? "n/a",
+            sample.IsOffPeak?.ToString() ?? "n/a",
+            sample.CurrentPricePerKwh?.ToString("F4") ?? "n/a");
+    }
+
+    private async Task<List<HaState>> GetThermostatStatesAsync(CancellationToken ct)
+    {
+        var states = new List<HaState>();
+
+        if (!string.IsNullOrWhiteSpace(_config.Heating.ThermostatEntity))
+        {
+            var single = await _client.GetStateAsync(_config.Heating.ThermostatEntity, ct);
+            if (single is not null)
+                states.Add(single);
+        }
+
+        foreach (var entity in _config.Heating.ThermostatEntities)
+        {
+            if (string.IsNullOrWhiteSpace(entity))
+                continue;
+
+            var state = await _client.GetStateAsync(entity, ct);
+            if (state is not null && states.All(s => !string.Equals(s.EntityId, state.EntityId, StringComparison.OrdinalIgnoreCase)))
+            {
+                states.Add(state);
+            }
+        }
+
+        return states;
+    }
+
+    private async Task<double?> ReadOptionalNumericAsync(string? entityId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(entityId)) return null;
+        return await _client.GetNumericStateAsync(entityId, ct);
+    }
+
+    private async Task<string?> ReadOptionalTextAsync(string? entityId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(entityId)) return null;
+        var state = await _client.GetStateAsync(entityId, ct);
+        return NormalizeText(state?.State);
+    }
+
+    private async Task<bool?> ReadOptionalBoolAsync(string? entityId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(entityId)) return null;
+
+        var state = await _client.GetStateAsync(entityId, ct);
+        if (state is null) return null;
+
+        var txt = state.State.Trim();
+        if (bool.TryParse(txt, out var asBool)) return asBool;
+        if (double.TryParse(txt, NumberStyles.Float, CultureInfo.InvariantCulture, out var asNum)) return asNum > 0;
+
+        return txt.Equals("on", StringComparison.OrdinalIgnoreCase)
+            || txt.Equals("home", StringComparison.OrdinalIgnoreCase)
+            || txt.Equals("true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<double?> ReadAggregatedNumericAsync(
+        string? primaryEntity,
+        IReadOnlyList<string> multiEntities,
+        IReadOnlyList<HaState> fallbackStates,
+        string attributeName,
+        string aggregationMode,
+        CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(primaryEntity))
+        {
+            var direct = await _client.GetNumericStateAsync(primaryEntity, ct);
+            if (direct is not null)
+                return direct;
+        }
+
+        if (multiEntities.Count > 0)
+        {
+            var values = new List<double>();
+            foreach (var entity in multiEntities)
+            {
+                if (string.IsNullOrWhiteSpace(entity)) continue;
+                var value = await _client.GetNumericStateAsync(entity, ct);
+                if (value is not null) values.Add(value.Value);
+            }
+
+            var aggregated = Aggregate(values, aggregationMode);
+            if (aggregated is not null)
+                return aggregated;
+        }
+
+        var fallbackValues = fallbackStates
+            .Select(state => TryReadNumericAttribute(state, attributeName))
+            .Where(v => v.HasValue)
+            .Select(v => v!.Value)
+            .ToList();
+
+        return Aggregate(fallbackValues, aggregationMode);
+    }
+
+    private async Task<string?> ReadTextFromEitherAsync(
+        string? primaryEntity,
+        IReadOnlyList<HaState> fallbackStates,
+        string attributeName,
+        CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(primaryEntity))
+        {
+            var txt = await ReadOptionalTextAsync(primaryEntity, ct);
+            if (!string.IsNullOrWhiteSpace(txt))
+                return txt;
+        }
+
+        foreach (var state in fallbackStates)
+        {
+            if (state.Attributes.TryGetProperty(attributeName, out var attr))
+            {
+                var txt = NormalizeText(attr.ToString());
+                if (!string.IsNullOrWhiteSpace(txt)) return txt;
+            }
+
+            var stateValue = NormalizeText(state.State);
+            if (!string.IsNullOrWhiteSpace(stateValue))
+                return stateValue;
+        }
+
+        return null;
+    }
+
+    private async Task<string?> ReadTextFromEntitiesAsync(IReadOnlyList<string> entities, CancellationToken ct)
+    {
+        var values = new List<string>();
+        foreach (var entity in entities)
+        {
+            if (string.IsNullOrWhiteSpace(entity)) continue;
+            var txt = await ReadOptionalTextAsync(entity, ct);
+            if (!string.IsNullOrWhiteSpace(txt)) values.Add(txt);
+        }
+
+        if (values.Count == 0)
+            return null;
+
+        if (values.Any(v => v.Contains("heat", StringComparison.OrdinalIgnoreCase)
+                         || v.Equals("on", StringComparison.OrdinalIgnoreCase)
+                         || v.Equals("heating", StringComparison.OrdinalIgnoreCase)))
+        {
+            return "heating";
+        }
+
+        return values[0];
+    }
+
+    private static double? TryReadNumericAttribute(HaState? state, string attributeName)
+    {
+        if (state is null) return null;
+        if (!state.Attributes.TryGetProperty(attributeName, out var attr)) return null;
+
+        if (attr.ValueKind == JsonValueKind.Number && attr.TryGetDouble(out var n))
+            return n;
+
+        if (double.TryParse(attr.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+            return parsed;
+
+        return null;
+    }
+
+    private static bool? InterpretHeatingOn(string? hvacAction)
+    {
+        if (string.IsNullOrWhiteSpace(hvacAction)) return null;
+        return hvacAction.Contains("heat", StringComparison.OrdinalIgnoreCase)
+            || hvacAction.Equals("on", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static double? Aggregate(IReadOnlyCollection<double> values, string aggregationMode)
+    {
+        if (values.Count == 0) return null;
+
+        return aggregationMode switch
+        {
+            "min" => values.Min(),
+            "max" => values.Max(),
+            _ => values.Average()
+        };
+    }
+
+    private static string? NormalizeText(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        return value.Trim();
+    }
+
+    private async Task RefreshLearnedSourceSpeedAsync(
+        IDistributionRepository repo,
+        DateTime nowUtc,
+        CancellationToken ct)
+    {
+        int refreshMinutes = Math.Max(1, _config.Heating.ComfortConstraints.LearningRefreshMinutes);
+        if (_lastLearningRefreshUtc != DateTime.MinValue
+            && (nowUtc - _lastLearningRefreshUtc).TotalMinutes < refreshMinutes)
+        {
+            return;
+        }
+
+        var samples = await repo.GetHeatingSamplesForTrainingAsync(maxRecords: 5000, windowDays: 30, ct);
+        var ordered = samples
+            .Where(x => x.IndoorTempC.HasValue && !string.IsNullOrWhiteSpace(x.ActiveSourceName))
+            .OrderBy(x => x.SampledAtUtc)
+            .ToList();
+
+        var speedBySource = new Dictionary<string, List<double>>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 1; i < ordered.Count; i++)
+        {
+            var prev = ordered[i - 1];
+            var curr = ordered[i];
+
+            if (!string.Equals(prev.ActiveSourceName, curr.ActiveSourceName, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (prev.IsHeatingOn != true || curr.IsHeatingOn != true)
+                continue;
+
+            var dtHours = (curr.SampledAtUtc - prev.SampledAtUtc).TotalHours;
+            if (dtHours <= 0 || dtHours > 0.5)
+                continue;
+
+            var dTemp = curr.IndoorTempC!.Value - prev.IndoorTempC!.Value;
+            if (dTemp <= 0)
+                continue;
+
+            var speed = dTemp / dtHours; // deg C per hour
+            if (speed <= 0 || speed > 8.0)
+                continue;
+
+            var key = curr.ActiveSourceName!;
+            if (!speedBySource.TryGetValue(key, out var bucket))
+            {
+                bucket = new List<double>();
+                speedBySource[key] = bucket;
+            }
+            bucket.Add(speed);
+        }
+
+        _learnedSpeedDegPerHour = speedBySource.ToDictionary(
+            kv => kv.Key,
+            kv => kv.Value.OrderBy(v => v).ElementAt(kv.Value.Count / 2),
+            StringComparer.OrdinalIgnoreCase);
+
+        _learnedSpeedSampleCount = speedBySource.ToDictionary(
+            kv => kv.Key,
+            kv => kv.Value.Count,
+            StringComparer.OrdinalIgnoreCase);
+
+        _lastLearningRefreshUtc = nowUtc;
+    }
+
+    private HeatingSourceCostResult ApplyAdvancedSourceSwitching(
+        HeatingSourceCostResult baseline,
+        DateTime nowLocal,
+        double? currentTempC,
+        double? targetTempC,
+        HeatingPreheatEstimate mlEstimate,
+        int minLearningSamples)
+    {
+        if (baseline.AllSources.Count == 0)
+            return baseline;
+
+        var selected = baseline;
+
+        // 1) Time-window rule: prefer configured source when additional cost stays acceptable.
+        foreach (var rule in _config.Heating.SourceTimeRules)
+        {
+            if (!rule.Enabled || string.IsNullOrWhiteSpace(rule.PreferredSourceName))
+                continue;
+            if (!IsHourInRange(nowLocal.Hour, rule.StartHourLocal, rule.EndHourLocal))
+                continue;
+
+            var candidate = baseline.AllSources.FirstOrDefault(x =>
+                string.Equals(x.Name, rule.PreferredSourceName, StringComparison.OrdinalIgnoreCase));
+            if (candidate is null)
+                continue;
+
+            double bestCost = Math.Max(0.00001, baseline.BestCostPerKwhThermal);
+            double overPct = ((candidate.CostPerKwhThermal - bestCost) / bestCost) * 100.0;
+            if (overPct <= rule.MaxOverBestCostPct)
+            {
+                selected = new HeatingSourceCostResult(
+                    BestSourceName: candidate.Name,
+                    BestSourceType: candidate.Type,
+                    BestCop: candidate.Cop,
+                    BestCostPerKwhThermal: candidate.CostPerKwhThermal,
+                    AllSources: baseline.AllSources,
+                    Reason: $"Time window rule {rule.StartHourLocal:00}:00-{rule.EndHourLocal:00}:00");
+                break;
+            }
+        }
+
+        // 2) Comfort override: if ML says ETA risk is too high and comfort is critical,
+        // switch to the fastest source learned from historical transitions.
+        var cc = _config.Heating.ComfortConstraints;
+        if (!cc.Enabled || !currentTempC.HasValue || !targetTempC.HasValue)
+            return selected;
+
+        double deltaTemp = targetTempC.Value - currentTempC.Value;
+        bool criticalComfort = currentTempC.Value < cc.MinimumComfortTempC || deltaTemp >= cc.CriticalDeltaTempC;
+        bool etaRisk = mlEstimate.P90Minutes > cc.MaxMlEtaP90Minutes;
+        if (!criticalComfort || !etaRisk)
+            return selected;
+
+        var fastest = baseline.AllSources
+            .Select(s => new
+            {
+                Source = s,
+                Speed = _learnedSpeedDegPerHour.TryGetValue(s.Name, out var v) ? v : 0,
+                Count = _learnedSpeedSampleCount.TryGetValue(s.Name, out var c) ? c : 0
+            })
+            .Where(x => x.Count >= Math.Max(1, minLearningSamples) && x.Speed > 0)
+            .OrderByDescending(x => x.Speed)
+            .FirstOrDefault();
+
+        if (fastest is null)
+            return selected;
+
+        double bestCostForGuard = Math.Max(0.00001, baseline.BestCostPerKwhThermal);
+        double overBestPct = ((fastest.Source.CostPerKwhThermal - bestCostForGuard) / bestCostForGuard) * 100.0;
+        if (overBestPct > cc.MaxComfortOverrideOverBestCostPct)
+            return selected;
+
+        return new HeatingSourceCostResult(
+            BestSourceName: fastest.Source.Name,
+            BestSourceType: fastest.Source.Type,
+            BestCop: fastest.Source.Cop,
+            BestCostPerKwhThermal: fastest.Source.CostPerKwhThermal,
+            AllSources: baseline.AllSources,
+            Reason: $"Comfort override via learned speed + ML ETA risk (p90={mlEstimate.P90Minutes:F0}m)");
+    }
+
+    private static bool IsHourInRange(int hour, int startHour, int endHour)
+    {
+        if (startHour == endHour)
+            return true;
+        if (startHour < endHour)
+            return hour >= startHour && hour < endHour;
+        return hour >= startHour || hour < endHour; // overnight range, e.g. 22 -> 06
+    }
+
+    private static HeatingPresenceMode ParsePresenceMode(string? mode)
+    {
+        if (string.IsNullOrWhiteSpace(mode))
+            return HeatingPresenceMode.Home;
+
+        return mode.Trim().ToLowerInvariant() switch
+        {
+            "away" => HeatingPresenceMode.Away,
+            "sleep" => HeatingPresenceMode.Sleep,
+            "near_home" => HeatingPresenceMode.NearHome,
+            "nearhome" => HeatingPresenceMode.NearHome,
+            _ => HeatingPresenceMode.Home
+        };
     }
 
     private static double ComputeSurplus(double rawValue, string mode) =>

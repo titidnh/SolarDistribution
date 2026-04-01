@@ -99,6 +99,137 @@ polling:
 weather:
   refresh_interval_minutes: 15
 
+# ── Chauffage intelligent (collecte ML 6.1) ──────────────────────────────────
+# Ce bloc permet de collecter les signaux thermostat/meteo/presence/prix
+# pour entraîner un modèle ETA (temps pour atteindre la consigne).
+heating:
+  enabled: false
+
+  # MODE A - Entité climate.* centrale (optionnel mais recommandé)
+  # Si renseignée, les attributs current_temperature, temperature,
+  # hvac_mode et hvac_action sont utilisés en fallback.
+  thermostat_entity: "climate.maison"
+  # thermostat_entities: []  # MODE B - thermostats par zone/pièce (Evohome)
+
+  # Agrégation quand plusieurs zones sont configurées:
+  # average|min|max
+  zone_aggregation_mode: "average"
+
+  # Entités explicites centrales (prioritaires sur les attributs thermostat)
+  indoor_temperature_entity: "sensor.maison_temperature"
+  target_temperature_entity: "input_number.maison_target_temp"
+
+  # MODE B - sondes/consignes par pièce (Evohome/Honeywell)
+  # indoor_temperature_entities:
+  #   - "sensor.chambre_temperature"
+  #   - "sensor.salon_temperature"
+  # target_temperature_entities:
+  #   - "sensor.chambre_setpoint"
+  #   - "sensor.salon_setpoint"
+  outdoor_temperature_entity: "sensor.outdoor_temperature"
+  outdoor_humidity_entity: "sensor.outdoor_humidity"
+  wind_speed_entity: "sensor.outdoor_wind_speed"
+  solar_irradiance_entity: "sensor.outdoor_solar_irradiance"
+
+  # Prévisions météo horaires (température extérieure)
+  forecast_outdoor_temp_next_hour_entity: "sensor.outdoor_temp_forecast_h1"
+  forecast_outdoor_temp_next2_hours_entity: "sensor.outdoor_temp_forecast_h2"
+  forecast_outdoor_temp_next3_hours_entity: "sensor.outdoor_temp_forecast_h3"
+
+  # États chauffage / présence / tarif
+  hvac_mode_entity: "sensor.hvac_mode"
+  hvac_action_entity: "sensor.hvac_action"
+  # hvac_action_entities:
+  #   - "sensor.chambre_hvac_action"
+  #   - "sensor.salon_hvac_action"
+  presence_mode_entity: "sensor.house_presence_mode" # home|away|sleep|near_home
+  near_home_entity: "binary_sensor.user_near_home"
+  is_off_peak_entity: "binary_sensor.grid_offpeak"
+  current_price_entity: "sensor.current_energy_price"
+
+  comfort_setpoint_c: 20.5
+  eco_setpoint_c: 17.0
+
+  # Sources de chauffage dans une meme zone/pièce:
+  # le système choisit la plus rentable selon météo + prix énergie.
+  # type: gas|heat_pump|electric
+  sources:
+    - name: "boiler_gas_main"
+      type: "gas"
+      zone_label: "maison"
+      climate_entity: "climate.boiler_main"
+      boiler_efficiency: 0.92
+      # Optionnel: débit instantané spécifique chaudière (m3/h)
+      gas_consumption_entity: "sensor.boiler_gas_flow"
+      priority: 20
+      enabled: true
+
+    - name: "heat_pump_main"
+      type: "heat_pump"
+      zone_label: "maison"
+      climate_entity: "climate.heat_pump_main"
+      # Courbe COP(T_ext): COP = cop_at_ref_temp + slope * (T - ref)
+      cop_ref_temp_c: 7.0
+      cop_at_ref_temp: 3.5
+      cop_slope_per_deg_c: 0.07
+      cop_min_value: 1.0
+      priority: 10
+      enabled: true
+
+  # Regles avancees de bascule par plage horaire.
+  # Ex: en journee, preferer la PAC si le cout reste proche de la source la moins chere.
+  source_time_rules:
+    - enabled: true
+      start_hour_local: 10
+      end_hour_local: 16
+      preferred_source_name: "heat_pump_main"
+      max_over_best_cost_pct: 20
+
+    - enabled: true
+      start_hour_local: 22
+      end_hour_local: 6
+      preferred_source_name: "boiler_gas_main"
+      max_over_best_cost_pct: 15
+
+  # Contraintes confort: si le modele ML indique un ETA trop long,
+  # on peut forcer la source la plus rapide apprise sur l'historique.
+  comfort_constraints:
+    enabled: true
+    minimum_comfort_temp_c: 19.0
+    critical_delta_temp_c: 1.5
+    max_ml_eta_p90_minutes: 90
+    max_comfort_override_over_best_cost_pct: 45
+    min_samples_for_learning: 20
+    learning_refresh_minutes: 30
+
+  # Monitoring gaz: smart meter OU sonde OU saisie manuelle
+  gas:
+    enabled: false
+    # ha_entity|ha_sensor|manual
+    meter_mode: "ha_entity"
+    # En mode ha_entity: index absolu compteur gaz (m3)
+    meter_entity: "sensor.gas_meter_total_m3"
+    # En mode ha_sensor: débit instantané (m3/h)
+    consumption_rate_entity: "sensor.gas_flow_m3h"
+    # Prix gaz dynamique (optionnel). Si absent -> gas_price_per_kwh
+    gas_price_entity: "sensor.current_gas_price"
+    gas_price_per_kwh: 0.08
+    calorific_value_kwh_per_m3: 10.55
+
+  sampling_interval_seconds: 300
+
+  # 6.2 - ML ETA training cadence
+  ml_training_window_days: 180
+  ml_target_samples: 20000
+  ml_min_samples_for_retrain: 120
+  ml_retrain_interval_hours: 24
+
+  # Historique chauffage: compression + suppression (pour éviter la croissance infinie DB)
+  # Philosophie identique à l'historique solaire: on compresse d'abord, puis hard delete.
+  purge_compression_age_days: 30
+  purge_compression_slot_minutes: 15
+  purge_hard_delete_age_days: 400
+
 # ── Localisation (pour météo Open-Meteo) ──────────────────────────────────────
 location:
   latitude:  50.85    # Bruxelles — adapter à votre emplacement

@@ -13,6 +13,8 @@ public class SolarDbContext : DbContext
     public DbSet<MLPredictionLog> MLPredictionLogs => Set<MLPredictionLog>();
     public DbSet<SessionFeedback> SessionFeedbacks => Set<SessionFeedback>();
     public DbSet<DailySummary> DailySummaries => Set<DailySummary>();
+    public DbSet<HeatingSample> HeatingSamples => Set<HeatingSample>();
+    public DbSet<GasMeterReading> GasMeterReadings => Set<GasMeterReading>();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
@@ -190,6 +192,61 @@ public class SolarDbContext : DbContext
             e.HasIndex(x => x.Date).IsUnique().HasDatabaseName("uq_daily_summary_date");
             // Range-query index (GET /api/summary/daily?from=&to=)
             e.HasIndex(x => x.Date).HasDatabaseName("idx_daily_summary_date");
+        });
+
+        // ── HeatingSample ────────────────────────────────────────────────────
+        model.Entity<HeatingSample>(e =>
+        {
+            e.ToTable("heating_samples");
+            e.HasKey(x => x.Id);
+
+            e.Property(x => x.Id).HasColumnName("id").ValueGeneratedOnAdd();
+            e.Property(x => x.SampledAtUtc).HasColumnName("sampled_at_utc").IsRequired();
+
+            e.Property(x => x.IndoorTempC).HasColumnName("indoor_temp_c").HasPrecision(5, 2);
+            e.Property(x => x.TargetTempC).HasColumnName("target_temp_c").HasPrecision(5, 2);
+            e.Property(x => x.OutdoorTempC).HasColumnName("outdoor_temp_c").HasPrecision(5, 2);
+            e.Property(x => x.OutdoorHumidityPct).HasColumnName("outdoor_humidity_pct").HasPrecision(5, 2);
+            e.Property(x => x.WindSpeedMs).HasColumnName("wind_speed_ms").HasPrecision(6, 2);
+            e.Property(x => x.SolarIrradianceWm2).HasColumnName("solar_irradiance_wm2").HasPrecision(7, 2);
+
+            e.Property(x => x.ForecastOutdoorTempNextHoursJson)
+                .HasColumnName("forecast_outdoor_temp_next_hours_json")
+                .HasMaxLength(500);
+
+            e.Property(x => x.ThermostatMode).HasColumnName("thermostat_mode").HasMaxLength(40);
+            e.Property(x => x.HvacAction).HasColumnName("hvac_action").HasMaxLength(40);
+            e.Property(x => x.IsHeatingOn).HasColumnName("is_heating_on");
+
+            e.Property(x => x.PresenceMode).HasColumnName("presence_mode").HasMaxLength(40);
+            e.Property(x => x.IsNearHome).HasColumnName("is_near_home");
+
+            e.Property(x => x.IsOffPeak).HasColumnName("is_off_peak");
+            e.Property(x => x.CurrentPricePerKwh).HasColumnName("current_price_per_kwh").HasPrecision(8, 4);
+
+            // Multi-source heating fields
+            e.Property(x => x.ActiveSourceName).HasColumnName("active_source_name").HasMaxLength(80);
+            e.Property(x => x.ActiveSourceType).HasColumnName("active_source_type").HasMaxLength(20);
+            e.Property(x => x.GasConsumptionM3h).HasColumnName("gas_consumption_m3h").HasPrecision(8, 4);
+            e.Property(x => x.HeatPumpCop).HasColumnName("heat_pump_cop").HasPrecision(5, 3);
+            e.Property(x => x.EstimatedCostPerKwhThermal)
+                .HasColumnName("estimated_cost_per_kwh_thermal").HasPrecision(8, 4);
+
+            e.HasIndex(x => x.SampledAtUtc).HasDatabaseName("idx_heating_sampled_at");
+            e.HasIndex(x => new { x.SampledAtUtc, x.PresenceMode }).HasDatabaseName("idx_heating_time_presence");
+        });
+
+        // ── GasMeterReading ──────────────────────────────────────────────────
+        model.Entity<GasMeterReading>(e =>
+        {
+            e.ToTable("gas_meter_readings");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).HasColumnName("id").ValueGeneratedOnAdd();
+            e.Property(x => x.ReadAtUtc).HasColumnName("read_at_utc").IsRequired();
+            e.Property(x => x.ReadingM3).HasColumnName("reading_m3").HasPrecision(12, 3).IsRequired();
+            e.Property(x => x.Source).HasColumnName("source").HasMaxLength(20).IsRequired();
+            e.Property(x => x.Note).HasColumnName("note").HasMaxLength(255);
+            e.HasIndex(x => x.ReadAtUtc).HasDatabaseName("idx_gas_meter_read_at");
         });
     }
 }

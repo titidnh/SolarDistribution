@@ -24,6 +24,13 @@ namespace SolarDistribution.Tests
             // The config.yaml in repository sets these values — assert they are read correctly
             Assert.AreEqual(3, config.Polling.MaxConsecutiveAnomaliesBeforeAlert, "Polling.MaxConsecutiveAnomaliesBeforeAlert mismatch");
             Assert.AreEqual(5000, config.Solar.MaxPlausibleSurplusW, "Solar.MaxPlausibleSurplusW mismatch");
+
+            // Heating ML 6.1 block
+            Assert.IsNotNull(config.Heating, "Heating config must be present");
+            Assert.AreEqual(300, config.Heating.SamplingIntervalSeconds, "Heating.SamplingIntervalSeconds mismatch");
+            Assert.AreEqual("sensor.house_presence_mode", config.Heating.PresenceModeEntity, "Heating.PresenceModeEntity mismatch");
+            Assert.AreEqual(180, config.Heating.MlTrainingWindowDays, "Heating.MlTrainingWindowDays mismatch");
+            Assert.AreEqual(30, config.Heating.PurgeCompressionAgeDays, "Heating.PurgeCompressionAgeDays mismatch");
         }
     }
 }

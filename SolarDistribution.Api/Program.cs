@@ -29,6 +29,14 @@ builder.Services.AddScoped<IDistributionRepository, DistributionRepository>();
 // ── Core services ─────────────────────────────────────────────────────────────
 builder.Services.AddSingleton<IBatteryDistributionService, BatteryDistributionService>();
 builder.Services.AddScoped<SmartDistributionService>();
+builder.Services.AddSingleton<IHeatingPreheatMlService>(sp =>
+    new HeatingPreheatMlService(
+        sp.GetRequiredService<ILogger<HeatingPreheatMlService>>(),
+        sp.GetRequiredService<IServiceScopeFactory>(),
+        new HeatingMlOptions()));
+builder.Services.AddSingleton<IHeatingOrchestratorService, HeatingOrchestratorService>();
+builder.Services.AddSingleton<IHeatingStatusService, HeatingStatusService>();
+builder.Services.AddSingleton<IHeatingSourceSelectorService, HeatingSourceSelectorService>();
 // Fix #6 : session factory (business model → EF entities mapping)
 builder.Services.AddScoped<IDistributionSessionFactory, DistributionSessionFactory>();
 // TariffEngine — inject an empty TariffConfig by default (API standalone without config.yaml).

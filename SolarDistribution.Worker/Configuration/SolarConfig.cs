@@ -5,6 +5,7 @@ public class SolarConfig
 {
     public HomeAssistantConfig HomeAssistant { get; set; } = new();
     public PollingConfig Polling { get; set; } = new();
+    public HeatingConfig Heating { get; set; } = new();
     public LocationConfig Location { get; set; } = new();
     public SolarConfig_Solar Solar { get; set; } = new();
     public List<BatteryConfig> Batteries { get; set; } = new List<BatteryConfig>();
@@ -13,6 +14,194 @@ public class SolarConfig
     public MlConfig Ml { get; set; } = new();
     public WeatherConfig Weather { get; set; } = new();
     public LoggingConfig Logging { get; set; } = new();
+}
+
+public class HeatingConfig
+{
+    public bool Enabled { get; set; } = false;
+    public string? ThermostatEntity { get; set; }
+    public List<string> ThermostatEntities { get; set; } = new();
+    public string? IndoorTemperatureEntity { get; set; }
+    public List<string> IndoorTemperatureEntities { get; set; } = new();
+    public string? TargetTemperatureEntity { get; set; }
+    public List<string> TargetTemperatureEntities { get; set; } = new();
+    public string? OutdoorTemperatureEntity { get; set; }
+    public string? OutdoorHumidityEntity { get; set; }
+    public string? WindSpeedEntity { get; set; }
+    public string? SolarIrradianceEntity { get; set; }
+    public string? ForecastOutdoorTempNextHourEntity { get; set; }
+    public string? ForecastOutdoorTempNext2HoursEntity { get; set; }
+    public string? ForecastOutdoorTempNext3HoursEntity { get; set; }
+    public string? HvacModeEntity { get; set; }
+    public string? HvacActionEntity { get; set; }
+    public List<string> HvacActionEntities { get; set; } = new();
+    public string? PresenceModeEntity { get; set; }
+    public string? NearHomeEntity { get; set; }
+    public string? IsOffPeakEntity { get; set; }
+    public string? CurrentPriceEntity { get; set; }
+    /// <summary>
+    /// Aggregation mode for multi-room values.
+    /// Supported: average, min, max (default average).
+    /// </summary>
+    public string ZoneAggregationMode { get; set; } = "average";
+    public double ComfortSetpointC { get; set; } = 20.5;
+    public double EcoSetpointC { get; set; } = 17.0;
+    public int SamplingIntervalSeconds { get; set; } = 300;
+
+    // ML ETA lifecycle
+    // Multi-source heating appliances (gas boiler, heat pump, electric) — one entry per appliance/zone
+    public List<HeatingSourceConfig> Sources { get; set; } = new();
+    
+    // Gas sub-system: meter + pricing
+    public GasMonitoringConfig Gas { get; set; } = new();
+
+    // Advanced source switching policy (hour windows + comfort constraints)
+    public List<HeatingSourceTimeRuleConfig> SourceTimeRules { get; set; } = new();
+    public HeatingComfortConstraintsConfig ComfortConstraints { get; set; } = new();
+    
+    // ML ETA lifecycle
+    public int MlTrainingWindowDays { get; set; } = 180;
+    public int MlTargetSamples { get; set; } = 20000;
+    public int MlMinSamplesForRetrain { get; set; } = 120;
+    public int MlRetrainIntervalHours { get; set; } = 24;
+
+    // History retention (same philosophy as session purge)
+    public int PurgeCompressionAgeDays { get; set; } = 30;
+    public int PurgeCompressionSlotMinutes { get; set; } = 15;
+    public int PurgeHardDeleteAgeDays { get; set; } = 400;
+}
+
+/// <summary>
+/// Describes one heating appliance in a zone (gas boiler, heat pump, or electric heater).
+/// Multiple sources can coexist in the same room; the cheapest one is selected automatically.
+/// </summary>
+public class HeatingSourceConfig
+{
+    /// <summary>Unique identifier used in logs and DB (e.g. "boiler_gas", "heat_pump_main").</summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>Source type: gas | heat_pump | electric</summary>
+    public string Type { get; set; } = "gas";
+
+    /// <summary>Optional: human-readable label for the zone (e.g. "salon", "chambre").</summary>
+    public string? ZoneLabel { get; set; }
+
+    /// <summary>HA climate.* entity to control this source (used by orchestrator in 6.3).</summary>
+    public string? ClimateEntity { get; set; }
+
+    /// <summary>Alternative: HA switch/input_boolean entity when no climate entity is available.</summary>
+    public string? SwitchEntity { get; set; }
+
+    // ── Heat pump COP model ─────────────────────────────────────────────────
+    // COP(T_outdoor) = CopAtRefTemp + CopSlopePerDegC × (T_outdoor − CopRefTempC)
+    // capped at CopMinValue (floor).
+    // Default: A7 rating = 3.5, degrades 0.07/°C.
+    public double CopRefTempC { get; set; } = 7.0;
+    public double CopAtRefTemp { get; set; } = 3.5;
+    public double CopSlopePerDegC { get; set; } = 0.07;
+    public double CopMinValue { get; set; } = 1.0;
+
+    // ── Gas boiler ─────────────────────────────────────────────────────────
+    /// <summary>Seasonal efficiency (PCS basis). Typical: 0.85–0.95.</summary>
+    public double BoilerEfficiency { get; set; } = 0.92;
+
+    /// <summary>HA entity giving instant gas consumption for this specific appliance (m³/h).</summary>
+    public string? GasConsumptionEntity { get; set; }
+
+    // ── Common ─────────────────────────────────────────────────────────────
+    /// <summary>Tiebreaker when two sources have equal cost (lower = preferred).</summary>
+    public int Priority { get; set; } = 0;
+
+    /// <summary>Set to false to exclude from automatic source selection.</summary>
+    public bool Enabled { get; set; } = true;
+}
+
+/// <summary>
+/// Gas meter / consumption monitoring.
+/// Supports three modes: ha_entity (smart meter in HA), ha_sensor (clamp/probe sensor), manual (API entry).
+/// </summary>
+public class GasMonitoringConfig
+{
+    public bool Enabled { get; set; } = false;
+
+    /// <summary>
+    /// How gas is read: ha_entity (cumulative m³ from HA), ha_sensor (m³/h or W flow sensor),
+    /// or manual (user posts readings via API).
+    /// </summary>
+    public string MeterMode { get; set; } = "ha_entity";
+
+    /// <summary>HA entity for cumulative total gas meter (m³). Used in ha_entity mode.</summary>
+    public string? MeterEntity { get; set; }
+
+    /// <summary>HA entity for instantaneous gas flow (m³/h). Used in ha_sensor mode.</summary>
+    public string? ConsumptionRateEntity { get; set; }
+
+    /// <summary>HA entity giving live gas price (€/kWh). Overrides GasPricePerKwh when set.</summary>
+    public string? GasPriceEntity { get; set; }
+
+    /// <summary>Fixed gas price (€/kWh) — used when GasPriceEntity is absent.</summary>
+    public double GasPricePerKwh { get; set; } = 0.08;
+
+    /// <summary>
+    /// Higher heating value of gas (kWh/m³).
+    /// Natural gas BE/FR ≈ 10.55, Netherlands H-gas ≈ 11.6.
+    /// </summary>
+    public double CalorificValueKwhPerM3 { get; set; } = 10.55;
+}
+
+/// <summary>
+/// Advanced source switching rule for a local-hour time range.
+/// Example: prefer heat pump from 10:00 to 16:00 if cost remains close to best source.
+/// </summary>
+public class HeatingSourceTimeRuleConfig
+{
+    public bool Enabled { get; set; } = true;
+    public int StartHourLocal { get; set; } = 0; // 0..23
+    public int EndHourLocal { get; set; } = 0;   // 0..23 (same as start means full day)
+    public string PreferredSourceName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Allow the preferred source when its cost is not worse than X% over the cheapest source.
+    /// </summary>
+    public double MaxOverBestCostPct { get; set; } = 25.0;
+}
+
+/// <summary>
+/// Comfort-first safeguards to avoid selecting a source that is cheap but too slow.
+/// </summary>
+public class HeatingComfortConstraintsConfig
+{
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// If room temp is below this value, prefer the fastest learned source when ML ETA is too high.
+    /// </summary>
+    public double MinimumComfortTempC { get; set; } = 19.0;
+
+    /// <summary>
+    /// If target-current exceeds this threshold, comfort is considered critical.
+    /// </summary>
+    public double CriticalDeltaTempC { get; set; } = 1.5;
+
+    /// <summary>
+    /// If ML p90 ETA is above this limit in a critical comfort case, switch to fastest learned source.
+    /// </summary>
+    public double MaxMlEtaP90Minutes { get; set; } = 90.0;
+
+    /// <summary>
+    /// Avoid expensive comfort override if fastest source exceeds this extra cost over best source.
+    /// </summary>
+    public double MaxComfortOverrideOverBestCostPct { get; set; } = 45.0;
+
+    /// <summary>
+    /// Minimum transitions required to trust learned source speed.
+    /// </summary>
+    public int MinSamplesForLearning { get; set; } = 20;
+
+    /// <summary>
+    /// Refresh interval for learned source speed cache.
+    /// </summary>
+    public int LearningRefreshMinutes { get; set; } = 30;
 }
 
 public class WeatherConfig { public int RefreshIntervalMinutes { get; set; } = 15; }

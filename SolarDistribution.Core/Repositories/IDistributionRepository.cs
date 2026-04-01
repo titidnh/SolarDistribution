@@ -5,6 +5,10 @@ namespace SolarDistribution.Core.Repositories;
 public interface IDistributionRepository
 {
     Task SaveSessionAsync(DistributionSession session, CancellationToken ct = default);
+    Task SaveHeatingSampleAsync(HeatingSample sample, CancellationToken ct = default);
+    Task<List<HeatingSample>> GetHeatingSamplesForTrainingAsync(int maxRecords = 20000, int windowDays = 180, CancellationToken ct = default);
+    Task<int> CountHeatingSamplesAsync(CancellationToken ct = default);
+    Task<int> PurgeOldHeatingSamplesAsync(int compressionAgeDays, int compressionSlotMinutes, int hardDeleteAgeDays, CancellationToken ct = default);
 
     /// <summary>
     /// Sessions with valid feedback — the only ones used for ML training.
@@ -69,4 +73,22 @@ public interface IDistributionRepository
     /// ML feature YesterdaySelfSufficiencyPct.
     /// </summary>
     Task<double?> GetYesterdaySelfSufficiencyAsync(CancellationToken ct = default);
+
+    // ── Gas meter readings ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Persists a gas meter reading (either automatic from HA or manual from API).
+    /// </summary>
+    Task SaveGasMeterReadingAsync(GasMeterReading reading, CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns the most recent N gas meter readings, ordered descending by ReadAtUtc.
+    /// </summary>
+    Task<List<GasMeterReading>> GetRecentGasMeterReadingsAsync(int count = 100, CancellationToken ct = default);
+
+    /// <summary>
+    /// Last recorded reading before or at a given UTC timestamp.
+    /// Used to compute consumption between two readings.
+    /// </summary>
+    Task<GasMeterReading?> GetLastGasMeterReadingBeforeAsync(DateTime utcBefore, CancellationToken ct = default);
 }

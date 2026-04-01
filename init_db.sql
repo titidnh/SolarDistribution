@@ -173,6 +173,59 @@ CREATE TABLE IF NOT EXISTS daily_summaries (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Aggregated daily energy summary. One row per calendar date (UTC).';
 
+-- ── heating_samples (ML chauffage 6.1) ──────────────────────────────────────
+CREATE TABLE IF NOT EXISTS heating_samples (
+        id                                  BIGINT          NOT NULL AUTO_INCREMENT,
+        sampled_at_utc                      DATETIME(6)     NOT NULL,
+
+        indoor_temp_c                       DECIMAL(5,2)    NULL,
+        target_temp_c                       DECIMAL(5,2)    NULL,
+        outdoor_temp_c                      DECIMAL(5,2)    NULL,
+        outdoor_humidity_pct                DECIMAL(5,2)    NULL,
+        wind_speed_ms                       DECIMAL(6,2)    NULL,
+        solar_irradiance_wm2                DECIMAL(7,2)    NULL,
+        forecast_outdoor_temp_next_hours_json VARCHAR(500) NULL,
+
+        thermostat_mode                     VARCHAR(40)     NULL,
+        hvac_action                         VARCHAR(40)     NULL,
+        is_heating_on                       TINYINT(1)      NULL,
+
+        presence_mode                       VARCHAR(40)     NULL,
+        is_near_home                        TINYINT(1)      NULL,
+
+        is_off_peak                         TINYINT(1)      NULL,
+        current_price_per_kwh               DECIMAL(8,4)    NULL,
+
+        -- 6.x multi-source heating
+        active_source_name                  VARCHAR(80)     NULL,
+        active_source_type                  VARCHAR(20)     NULL,   -- gas|heat_pump|electric
+        gas_consumption_m3h                 DECIMAL(8,4)    NULL,
+        heat_pump_cop                       DECIMAL(5,3)    NULL,
+        estimated_cost_per_kwh_thermal      DECIMAL(8,4)    NULL,
+
+        PRIMARY KEY (id),
+        INDEX idx_heating_sampled_at (sampled_at_utc),
+        INDEX idx_heating_time_presence (sampled_at_utc, presence_mode)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    COMMENT='Heating telemetry samples for ML ETA training and occupancy-aware orchestration.';
+
+-- ── Views / derived utilities (migration v6)
+-- ── gas_meter_readings (6.x gaz) ────────────────────────────────────────────
+-- Stores absolute gas meter readings in m³, either auto-collected from HA or
+-- manually entered via the API. Consumption between two readings is computed
+-- on-the-fly from (R2 − R1) × calorific_value_kwh_per_m3.
+CREATE TABLE IF NOT EXISTS gas_meter_readings (
+        id              BIGINT          NOT NULL AUTO_INCREMENT,
+        read_at_utc     DATETIME(6)     NOT NULL,
+        reading_m3      DECIMAL(12,3)   NOT NULL,
+        source          VARCHAR(20)     NOT NULL DEFAULT 'manual', -- ha_auto | manual
+        note            VARCHAR(255)    NULL,
+
+        PRIMARY KEY (id),
+        INDEX idx_gas_meter_read_at (read_at_utc)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    COMMENT='Gas meter readings (m³). Manual or auto-collected. Used for gas consumption KPIs.';
+
 -- ── Views / derived utilities (migration v6)
 CREATE OR REPLACE VIEW battery_lifecycle_summary AS
 SELECT
