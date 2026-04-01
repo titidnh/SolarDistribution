@@ -79,6 +79,8 @@ public sealed class HeatingMlOptions
     public int TrainingWindowDays { get; set; } = 180;
     public int TargetSamples { get; set; } = 20000;
     public int MinSamplesForRetrain { get; set; } = 120;
+    // Optional: explicit model directory for heating ML (e.g. "/data/ml_models_heating")
+    public string? ModelDirectory { get; set; } = null;
 }
 
 public interface IHeatingPreheatMlService

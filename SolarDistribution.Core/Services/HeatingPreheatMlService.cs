@@ -73,8 +73,25 @@ public class HeatingPreheatMlService : IHeatingPreheatMlService
         _targetSamples = Math.Max(500, options.TargetSamples);
         _minSamplesForRetrain = Math.Max(50, options.MinSamplesForRetrain);
 
-        _modelDirectory = Path.Combine(AppContext.BaseDirectory, "ml_models_heating");
-        Directory.CreateDirectory(_modelDirectory);
+        // Allow explicit override for model directory (e.g. "/data/ml_models_heating").
+        if (!string.IsNullOrWhiteSpace(options.ModelDirectory))
+        {
+            _modelDirectory = options.ModelDirectory!;
+        }
+        else
+        {
+            _modelDirectory = Path.Combine(AppContext.BaseDirectory, "ml_models_heating");
+        }
+
+        try
+        {
+            Directory.CreateDirectory(_modelDirectory);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Unable to create heating ML model directory: {ModelDirectory}", _modelDirectory);
+        }
+
         TryLoadFromDisk();
     }
 

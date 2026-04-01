@@ -112,7 +112,12 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddSingleton<TariffEngine>();
         services.AddSingleton<SmartDistributionService>();
         services.AddSingleton<IHeatingPreheatMlService>(sp =>
-            new HeatingPreheatMlService(
+        {
+            // Place heating models alongside the main ML directory under /data
+            string mlBase = System.IO.Path.GetDirectoryName(config.Ml.ModelDirectory) ?? "/data";
+            string heatingModelDir = System.IO.Path.Combine(mlBase, "ml_models_heating");
+
+            return new HeatingPreheatMlService(
                 sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<HeatingPreheatMlService>>(),
                 sp.GetRequiredService<IServiceScopeFactory>(),
                 new HeatingMlOptions
@@ -120,7 +125,9 @@ var host = Host.CreateDefaultBuilder(args)
                     TrainingWindowDays = config.Heating.MlTrainingWindowDays,
                     TargetSamples = config.Heating.MlTargetSamples,
                     MinSamplesForRetrain = config.Heating.MlMinSamplesForRetrain,
-                }));
+                    ModelDirectory = heatingModelDir
+                });
+        });
         services.AddSingleton<IHeatingOrchestratorService, HeatingOrchestratorService>();
         services.AddSingleton<IHeatingStatusService, HeatingStatusService>();
         services.AddSingleton<IHeatingSourceSelectorService, HeatingSourceSelectorService>();
