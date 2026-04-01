@@ -99,7 +99,7 @@ public class SmartDistributionService
 
         if (mlReco is not null)
         {
-            effective = Apply(batteries, mlReco, tariffCtx, surplusW);
+            effective = Apply(batteries, mlReco, tariffCtx, surplusW, wx);
             decisionEngine = mlReco.ConfidenceScore >= 0.75 ? "ML" : "ML-Fallback";
             _logger.LogInformation(
                 "ML: softMax={SoftMax:F1}%, preventive={Prev:F1}%, confidence={Conf:P0} [{Engine}]",
@@ -109,7 +109,7 @@ public class SmartDistributionService
         }
         else
         {
-            effective = Apply(batteries, null, tariffCtx, surplusW);
+            effective = Apply(batteries, null, tariffCtx, surplusW, wx);
         }
 
         // ── 5. Log urgences + charge adaptative ──────────────────────────────
@@ -185,12 +185,18 @@ public class SmartDistributionService
     ///   when the battery is already at its target — not to pull from the grid.
     ///   In off-peak without surplus, ComputeAdaptiveGridChargeW decides if grid
     ///   charging is warranted (weather, J+1 forecast, hours remaining in slot).
+    ///
+    /// End-of-day aggressiveness (FIX Bug #7):
+    ///   As sunset approaches (< 2h), progressively reduce SoftMax to avoid excessive
+    ///   charging when solar production is declining. This prevents overcharging when
+    ///   the system can't maintain the planned charge rates.
     /// </summary>
     private static IList<Battery> Apply(
         IList<Battery> src,
         MLRecommendation? reco,
         TariffContext tariff,
         double surplusW,
+        WeatherData? wx,
         double minGridChargeW = 100.0,
         double urgencyThresholdHours = 1.0)
     {
@@ -210,6 +216,34 @@ public class SmartDistributionService
             {
                 double boosted = softMax + tariff.EveningBoostPercent;
                 softMax = Math.Min(b.HardMaxPercent, boosted);
+            }
+
+            // ── FIX Bug #7: End-of-day aggressiveness reduction ──────────────────────
+            // As sunset approaches, progressively reduce SoftMax target to avoid
+            // aggressive charging when solar production is declining.
+            // Reduction schedule:
+            //   HoursUntilSunset > 3h   : no reduction (normal operation)
+            //   3h >= hours > 2h        : reduce SoftMax by 10%
+            //   2h >= hours > 1h        : reduce SoftMax by 20%
+            //   1h >= hours             : reduce SoftMax by 30%
+            // This prevents the system from trying to charge aggressively when it's
+            // too late in the day and production is falling off.
+            if (wx is not null && wx.HoursUntilSunset <= 3)
+            {
+                double reductionPercent = wx.HoursUntilSunset switch
+                {
+                    <= 1 => 30,  // Last hour: most conservative
+                    <= 2 => 20,
+                    <= 3 => 10,
+                    _ => 0
+                };
+
+                if (reductionPercent > 0)
+                {
+                    double minSoftMax = b.MinPercent;  // never drop below emergency threshold
+                    double reduction = softMax * (reductionPercent / 100.0);
+                    softMax = Math.Max(minSoftMax, softMax - reduction);
+                }
             }
 
             bool solarWillArrive = tariff.HoursUntilSolar.HasValue

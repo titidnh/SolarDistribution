@@ -118,6 +118,12 @@ public class BatteryDistributionService : IBatteryDistributionService
         // draws 50W from the grid. In that case we simply do not charge at all.
         // Exception: batteries in emergency grid charge always charge normally
         // via PASS 3 (DistributeGridToGroup), independently of this block.
+        //
+        // FIX Bug #6: Buffer respect — IdleChargeW should not exceed remaining surplus
+        // after buffer has been applied. If remaining <= 0, do not add IdleChargeW.
+        // This prevents IdleChargeW from silently pulling from the grid when the buffer
+        // has already been subtracted.
+        double totalIdleChargeNeededW = 0;
         foreach (var b in batteryList)
         {
             double total = allocated[b.Id] + gridAlloc[b.Id];
@@ -129,7 +135,27 @@ public class BatteryDistributionService : IBatteryDistributionService
                 && (b.HardwareMinChargeW <= 0 || surplusW >= b.HardwareMinChargeW) // hardware threshold
                 && !b.IsEmergencyGridCharge)                     // Emergency: charge already handled by PASS 3
             {
-                allocated[b.Id] = b.IdleChargeW;
+                totalIdleChargeNeededW += b.IdleChargeW;
+            }
+        }
+
+        // Only apply IdleChargeW if there's remaining surplus to absorb it
+        if (totalIdleChargeNeededW > 0 && remaining >= totalIdleChargeNeededW - 0.01)
+        {
+            foreach (var b in batteryList)
+            {
+                double total = allocated[b.Id] + gridAlloc[b.Id];
+                if (total <= 0.01
+                    && currentPct[b.Id] >= b.SoftMaxPercent - 0.1
+                    && currentPct[b.Id] <= b.HardMaxPercent
+                    && b.IdleChargeW > 0
+                    && surplusW > 0
+                    && (b.HardwareMinChargeW <= 0 || surplusW >= b.HardwareMinChargeW)
+                    && !b.IsEmergencyGridCharge)
+                {
+                    allocated[b.Id] = b.IdleChargeW;
+                    remaining -= b.IdleChargeW;
+                }
             }
         }
 
@@ -162,7 +188,9 @@ public class BatteryDistributionService : IBatteryDistributionService
             );
         }).ToList();
 
-        double totalSolar = Math.Round(surplusW - Math.Max(0, remaining), 2);
+        // Calculate actual total allocated from solar (including IdleChargeW)
+        // All allocations come from the buffered surplus, so sum them directly
+        double totalSolar = Math.Round(results.Sum(r => r.IsGridCharge ? 0 : r.AllocatedW), 2);
 
         return new DistributionResult(
             SurplusInputW: surplusW,
