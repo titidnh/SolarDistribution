@@ -1,308 +1,308 @@
-# SolarDistribution - TODO 2026 (Roadmap actionnable)
+# SolarDistribution - TODO 2026 (Actionable Roadmap)
 
-Objectif principal:
-- Maximiser l'autoconsommation solaire.
-- Reduire le cout total EUR/mois (import reseau + charge reseau) sans degrader la batterie.
-- Rendre les decisions explicables, testables, et robustes.
-
----
-
-## 0) Definition de succes (KPIs a suivre chaque jour)
-
-- Autoconsommation (%)
-- Autosuffisance (%)
-- kWh importes reseau (hors charge batterie)
-- kWh charges depuis reseau
-- kWh surplus perdu
-- EUR economises vs scenario baseline
-- Nombre de cycles batterie et taux de sessions d'urgence
-
-Done criteria:
-- Les 7 KPIs sont exposes via API + dashboard HA.
-- Un recap quotidien est disponible en DB et consultable sur 30 jours glissants.
+Primary objective:
+- Maximize solar self-consumption.
+- Reduce total EUR/month cost (grid imports + grid charging) without degrading batteries.
+- Make decisions explainable, testable, and robust.
 
 ---
 
-## 1) Priorite immediate (Semaine 1)
+## 0) Success definition (KPIs to track daily)
 
-### 1.1 API de simulation (sans envoi HA)
-
-But:
-- Tester un reglage sans attendre un vrai cycle.
-
-Taches:
-- [ ] Ajouter `POST /api/simulate` avec payload: surplus, SOC batteries, contexte tarifaire, forecast court terme.
-- [ ] Retourner: puissance cible par batterie, charge reseau autorisee/bloquee, raison de decision.
-- [ ] Garantir zero effet de bord (pas de commande HA, pas d'ecriture DB session runtime).
-- [ ] Ajouter tests unitaires et tests de contrat API.
+- Self-consumption (%)
+- Self-sufficiency (%)
+- kWh imported from grid (excluding battery charging)
+- kWh charged from grid
+- kWh surplus wasted
+- EUR saved vs baseline scenario
+- Number of battery cycles and emergency session rate
 
 Done criteria:
-- 10 scenarios connus passent (normal, nuit, surplus nul, urgence, tarif cher, etc.).
-- Le endpoint repond en < 150 ms localement.
+- All 7 KPIs are exposed via API + HA dashboard.
+- A daily summary is stored in the DB and available for a 30-day rolling window.
 
-Fichiers cibles:
+---
+
+## 1) Immediate priorities (Week 1)
+
+### 1.1 Simulation API (no HA commands)
+
+Goal:
+- Test a configuration without waiting for a real cycle.
+
+Tasks:
+- [ ] Add `POST /api/simulate` with payload: surplus, battery SOCs, tariff context, short-term forecast.
+- [ ] Return: target power per battery, grid charge allowed/blocked, decision rationale.
+- [ ] Guarantee zero side-effects (no HA commands, no runtime DB writes).
+- [ ] Add unit tests and API contract tests.
+
+Done criteria:
+- 10 known scenarios pass (normal, night, zero surplus, emergency, high tariff, etc.).
+- The endpoint responds < 150 ms locally.
+
+Target files:
 - `SolarDistribution.Api/Controllers/DistributionController.cs`
 - `SolarDistribution.Core/Services/SmartDistributionService.cs`
 - `SolarDistribution.Tests/*Simulation*Tests.cs`
 
-### 1.2 Simulation sur historique (scenario)
+### 1.2 Historical scenario simulation
 
-But:
-- Comparer "config actuelle" vs "config candidate" sur N sessions passees.
+Goal:
+- Compare "current config" vs "candidate config" on N past sessions.
 
-Taches:
-- [ ] Ajouter `POST /api/simulate/scenario`.
-- [ ] Rejouer les N dernieres sessions depuis la DB.
-- [ ] Retourner un diff: autoconsommation, import reseau, charge reseau, surplus perdu, cout estime.
-- [ ] Ajouter mode "top 3 reglages recommandes" (variation de buffers/thresholds).
+Tasks:
+- [ ] Add `POST /api/simulate/scenario`.
+- [ ] Replay the last N sessions from the DB.
+- [ ] Return a diff: self-consumption, grid import, grid charging, wasted surplus, estimated cost.
+- [ ] Add a "top 3 recommended settings" mode (variations of buffers/thresholds).
 
 Done criteria:
-- Rapport comparatif clair pour N=288 (24h a 5 min) sans timeout.
+- Clear comparative report for N=288 (24h @ 5 min) without timeouts.
 
-Fichiers cibles:
+Target files:
 - `SolarDistribution.Api/Controllers/DistributionController.cs`
 - `SolarDistribution.Core/Services/SmartDistributionService.cs`
 - `SolarDistribution.Infrastructure/Repositories/DistributionRepository.cs`
 
 ---
 
-## 2) Forte valeur economique (Semaine 2)
+## 2) High economic value (Week 2)
 
-### 2.1 Prendre en compte le prix d'export
+### 2.1 Consider export price
 
-But:
-- Eviter de charger "a tout prix" la batterie si l'export est remunere et plus rentable.
+Goal:
+- Avoid charging the battery at all costs when exporting is profitable.
 
-Taches:
-- [ ] Integrer `export_price_per_kwh` dans le calcul de valeur marginale.
-- [ ] Ajouter une regle: si surplus important et export rentable, reduire/stopper la charge forcee.
-- [ ] Logger la comparaison economique (charge vs export).
+Tasks:
+- [ ] Integrate `export_price_per_kwh` into the marginal value calculation.
+- [ ] Add a rule: if large surplus and exporting is profitable, reduce/stop forced charging.
+- [ ] Log the economic comparison (charge vs export).
 
 Done criteria:
-- Les logs expliquent clairement le choix economique.
-- Au moins 3 tests de decision "export > charge" passent.
+- Logs clearly explain the economic choice.
+- At least 3 decision tests "export > charge" pass.
 
-Fichiers cibles:
+Target files:
 - `SolarDistribution.Core/Services/TariffEngine.cs`
 - `SolarDistribution.Core/Services/SmartDistributionService.cs`
 
-### 2.2 Strategie anti-pic reseau
+### 2.2 Peak-shaving strategy
 
-But:
-- Limiter les importations en pointe tarifaire.
+Goal:
+- Limit grid imports during high-tariff periods.
 
-Taches:
-- [ ] Ajouter un plafond de puissance importable en periode chere.
-- [ ] Prioriser couverture consommation maison avant remplissage batterie.
-- [ ] Ajouter une logique "peak shaving" configurable.
+Tasks:
+- [ ] Add a configurable cap for import power during expensive periods.
+- [ ] Prioritize covering home consumption before filling batteries.
+- [ ] Add a configurable "peak shaving" logic.
 
 Done criteria:
-- Reduction mesurable des imports pendant heures cheres sur 7 jours.
+- Measurable reduction of imports during high tariff hours over 7 days.
 
-Fichiers cibles:
+Target files:
 - `SolarDistribution.Core/Services/SmartDistributionService.cs`
 - `config/config.yaml`
 
 ---
 
-## 3) Fiabilite et alerting (Semaine 3)
+## 3) Reliability and alerting (Week 3)
 
-### 3.1 Alertes HA utiles (pas de spam)
+### 3.1 Useful HA alerts (no spam)
 
-Taches:
-- [ ] Alerte si charge d'urgence >= 3 fois / 24h.
-- [ ] Alerte watchdog si aucun ordre envoye > 2 x polling interval.
-- [ ] Alerte si SOC moyen a 08:00 < min + 10.
-- [ ] Ajouter `notify_service` en config.
+Tasks:
+- [ ] Alert if emergency grid charge >= 3 times / 24h.
+- [ ] Watchdog alert if no order sent > 2 × polling interval.
+- [ ] Alert if average SOC at 08:00 < min + 10.
+- [ ] Add `notify_service` in config.
 
 Done criteria:
-- Chaque alerte a un cooldown et une raison explicite.
-- Tests unitaires sur les seuils et anti-spam.
+- Each alert has a cooldown and an explicit reason.
+- Unit tests for thresholds and anti-spam behavior.
 
-Fichiers cibles:
+Target files:
 - `SolarDistribution.Worker/Services/SolarWorker.cs`
 - `SolarDistribution.Worker/Services/HomeAssistantCommandSender.cs`
 - `SolarDistribution.Core/Models/SolarConfig.cs`
 
-### 3.2 Mode degrade (HA/DB indisponible)
+### 3.2 Degraded mode (HA/DB unavailable)
 
-Taches:
-- [ ] Si HA est indisponible: fallback decision locale conservative.
-- [ ] Si DB indisponible: persister dernier etat en JSON local.
-- [ ] Retry exponentiel + journal clair de la strategie active.
+Tasks:
+- [ ] If HA is unavailable: fallback to a conservative local decision.
+- [ ] If DB is unavailable: persist last state to local JSON.
+- [ ] Exponential retry + clear logs of the active strategy.
 
 Done criteria:
-- Le worker continue a prendre des decisions sures pendant 30 min d'indisponibilite.
+- The worker continues to make safe decisions for 30 minutes of unavailability.
 
-Fichiers cibles:
+Target files:
 - `SolarDistribution.Worker/Services/SolarWorker.cs`
 - `SolarDistribution.Infrastructure/*`
 - `README.md`
 
 ---
 
-## 4) Qualite logicielle (Semaine 4)
+## 4) Software quality (Week 4)
 
-### 4.1 Campagne de tests prioritaire
+### 4.1 Priority test campaign
 
-Taches:
-- [ ] E2E 24h: verifier bilan energetique final.
-- [ ] Regression: decisions stables sur jeu historique fige.
-- [ ] Fuzz `BatteryDistributionService.Distribute()` (bornes extremes).
-- [ ] Tests minuit/transition slots dans `TariffEngine`.
+Tasks:
+- [ ] 24h E2E: verify final energy balance.
+- [ ] Regression: stable decisions on frozen historical data.
+- [ ] Fuzz `BatteryDistributionService.Distribute()` (extreme bounds).
+- [ ] Midnight/slot-transition tests in `TariffEngine`.
 
 Done criteria:
-- Couverture des services critiques >= 80%.
-- Aucun test flaky sur 20 runs CI.
+- Critical services coverage >= 80%.
+- No flaky tests across 20 CI runs.
 
-Fichiers cibles:
+Target files:
 - `SolarDistribution.Tests/*.cs`
 
-### 4.2 Documentation de configuration
+### 4.2 Configuration documentation
 
-Taches:
-- [ ] Ajouter 3 profils config commentes: small, medium, large.
-- [ ] Documenter "valeurs recommandees" par puissance installee.
-- [ ] Ajouter `config.example.yaml` minimal (onboarding rapide).
+Tasks:
+- [ ] Add 3 commented config profiles: small, medium, large.
+- [ ] Document "recommended values" per installed peak power.
+- [ ] Add a minimal `config.example.yaml` for quick onboarding.
 
 Done criteria:
-- Un nouvel utilisateur peut lancer le systeme en < 20 min.
+- A new user can get the system running in < 20 minutes.
 
-Fichiers cibles:
+Target files:
 - `README.md`
 - `config/config.yaml`
 - `config/config.example.yaml`
 
 ---
 
-## 5) Backlog optimisation avancee (prochaine iteration)
+## 5) Advanced optimization backlog (next iteration)
 
-- [ ] Optimisation multi-objectifs (cout + usure batterie + confort).
-- [ ] Detection derive capteurs (drift) avec score de confiance par entite HA.
-- [ ] Auto-tuning des seuils (`lazy_buffer_hours`, `surplus_buffer_w`) via Bayesian search offline.
-- [ ] Pilotage charges flexibles (ECS, VE, PAC) selon surplus prevu et prix spot.
-- [ ] Predicteur court terme consommation maison (15 min/1 h) par type de jour.
+- [ ] Multi-objective optimization (cost + battery wear + comfort).
+- [ ] Sensor drift detection with confidence scores per HA entity.
+- [ ] Auto-tune thresholds (`lazy_buffer_hours`, `surplus_buffer_w`) via offline Bayesian search.
+- [ ] Schedule flexible loads (water heater, EV, heat pump) based on surplus forecast and spot price.
+- [ ] Short-term household consumption predictor (15 min / 1 h) by day type.
 
 ---
 
-## 6) Nouveau bloc ML - Prechauffage thermique intelligent (inertie batiment)
+## 6) New ML block - Predictive heating (building thermal inertia)
 
 Vision:
-- Faire du chauffage "predictif" plutot que reactif.
-- Atteindre la temperature voulue exactement au bon moment, au cout le plus bas.
-- Exploiter les heures creuses, la meteo, l'occupation reelle et l'inertie de la maison.
+- Make heating predictive instead of reactive.
+- Reach the target temperature exactly at the right time at minimal cost.
+- Exploit off-peak slots, weather, occupancy and building thermal inertia.
 
-### 6.1 Donnees a collecter (base ML chauffage)
+### 6.1 Data to collect (heating ML foundation)
 
-Taches:
-- [x] Ajouter les entites HA thermostat: temperature interieure, consigne, mode HVAC, etat chauffe ON/OFF.
-- [x] Ajouter temperature exterieure, humidite, vent, ensoleillement et previsions meteo horaires.
-- [x] Ajouter signaux presence: `home`, `away`, `sleep`, `near_home` (zone geofencing + capteurs presence).
-- [x] Ajouter prix energie horaire (slot fixe ou spot) et indicateur heures creuses.
-- [x] Persister un historique a pas fixe (5 min) pour entrainement et evaluation.
+Tasks:
+- [x] Add HA thermostat entities: indoor temperature, setpoint, HVAC mode, heating ON/OFF state.
+- [x] Add outdoor temperature, humidity, wind, solar irradiation and hourly weather forecasts.
+- [x] Add presence signals: `home`, `away`, `sleep`, `near_home` (geofencing + presence sensors).
+- [x] Add hourly energy price (fixed slot or spot) and off-peak indicator.
+- [x] Persist a fixed-step history (5 min) for training and evaluation.
 
 Done criteria:
-- Dataset chauffage disponible sur au moins 21 jours sans trou majeur.
+- Heating dataset available for at least 21 days with no major gaps.
 
-Fichiers cibles:
+Target files:
 - `SolarDistribution.Core/Models/SolarConfig.cs`
 - `SolarDistribution.Worker/Services/HomeAssistantDataReader.cs`
 - `SolarDistribution.Infrastructure/Repositories/DistributionRepository.cs`
 - `SolarDistribution.Infrastructure/Data/Entities/*`
 
-### 6.2 Modele ML "Time-To-Target" (temps de prechauffe)
+### 6.2 "Time-To-Target" ML model (preheat ETA)
 
-But:
-- Predire "combien de minutes avant d'atteindre la temperature cible" selon contexte.
+Goal:
+- Predict "how many minutes until the target temperature" given context.
 
-Taches:
-- [x] Creer un modele de regression `MinutesToTargetTemperature`.
-- [x] Features minimales: delta temperature, temperature exterieure, tendance meteo 3 h, mode HVAC, heure, jour, etat presence, historique recent ON/OFF.
-- [x] Label: temps reel observe pour passer de `T_current` a `T_target`.
-- [x] Ajouter intervalle de confiance (`p50`, `p90`) pour eviter un relancement trop tardif.
-- [x] Re-entrainement periodique (quotidien ou hebdo) avec validation temporelle.
+Tasks:
+- [x] Create a regression model `MinutesToTargetTemperature`.
+- [x] Minimum features: delta temperature, outdoor temperature, 3h weather trend, HVAC mode, hour, day, presence, recent ON/OFF history.
+- [x] Label: observed time to go from `T_current` to `T_target`.
+- [x] Add confidence intervals (`p50`, `p90`) to avoid late restarts.
+- [x] Periodic retraining (daily or weekly) with temporal validation.
 
 Done criteria:
-- Erreur mediane <= 10 min sur semaine de validation.
-- Erreur p90 <= 20 min en conditions normales.
+- Median error <= 10 min on validation week.
+- p90 error <= 20 min in normal conditions.
 
-Fichiers cibles:
+Target files:
 - `SolarDistribution.Core/Services/ML/*`
-- `SolarDistribution.Core/Services/HeatingPreheatMlService.cs` (nouveau)
+- `SolarDistribution.Core/Services/HeatingPreheatMlService.cs` (new)
 - `SolarDistribution.Tests/*HeatingMl*Tests.cs`
 
-### 6.3 Orchestrateur intelligent chauffage
+### 6.3 Intelligent heating orchestrator
 
-Regles produit:
-- Si mode `sleep` ou `away`, appliquer consigne reduite automatiquement.
-- Si mode `near_home`, calculer l'heure optimale de relance pour arriver a la temperature de confort a l'arrivee.
-- Si cout energie eleve et inertie suffisante, anticiper le prechauffage en heure creuse.
-- Si forte hausse de temperature exterieure prevue, limiter le prechauffage inutile.
+Product rules:
+- If mode is `sleep` or `away`, apply a reduced setpoint automatically.
+- If mode is `near_home`, compute the optimal restart time to reach comfort at arrival.
+- If energy price is high and the building has enough inertia, preheat during off-peak.
+- If a strong outdoor temperature rise is forecast, avoid unnecessary preheating.
 
-Taches:
-- [ ] Ajouter un service `HeatingOrchestratorService` avec decision explicable.
-- [ ] Integrer un score de cout previsionnel sur l'horizon 6-12 h.
-- [ ] Integrer contraintes de confort (bornes min/max, anti-yo-yo, temps mini ON/OFF).
-- [ ] Ajouter fallback heuristique si modele indisponible.
+Tasks:
+- [ ] Add `HeatingOrchestratorService` with an explainable decision.
+- [ ] Integrate a forward-looking cost score over 6–12h horizon.
+- [ ] Add comfort constraints (min/max bounds, anti-yo-yo, min ON/OFF times).
+- [ ] Add a heuristic fallback if the model is unavailable.
 
 Done criteria:
-- Le moteur retourne toujours une action explicable: `heat_now`, `delay_until`, `eco_hold`, `resume_comfort`.
+- The engine always returns an explainable action: `heat_now`, `delay_until`, `eco_hold`, `resume_comfort`.
 
-Fichiers cibles:
-- `SolarDistribution.Core/Services/HeatingOrchestratorService.cs` (nouveau)
+Target files:
+- `SolarDistribution.Core/Services/HeatingOrchestratorService.cs` (new)
 - `SolarDistribution.Worker/Services/SolarWorker.cs`
 - `SolarDistribution.Worker/Services/HomeAssistantCommandSender.cs`
 
-### 6.4 API et observabilite chauffage
+### 6.4 Heating API and observability
 
-Taches:
-- [ ] Ajouter `GET /api/heating/status/live` (mode actuel, T interieure, cible, ETA).
-- [ ] Ajouter `POST /api/heating/simulate` (scenario sans commande HA).
-- [ ] Ajouter `GET /api/heating/preheat-plan?arrival=` (heure de relance conseillee, cout estime).
-- [ ] Ajouter logs metier lisibles: "Relance a 17:20 pour 20.5C a 18:00".
+Tasks:
+- [ ] Add `GET /api/heating/status/live` (current mode, indoor temp, setpoint, ETA).
+- [ ] Add `POST /api/heating/simulate` (scenario with no HA commands).
+- [ ] Add `GET /api/heating/preheat-plan?arrival=` (recommended restart time, estimated cost).
+- [ ] Add human-friendly domain logs: "Restart at 17:20 to reach 20.5°C by 18:00".
 
 Done criteria:
-- Dashboard HA avec ETA de chauffe et prochain evenement de relance.
+- HA dashboard with heating ETA and next restart event.
 
-Fichiers cibles:
+Target files:
 - `SolarDistribution.Api/Controllers/DistributionController.cs`
-- `SolarDistribution.Api/Controllers/HeatingController.cs` (nouveau)
+- `SolarDistribution.Api/Controllers/HeatingController.cs` (new)
 - `README.md`
 
-### 6.5 KPIs chauffage et mesure d'impact
+### 6.5 Heating KPIs and impact measurement
 
 KPIs:
-- [ ] EUR/jour chauffage avant vs apres.
-- [ ] Taux d'arrivee a l'heure a la temperature cible.
-- [ ] Nb de surchauffes et sous-chauffes.
-- [ ] Confort percu (proxy): temps passe hors plage de confort.
-- [ ] Reduction de conso pendant `away` et `sleep`.
+- [ ] EUR/day heating before vs after.
+- [ ] On-time arrival rate to target temperature.
+- [ ] Number of over/under-heats.
+- [ ] Perceived comfort (proxy): time spent outside comfort band.
+- [ ] Reduction of consumption during `away` and `sleep`.
 
 Done criteria:
-- Baisse de 10-20% de la conso chauffage sur 4 semaines (a meteo comparable) sans perte de confort significative.
+- 10–20% heating consumption reduction over 4 weeks (comparable weather) without significant comfort loss.
 
 ---
 
-## Plan d'execution conseille
+## Recommended execution plan
 
-1. API simulation (`/simulate`, `/simulate/scenario`)
+1. Simulation API (`/simulate`, `/simulate/scenario`)
 2. Export pricing + peak shaving
-3. Alertes HA + mode degrade
-4. Bloc ML chauffage (collecte + modele ETA + orchestrateur)
-5. Tests E2E/regression
-6. Documentation et config exemple
+3. HA alerts + degraded mode
+4. Heating ML block (collection + ETA model + orchestrator)
+5. E2E/regression tests
+6. Documentation and example configs
 
-Pourquoi cet ordre:
-- Tu reduis vite les risques de mauvais reglages.
-- Tu captures du gain economique concret rapidement.
-- Tu blindes ensuite la fiabilite et la maintenabilite.
+Why this order:
+- Reduce the risk of bad settings quickly.
+- Capture concrete economic gains early.
+- Then harden reliability and maintainability.
 
 ---
 
-## Notes de gouvernance
+## Governance notes
 
-- Toute nouvelle regle de decision doit avoir:
-  - [ ] une justification metier,
-  - [ ] un log explicite,
-  - [ ] au moins 2 tests (cas nominal + edge case).
-- Toute option de config ajoutee doit etre documentee dans `README.md` et `config.example.yaml`.
+- Any new decision rule must include:
+  - [ ] a business justification,
+  - [ ] an explicit log entry,
+  - [ ] at least 2 tests (nominal case + edge case).
+- Any new config option must be documented in `README.md` and `config.example.yaml`.

@@ -1,6 +1,6 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # SolarDistribution Worker — Configuration
-# Monter ce fichier dans le container : ./config/config.yaml → /config/config.yaml
+# Mount this file into the container: ./config/config.yaml → /config/config.yaml
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ── Home Assistant ─────────────────────────────────────────────────────────────
@@ -13,88 +13,87 @@ home_assistant:
 # ── Polling ────────────────────────────────────────────────────────────────────
 polling:
   interval_seconds: 60
-  dry_run: true           # ← mettre false en production
+  dry_run: true           # ← set to false in production
   min_change_trigger_w: 10
 
-  # ── Buffer de sécurité surplus — SEUIL DE DÉMARRAGE ──────────────────────
+  # ── Surplus safety buffer — START THRESHOLD ─────────────────────────────
   #
-  # Puissance (W) soustraite du surplus brut AVANT distribution aux batteries.
-  # C'est aussi le SEUIL AU-DESSUS DUQUEL la charge solaire démarre.
+  # Power (W) subtracted from raw surplus BEFORE distributing to batteries.
+  # It is also the START THRESHOLD ABOVE WHICH solar charging begins.
   #
-  # POURQUOI : la consommation maison fluctue en permanence. Sans buffer,
-  # envoyer 100 % du surplus aux batteries provoque un import momentané depuis
-  # le réseau à chaque pic de consommation (bouilloire, four, lave-linge...).
+  # WHY: household consumption fluctuates continuously. Without a buffer,
+  # sending 100% of surplus to batteries causes momentary imports from the grid
+  # at each consumption spike (kettle, oven, washing machine...).
   #
-  # COMMENT : surplus_effectif = surplus_brut − surplus_buffer_w
-  #   Les W du buffer restent "sur le fil" pour absorber les pics.
+  # HOW: effective_surplus = raw_surplus − surplus_buffer_w
+  #   The buffer watts remain "on the line" to absorb spikes.
   #
-  # EXEMPLE avec 200 W de buffer :
-  #   P1 = -912 W (export)  →  surplus brut = 912 W
-  #   distribué batteries   = 912 - 200 = 712 W
-  #   les 200 W restants couvrent les pics de consommation
-  #   → pas d'import réseau entre deux cycles
+  # EXAMPLE with 200 W buffer:
+  #   P1 = -912 W (export)  -> raw surplus = 912 W
+  #   distributed to batteries = 912 - 200 = 712 W
+  #   the remaining 200 W cover consumption spikes
+  #   -> no grid import between cycles
   #
-  # Mettre à 0 pour désactiver (tout le surplus va aux batteries).
-  # Valeur recommandée : 150 à 250 W selon la variabilité de votre consommation.
+  # Set to 0 to disable (all surplus goes to batteries).
+  # Recommended value: 150 to 250 W depending on your consumption variability.
   surplus_buffer_w: 200
 
-  # ── Seuil d'arrêt de la charge solaire (anti-oscillation) ────────────────
+  # ── Solar charge stop threshold (anti-oscillation) ───────────────────────
   #
-  # Puissance (W) EN DESSOUS DE LAQUELLE la charge solaire est STOPPÉE.
+  # Power (W) BELOW WHICH solar charging is STOPPED.
   #
-  # POURQUOI : sans ce seuil, quand la production solaire oscille autour du
-  # seuil de démarrage (surplus_buffer_w), la charge s'active et se coupe
-  # toutes les 5 minutes — ce qui génère des dizaines de ON/OFF inutiles sur
-  # le self-powered EcoFlow ou tout switch de charge.
+  # WHY: without this threshold, when solar production oscillates around the
+  # start threshold (surplus_buffer_w), charging toggles on/off every few minutes,
+  # producing many unnecessary ON/OFF cycles on self-powered inverters or any charge switch.
   #
-  # LOGIQUE double-seuil (hystérésis) :
-  #   · Démarrage : surplus > surplus_buffer_w       (ex: 200 W)
-  #   · Arrêt     : surplus < surplus_stop_buffer_w  (ex: 80 W)
-  #   · Zone [80W–200W] : on MAINTIENT l'état précédent (ni démarrage, ni arrêt)
+  # Hysteresis (dual-threshold) logic:
+  #   · Start: surplus > surplus_buffer_w       (e.g. 200 W)
+  #   · Stop : surplus < surplus_stop_buffer_w  (e.g. 80 W)
+  #   · Zone [80W–200W] : keep previous state (no start, no stop)
   #
-  # EXEMPLE — matin nuageux, surplus fluctuant entre 50 W et 250 W :
-  #   Sans hystérésis : ON / OFF / ON / OFF toutes les 5 min
-  #   Avec hystérésis : ON dès 201W, reste ON jusqu'à < 80W → stabilité totale
+  # EXAMPLE — cloudy morning, surplus fluctuates between 50 W and 250 W:
+  #   Without hysteresis : ON / OFF / ON / OFF every cycle
+  #   With hysteresis : ON once > 200W, remains ON until < 80W → stable behavior
   #
-  # Doit être strictement inférieur à surplus_buffer_w.
-  # Valeur recommandée : 30 à 100 W (≈ 40% du surplus_buffer_w).
-  # Mettre à 0 pour désactiver (comportement original sans hystérésis).
+  # Must be strictly lower than surplus_buffer_w.
+  # Recommended value: 30 to 100 W (≈ 40% of surplus_buffer_w).
+  # Set to 0 to disable (original behavior without hysteresis).
   surplus_stop_buffer_w: 80
 
-  # ── Durée minimale de charge avant autorisation d'arrêt ──────────────────
+  # ── Minimum charge duration before allowing stop ─────────────────────────
   #
-  # Nombre de cycles consécutifs en charge MINIMUM avant qu'un arrêt soit autorisé.
+  # Minimum number of consecutive charging cycles before a stop is allowed.
   #
-  # POURQUOI : un passage nuageux de 5 minutes peut faire chuter le surplus
-  # sous surplus_stop_buffer_w. Sans ce garde-fou, la charge s'arrête, le
-  # self-powered s'active, puis le soleil revient et ça redémarre — inutile.
+  # WHY: a 5-minute cloud passage can drop surplus below surplus_stop_buffer_w.
+  # Without this guard, charging would stop, the inverter switches to self-powered,
+  # then sun returns and charging restarts — wasteful toggling.
   #
-  # CALCUL : min_charge_duration_cycles × interval_seconds = durée minimale
-  #   Exemple : 3 cycles × 60 s  = 3 minutes minimum de charge avant tout arrêt
-  #   Exemple : 3 cycles × 300 s = 15 minutes minimum
+  # CALC: min_charge_duration_cycles × interval_seconds = minimum charge time
+  #   Example: 3 cycles × 60 s  = 3 minutes minimum charging before any stop
+  #   Example: 3 cycles × 300 s = 15 minutes minimum
   #
-  # Valeur recommandée : 3 (bon compromis réactivité / stabilité).
-  # Mettre à 0 pour désactiver.
+  # Recommended value: 3 (good trade-off responsiveness/stability).
+  # Set to 0 to disable.
   min_charge_duration_cycles: 3
   # Nombre de cycles consécutifs d'anomalie du surplus avant d'envoyer une notification HA
   # Si non configuré, défaut = 3
   max_consecutive_anomalies_before_alert: 3
-  # Active/Désactive l'envoi de notifications persistantes "Observed surplus" dans HA.
-  # Mettre à false pour ne PAS recevoir ces notifications persistantes.
-  # Par défaut : true
+  # Enable/disable sending persistent "Observed surplus" notifications to HA.
+  # Set to false to NOT receive persistent notifications.
+  # Default: true
   enable_surplus_anomaly_notifications: true
 
-# ── Météo Open-Meteo ────────────────────────────────────────────────────────────
+# ── Open-Meteo weather ───────────────────────────────────────────────────────
 #
-# Les données météo (radiation solaire, nuages, prévisions 12h) sont rafraîchies
-# indépendamment du cycle de distribution (polling.interval_seconds).
-# Open-Meteo met à jour ses modèles ~toutes les heures → inutile de rafraîchir
-# plus souvent que toutes les 15 minutes.
+# Weather data (solar irradiance, cloud cover, 12h forecasts) are refreshed
+# independently from the distribution polling cycle (polling.interval_seconds).
+# Open-Meteo updates its models roughly hourly → no need to refresh more often
+# than every 15 minutes.
 #
-# Valeurs recommandées :
-#   15  → bon compromis précision / appels API (défaut)
-#   30  → suffisant pour la plupart des installations
-#   60  → si vous voulez minimiser les appels réseau
+# Recommended values:
+#   15  → good trade-off accuracy / API calls (default)
+#   30  → sufficient for most installations
+#   60  → if you want to minimize network calls
 #
 weather:
   refresh_interval_minutes: 15
@@ -232,10 +231,10 @@ heating:
 
 # ── Localisation (pour météo Open-Meteo) ──────────────────────────────────────
 location:
-  latitude:  50.85    # Bruxelles — adapter à votre emplacement
+  latitude:  50.85    # Brussels — adapt to your location
   longitude:  4.35
-  # Fuseau horaire IANA — utilisé pour les limites de jour dans les bilans quotidiens
-  # et le suivi des prévisions. Exemples : "Europe/Paris", "America/New_York"
+  # IANA timezone — used for day boundaries in daily balances
+  # and for tracking forecasts. Examples: "Europe/Paris", "America/New_York"
   timezone_id: "Europe/Brussels"
 
 # ── Production solaire ─────────────────────────────────────────────────────────
@@ -290,134 +289,132 @@ solar:
   # consumption_entity: "sensor.home_consumption_power"
 
   # ┌────────────────────────────────────────────────────────────────────────────┐
-  # │  PRÉVISION DE CHARGE (LOAD FORECASTING) — OPTIONNEL                       │
+  # │  LOAD FORECASTING — OPTIONAL                                              │
   # ├────────────────────────────────────────────────────────────────────────────┤
-  # │  PROBLÈME SANS CES RÉGLAGES :                                              │
-  # │    À 14h, le worker voit 300W de surplus et estime que le solaire          │
-  # │    couvrira les batteries jusqu'à 18h. Sauf que le four s'allume à 17h     │
-  # │    et absorbe 2000W → plus rien pour les batteries → import réseau en HP.  │
+  # │  PROBLEM WITHOUT THESE SETTINGS:                                           │
+  # │    At 14:00 the worker sees 300W surplus and assumes solar will cover      │
+  # │    batteries until 18:00. But the oven may start at 17:00 and draw 2000W   │
+  # │    → nothing left for batteries → expensive grid import.                  │
   # │                                                                            │
-  # │  SOLUTION :                                                                │
-  # │    Le worker projette la consommation maison sur les prochaines heures     │
-  # │    (rolling average des N derniers cycles × horizon).                      │
-  # │    Si la conso estimée dépasse le solaire attendu → la charge réseau       │
-  # │    est augmentée en conséquence (ComputeAdaptiveGridChargeW).              │
+  # │  SOLUTION:                                                                 │
+  # │    The worker projects home consumption for the next hours (rolling avg    │
+  # │    of the last N cycles × horizon). If estimated consumption exceeds the   │
+  # │    expected solar → grid charge is increased accordingly                   │
+  # │    (ComputeAdaptiveGridChargeW).                                           │
   # │                                                                            │
-  # │  DEUX MODES DE CONFIGURATION :                                             │
+  # │  TWO CONFIG MODES:                                                         │
   # │                                                                            │
-  # │    1. consumption_entity (une seule entité globale) :                      │
-  # │         → décommenter ci-dessus                                            │
-  # │         → ex: sensor.home_consumption_power                                │
+  # │    1. consumption_entity (single global entity):                           │
+  # │         → uncomment above                                                   │
+  # │         → e.g.: sensor.home_consumption_power                              │
   # │                                                                            │
-  # │    2. zone_consumption_entities (somme de plusieurs appareils) :           │
-  # │         → utile si vous n'avez pas de sensor de conso globale              │
-  # │         → les valeurs sont sommées pour estimer la conso totale            │
-  # │         → ignoré si consumption_entity est déjà configuré                 │
+  # │    2. zone_consumption_entities (sum of multiple devices):                 │
+  # │         → useful if you don't have a global consumption sensor             │
+  # │         → values are summed to estimate total consumption                  │
+  # │         → ignored if consumption_entity is configured                      │
   # └────────────────────────────────────────────────────────────────────────────┘
 
-  # Entités HA de consommation par zone/appareil (W) — décommenter et adapter.
-  # Somme automatique si consumption_entity est absent.
+  # Home Assistant consumption entities per zone/device (W) — uncomment and adapt.
+  # Automatically summed if consumption_entity is absent.
   # zone_consumption_entities:
-  #   - "sensor.ev_charger_power"        # Chargeur voiture électrique
-  #   - "sensor.water_heater_power"      # Chauffe-eau
-  #   - "sensor.oven_power"              # Four
+  #   - "sensor.ev_charger_power"        # EV charger
+  #   - "sensor.water_heater_power"      # Water heater
+  #   - "sensor.oven_power"              # Oven
 
-  # Nombre de cycles récents utilisés pour la moyenne roulante de consommation.
-  # 12 cycles × 60s = 10 min de rolling average (recommandé)
-  # Mettre à 0 pour désactiver (utilise uniquement la lecture live).
+  # Number of recent cycles used for the rolling average of consumption.
+  # 12 cycles × 60s = 10 min rolling average (recommended)
+  # Set to 0 to disable (use live reading only).
   consumption_rolling_window_cycles: 12
 
-  # Horizon de projection de la consommation estimée (en heures).
+  # Projection horizon for estimated consumption (in hours).
   # EstimatedConsumptionNextHoursWh = avg_consumption_W × horizon
-  # Aligner avec tariff.solar_forecast_horizon_hours (défaut 4h).
+  # Align with tariff.solar_forecast_horizon_hours (default 4h).
   consumption_projection_hours: 4.0
 
   # ┌────────────────────────────────────────────────────────────────────────────┐
-  # │  PRÉVISIONS SOLAIRES HA — OPTIONNEL MAIS FORTEMENT RECOMMANDÉ             │
+  # │  HA SOLAR FORECASTS — OPTIONAL BUT STRONGLY RECOMMENDED                    │
   # ├────────────────────────────────────────────────────────────────────────────┤
-  # │  Ces deux entités exposent la production estimée (en Wh) pour AUJOURD'HUI │
-  # │  et DEMAIN, calculée par votre intégration Solcast ou Forecast.solar.      │
+  # │  These two entities expose the estimated production (in Wh) for TODAY     │
+  # │  and TOMORROW, computed by your Solcast or Forecast.solar integration.    │
   # │                                                                            │
-  # │  POURQUOI C'EST PRÉCIEUX :                                                 │
-  # │    Open-Meteo donne le rayonnement générique W/m² pour votre localisation. │
-  # │    Solcast/Forecast.solar connaît VOTRE installation :                     │
-  # │      → orientation & inclinaison de vos panneaux                          │
-  # │      → surface installée                                                   │
-  # │      → masques et ombrages spécifiques                                    │
-  # │      → rendement réel de vos modules                                      │
-  # │    Résultat : 30 à 50% plus précis que le calcul générique.               │
+  # │  WHY THIS IS USEFUL:                                                      │
+  # │    Open-Meteo provides a generic irradiance (W/m²) for your location.     │
+  # │    Solcast/Forecast.solar knows YOUR installation:                         │
+  # │      → panel orientation & tilt                                            │
+  # │      → installed area                                                      │
+  # │      → site-specific shading                                               │
+  # │      → actual module performance                                           │
+  # │    Result: 30–50% more accurate than the generic estimate.                 │
   # │                                                                            │
-  # │  CE QUE CA AMÉLIORE :                                                      │
-  # │    • Décision de charge réseau : si aujourd'hui prévision > capacité       │
-  # │      batterie → pas besoin de charger depuis le réseau cette nuit          │
-  # │    • Calcul adaptatif (ComputeAdaptiveGridChargeW) : l'énergie solaire     │
-  # │      attendue est déduite avec précision → puissance réseau exacte        │
-  # │    • ML features directes (ML-8) : le modèle apprend sur vos vraies       │
-  # │      données de production → SoftMax et seuil préventif optimisés         │
-  # │      pour VOTRE installation spécifiquement                               │
-  # │    • FeedbackEvaluator : labels d'entraînement enrichis selon le          │
-  # │      résultat réel vs prévision HA                                         │
+  # │  WHAT IT IMPROVES:                                                         │
+  # │    • Grid charge decision: if today's forecast > battery capacity → no need │
+  # │      to charge from the grid tonight                                        │
+  # │    • Adaptive compute (ComputeAdaptiveGridChargeW): expected solar is       │
+  # │      subtracted precisely → exact grid power to use                        │
+  # │    • ML direct features (ML-8): model learns from your real production data │
+  # │      → SoftMax and preventive threshold optimized for YOUR installation     │
+  # │    • FeedbackEvaluator: training labels enriched by real vs forecast outcome│
   # │                                                                            │
-  # │  INTÉGRATIONS COMPATIBLES :                                                │
-  # │    Solcast :        sensor.solcast_pv_forecast_forecast_today              │
+  # │  SUPPORTED INTEGRATIONS:                                                   │
+  # │    Solcast :        sensor.solcast_pv_forecast_forecast_this_hour          │
   # │                     sensor.solcast_pv_forecast_forecast_tomorrow           │
   # │    Forecast.solar : sensor.energy_production_today                         │
   # │                     sensor.energy_production_tomorrow                      │
   # │    SolarEdge :      sensor.solaredge_estimated_power_today                 │
-  # │    Onduleur HA :    Chercher "Production estimée" dans Outils → États      │
+  # │    Inverter HA :    Look for "Estimated production" in Developer Tools → States │
   # └────────────────────────────────────────────────────────────────────────────┘
 
-  # Production solaire estimée AUJOURD'HUI — décommenter et adapter
+  # Estimated solar production TODAY — uncomment and adapt
   # forecast_today_entity: "sensor.solcast_pv_forecast_forecast_today"
-  # Unité renvoyée par l'entité : "kWh" (défaut, Solcast) ou "Wh"
+  # Unit returned by the entity: "kWh" (default for Solcast) or "Wh"
   # forecast_today_unit: "kWh"
 
-  # Production solaire estimée DEMAIN — décommenter et adapter
+  # Estimated solar production TOMORROW — uncomment and adapt
   # forecast_tomorrow_entity: "sensor.solcast_pv_forecast_forecast_tomorrow"
-  # Unité renvoyée par l'entité : "kWh" (défaut, Solcast) ou "Wh"
+  # Unit returned by the entity: "kWh" (default for Solcast) or "Wh"
   # forecast_tomorrow_unit: "kWh"
 
   # ┌────────────────────────────────────────────────────────────────────────────┐
-  # │  PRÉVISIONS SOLCAST INTRA-JOURNALIÈRES — OPTIONNEL                        │
+  # │  SOLCAST INTRA-DAY FORECASTS — OPTIONAL                                    │
   # ├────────────────────────────────────────────────────────────────────────────┤
-  # │  PROBLÈME SANS CES RÉGLAGES :                                              │
-  # │    L'algo connaît la production totale J (ex: 8000 Wh) mais pas QUAND.    │
-  # │    À 2h du matin, il ne sait pas si le soleil arrive dans 4h ou 8h.       │
-  # │    Il applique un profil sinusoïdal générique (pic à midi) et peut         │
-  # │    charger 600W depuis le réseau alors que 1000Wh arrivent dès 9h.        │
+  # │  PROBLEM WITHOUT THESE SETTINGS:                                            │
+  # │    The algorithm knows the total daily production (e.g. 8000 Wh) but not   │
+  # │    WHEN it will occur. At 02:00 it cannot tell if the sun arrives in 4h    │
+  # │    or 8h. It applies a generic sinusoidal profile (peak at noon) and may   │
+  # │    charge 600W from the grid while 1000Wh arrive starting at 09:00.       │
   # │                                                                            │
-  # │  SOLUTION (3 entités Solcast) :                                            │
-  # │    • forecast_this_hour  : production de l'heure courante (Wh)            │
-  # │    • forecast_next_hour  : production de l'heure suivante (Wh)            │
-  # │    • forecast_remaining_today : solaire restant aujourd'hui (Wh)           │
+  # │  SOLUTION (3 Solcast entities):                                            │
+  # │    • forecast_this_hour  : production for the current hour (Wh)            │
+  # │    • forecast_next_hour  : production for the next hour (Wh)               │
+  # │    • forecast_remaining_today : remaining solar today (Wh)                 │
   # │                                                                            │
-  # │  CE QUE ÇA AMÉLIORE :                                                      │
-  # │    • Si next_hour élevé → réduction proportionnelle de la charge réseau    │
-  # │      (on attend le solaire plutôt que de charger du réseau inutilement)    │
-  # │    • Bilan journalier précis : capacity × (softMax − SOC) − remaining     │
-  # │      → bloque la charge réseau si le solaire restant couvre le déficit     │
-  # │    • Courbe horaire réelle remplace le profil sinusoïdal simplifié         │
+  # │  WHAT IT IMPROVES:                                                         │
+  # │    • If next_hour is high → proportionally reduce grid charging            │
+  # │      (wait for solar instead of charging from the grid needlessly)         │
+  # │    • Accurate daily balance: capacity × (softMax − SOC) − remaining        │
+  # │      → prevents grid charging if remaining solar covers the deficit       │
+  # │    • Real hourly curve replaces the simplified sinusoidal profile         │
   # │                                                                            │
-  # │  ENTITÉS SOLCAST STANDARD (intégration Home Assistant) :                  │
+  # │  STANDARD SOLCAST ENTITIES (Home Assistant integration):                  │
   # │    sensor.solcast_pv_forecast_forecast_this_hour                           │
   # │    sensor.solcast_pv_forecast_forecast_next_hour                           │
   # │    sensor.solcast_pv_forecast_forecast_remaining_today                     │
   # └────────────────────────────────────────────────────────────────────────────┘
 
-  # Production Solcast CETTE HEURE — décommenter et adapter
+  # Solcast production THIS HOUR — uncomment and adapt
   # forecast_this_hour_entity: "sensor.solcast_pv_forecast_forecast_this_hour"
-  # Unité renvoyée par l'entité : "kWh" (défaut, Solcast) ou "Wh"
+  # Unit returned by the entity: "kWh" (default for Solcast) or "Wh"
   # forecast_this_hour_unit: "kWh"
 
-  # Production Solcast HEURE SUIVANTE — décommenter et adapter
+  # Solcast production NEXT HOUR — uncomment and adapt
   # forecast_next_hour_entity: "sensor.solcast_pv_forecast_forecast_next_hour"
-  # Unité renvoyée par l'entité : "kWh" (défaut, Solcast) ou "Wh"
+  # Unit returned by the entity: "kWh" (default for Solcast) or "Wh"
   # forecast_next_hour_unit: "kWh"
 
-  # Production Solcast RESTANTE AUJOURD'HUI — décommenter et adapter
-  # Requis pour le bilan énergétique journalier (Feature 4).
+  # Solcast remaining TODAY — uncomment and adapt
+  # Required for daily energy balance (Feature 4).
   # forecast_remaining_today_entity: "sensor.solcast_pv_forecast_forecast_remaining_today"
-  # Unité renvoyée par l'entité : "kWh" (défaut, Solcast) ou "Wh"
+  # Unit returned by the entity: "kWh" (default for Solcast) or "Wh"
   # forecast_remaining_today_unit: "kWh"
 
   # ── Seuil de plausibilité du surplus (Feature 9) ───────────────────────────
@@ -640,8 +637,8 @@ batteries:
       # emergency_grid_charge_below_percent: 20
       # emergency_grid_charge_target_percent: 50
 
-      # Exemple EcoFlow Delta 3 — self-powered mode
-      # Décommenter et adapter les entity_id selon votre installation.
+      # Example EcoFlow Delta 3 — self-powered mode
+      # Uncomment and adapt the entity_id values for your installation.
       #
       # zero_w_actions:
       #   - type: turn_on
@@ -704,19 +701,19 @@ tariff:
   # │    Les slots ci-dessous restent donc utiles comme filet de sécurité.      │
   # └────────────────────────────────────────────────────────────────────────────┘
 
-  # Entité HA exposant le prix spot courant (€/kWh) — décommenter et adapter.
+  # Home Assistant entity exposing the current spot price (€/kWh) — uncomment and adapt.
   # current_price_entity: "sensor.tibber_price_current_total"
 
-  # Facteur multiplicateur pour le seuil dynamique (rolling 24h × factor).
-  # 0.8 = charge quand le prix est 20% sous la moyenne journalière (recommandé).
-  # 1.0 = charge dès que le prix est sous la moyenne.
-  # Ignoré si current_price_entity est absent.
+  # Multiplier factor for the dynamic threshold (rolling 24h × factor).
+  # 0.8 = charge when price is 20% below daily average (recommended).
+  # 1.0 = charge as soon as price is below the average.
+  # Ignored if current_price_entity is not configured.
   # dynamic_threshold_factor: 0.8
 
-  # Seuil en €/kWh : en-dessous → charge réseau autorisée (si pas de soleil prévu).
-  # En mode dynamique, ce seuil sert de FALLBACK si le rolling 24h a < 3 points.
-  # Exemple : 0.15 autorise la charge en heures creuses à 0.10 €/kWh.
-  # Mettre 0 pour désactiver complètement la charge depuis le réseau.
+  # Threshold in €/kWh: below this → grid charging allowed (if no solar expected).
+  # In dynamic mode this threshold is used as a FALLBACK if the 24h rolling has < 3 points.
+  # Example: 0.15 allows charging in off-peak at 0.10 €/kWh.
+  # Set to 0 to completely disable grid charging.
   grid_charge_threshold_per_kwh: 0.15
 
   # Seuil de rayonnement solaire prévu (W/m²).
@@ -917,24 +914,24 @@ tariff:
       end_time:   "22:00"
       days_of_week: [1,2,3,4,5]
 
-    # ── Week-end : tarif réduit toute la journée ──────────────────────────
-    # start_time == end_time == "00:00" → couvre les 24h du samedi et du dimanche.
+    # ── Weekend : reduced rate for the full day ──────────────────────────
+    # start_time == end_time == "00:00" → covers the full 24h of Saturday and Sunday.
     - name: "Week-end"
       price_per_kwh: 0.12
       start_time: "00:00"
       end_time:   "00:00"       # toute la journée
-      days_of_week: [6,7]       # 6=Samedi, 7=Dimanche
+      days_of_week: [6,7]       # 6=Saturday, 7=Sunday
 
-    # ── Exemple optionnel : nuit week-end encore moins chère ──────────────
-    # Décommenter pour différencier nuit/jour le week-end.
-    # ATTENTION : si activé avec le slot "Week-end" ci-dessus, il y aura
-    # chevauchement sur les plages 22h→6h du week-end. Choisir l'un ou l'autre.
+    # ── Optional example: weekend night cheaper ──────────────────────────
+    # Uncomment to split weekend night/day pricing.
+    # WARNING: if enabled together with the "Week-end" slot above, there will
+    # be overlap for the 22:00→06:00 ranges on the weekend. Choose one or the other.
     #
     # - name: "Nuit Week-end"
     #   price_per_kwh: 0.07
     #   start_time: "22:00"
     #   end_time:   "06:00"
-    #   days_of_week: [5,6,7]   # 5=vendredi, 6=samedi, 7=dimanche
+    #   days_of_week: [5,6,7]   # 5=Friday, 6=Saturday, 7=Sunday
     #
     # - name: "Jour Week-end"
     #   price_per_kwh: 0.12

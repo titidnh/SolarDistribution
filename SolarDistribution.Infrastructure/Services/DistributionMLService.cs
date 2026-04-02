@@ -728,14 +728,14 @@ public class DistributionMLService : IDistributionMLService
     private static string BuildRationale(DistributionFeatures f, double softMax, double preventive)
     {
         var reasons = new List<string>();
-        if (f.HoursUntilSunset < 3) reasons.Add($"coucher soleil dans {f.HoursUntilSunset:F1}h");
-        if (f.CloudCoverPercent > 60) reasons.Add($"nuages {f.CloudCoverPercent:F0}%");
-        if (f.AvgForecastRadiation6h < 100) reasons.Add($"faible rayonnement prévu ({f.AvgForecastRadiation6h:F0}W/m²)");
-        if (f.UrgentBatteryCount > 0) reasons.Add($"{f.UrgentBatteryCount} batterie(s) urgente(s)");
-        if (f.IsOffPeakHour > 0.5) reasons.Add($"heure creuse {f.NormalizedTariff * 0.40:F2}€/kWh");
-        if (f.DaylightHours < 10) reasons.Add($"jour court ({f.DaylightHours:F1}h) — saison hivernale");
+        if (f.HoursUntilSunset < 3) reasons.Add($"sunset in {f.HoursUntilSunset:F1}h");
+        if (f.CloudCoverPercent > 60) reasons.Add($"cloud cover {f.CloudCoverPercent:F0}%");
+        if (f.AvgForecastRadiation6h < 100) reasons.Add($"low solar irradiance expected ({f.AvgForecastRadiation6h:F0}W/m²)");
+        if (f.UrgentBatteryCount > 0) reasons.Add($"{f.UrgentBatteryCount} urgent battery(s)");
+        if (f.IsOffPeakHour > 0.5) reasons.Add($"off-peak {f.NormalizedTariff * 0.40:F2}€/kWh");
+        if (f.DaylightHours < 10) reasons.Add($"short day ({f.DaylightHours:F1}h) — winter season");
 
-        string ctx = reasons.Any() ? string.Join(", ", reasons) : "conditions solaires favorables";
-        return $"SoftMax={softMax:F0}%, préventif={preventive:F0}% — {ctx}";
+        string ctx = reasons.Any() ? string.Join(", ", reasons) : "favorable solar conditions";
+        return $"SoftMax={softMax:F0}%, preventive={preventive:F0}% — {ctx}";
     }
 }

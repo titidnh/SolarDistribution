@@ -275,6 +275,56 @@ public class SmartDistributionService
                 softMax = Math.Max(baseSoftMax, softMax);
             }
 
+            // ── End-of-slot aggressive charging: prevent cycling ────────────────────────────
+            // Problem: at the end of a cheap tariff slot (e.g., HC Midi = 0.2h remaining),
+            // battery charges to soft_max (80%), then drops slightly from self-discharge,
+            // triggering another charge attempt 1 minute later (BMS cycling).
+            //
+            // Solution: near end of slot, charge to hard_max (100%) instead of soft_max,
+            // BUT ONLY if solar won't cover the charge demand in the near future.
+            // This fills the battery completely when solar is unlikely, avoiding cycling
+            // until the next cheap slot.
+            //
+            // Conditions:
+            //   · In a favorable (cheap) tariff slot → GridChargeAllowed
+            //   · Close to end of slot (< 1 hour remaining)
+            //   · Battery has headroom (CurrentPercent < HardMaxPercent)
+            //   · Solar is NOT arriving soon enough to cover charge demand
+            //       - No significant solar in next 3h forecast (ForecastNext3HoursWh ~0)
+            //       - OR solar won't arrive before slot ends
+            //
+            // Effect: battery will have maximum reserve when expensive tariff returns,
+            // reducing grid imports during peak hours. But respects solar arrival.
+            if (tariff.GridChargeAllowed
+                && tariff.HoursRemainingInSlot.HasValue
+                && tariff.HoursRemainingInSlot.Value > 0
+                && tariff.HoursRemainingInSlot.Value < 1.0  // Last hour of slot
+                && b.CurrentPercent < b.HardMaxPercent)    // Battery not already at max
+            {
+                double energyNeededToHardMax = (b.HardMaxPercent - b.CurrentPercent) / 100.0 * b.CapacityWh;
+                
+                // Check if solar is coming soon and could cover the charge demand
+                bool solarCanCoverDemand = false;
+                if (tariff.ForecastNext3HoursWh.HasValue && tariff.ForecastNext3HoursWh.Value > energyNeededToHardMax)
+                {
+                    // Significant solar in next 3h that can cover the demand
+                    solarCanCoverDemand = true;
+                }
+                else if (tariff.HoursUntilSolar.HasValue
+                         && tariff.HoursUntilSolar.Value < double.MaxValue
+                         && tariff.HoursUntilSolar.Value <= tariff.HoursRemainingInSlot.Value)
+                {
+                    // Solar arriving before slot ends → wait for it
+                    solarCanCoverDemand = true;
+                }
+
+                // Charge to hard_max ONLY if solar won't cover the demand soon
+                if (!solarCanCoverDemand)
+                {
+                    softMax = b.HardMaxPercent;
+                }
+            }
+
             bool solarWillArrive = tariff.HoursUntilSolar.HasValue
                 && tariff.HoursUntilSolar.Value < double.MaxValue;
 
