@@ -280,10 +280,17 @@ public class TariffEngine
         // Open-Meteo W/m²: generic signal
         bool solarExpectedFromMeteo = avgSolar >= _config.MinSolarForecastForGridBlock;
 
-        // HA Forecast Wh: installation-specific signal, more precise
-        // If HA forecast predicts enough energy today → solar will cover demand
+        // HA Forecast Wh: installation-specific signal, more precise.
+        // If HA forecast predicts enough energy today → solar will cover demand.
+        // However, without consumption data we cannot determine how much solar
+        // actually reaches the batteries — household consumption may absorb most
+        // of it. In that case, do not use the HA forecast to block grid charging;
+        // the Open-Meteo radiation signal (solarExpectedFromMeteo) still provides
+        // a basic guard. This prevents batteries from being denied HC charging
+        // when the forecast looks good but consumption is unknown.
         bool solarExpectedFromHa = forecastTodayWh.HasValue
-            && forecastTodayWh.Value >= _config.MinHaForecastWhForGridBlock;
+            && forecastTodayWh.Value >= _config.MinHaForecastWhForGridBlock
+            && estimatedConsumptionNextHoursWh.HasValue;
 
         // Logical OR: if either signal predicts solar → block grid charging
         bool solarExpected = solarExpectedFromMeteo || solarExpectedFromHa;
@@ -300,10 +307,20 @@ public class TariffEngine
                                     * totalBatteryCapacityWh;
             energyNeededWh = Math.Max(0, energyNeededWh);
 
-            energyDeficitTodayWh = energyNeededWh - forecastRemainingTodayWh.Value;
+            // Deduct estimated consumption from available solar when known.
+            // Without consumption data, use raw forecast (overestimate) but do NOT
+            // block grid charging — we can't reliably determine solar sufficiency.
+            double availableSolarWh = forecastRemainingTodayWh.Value;
+            if (estimatedConsumptionNextHoursWh.HasValue)
+                availableSolarWh = Math.Max(0, availableSolarWh - estimatedConsumptionNextHoursWh.Value);
 
-            // If remaining solar covers battery need → no grid charge needed
-            if (energyDeficitTodayWh <= 0)
+            energyDeficitTodayWh = energyNeededWh - availableSolarWh;
+
+            // Only block grid charging when consumption is known.
+            // Without consumption data the balance overestimates solar availability
+            // (all production assumed free for batteries) which can leave batteries
+            // uncharged during off-peak, triggering emergency charges later at HP rates.
+            if (energyDeficitTodayWh <= 0 && estimatedConsumptionNextHoursWh.HasValue)
             {
                 gridChargeBlockedBySolarSufficiency = true;
                 _logger.LogDebug(
