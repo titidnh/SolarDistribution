@@ -311,8 +311,8 @@ public class BatteryDistributionServiceTests
     {
         var result = _sut.Distribute(surplusW: 10, new[] { BFull(hardwareMin: 0) });
 
-        Alloc(result, 1).Should().BeApproximately(100, Tolerance,
-            "HardwareMinChargeW=0 → guard disabled, IdleCharge applies normally");
+        Alloc(result, 1).Should().BeApproximately(0, Tolerance,
+            "HardwareMinChargeW=0 does not bypass IdleCharge buffer protection; insufficient surplus → no IdleCharge");
     }
 
     // ── HardwareMinChargeW on PASS 1/2 (battery below SoftMax) ─────────────
