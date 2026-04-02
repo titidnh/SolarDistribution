@@ -184,6 +184,22 @@ public class SolarWorker : BackgroundService
         double rawSurplus = snapshot.SurplusW;
         double correctedSurplus = rawSurplus + currentBatteriesChargeW;
 
+        // ── Surplus cap at production ─────────────────────────────────────────
+        // Solar surplus can never physically exceed total panel production.
+        // When batteries charge from the grid (emergency or off-peak), their
+        // charge power inflates correctedSurplus far beyond production, which
+        // would later trigger false surplus anomaly warnings and skip cycles.
+        // Cap at production to exclude grid-sourced charge power from the surplus.
+        if (snapshot.ProductionW.HasValue && correctedSurplus > snapshot.ProductionW.Value)
+        {
+            _logger.LogDebug(
+                "Surplus correction capped at production: {Corrected:F0}W → {Production:F0}W " +
+                "(battery charge includes {GridPortion:F0}W from grid, not solar)",
+                correctedSurplus, snapshot.ProductionW.Value,
+                correctedSurplus - snapshot.ProductionW.Value);
+            correctedSurplus = snapshot.ProductionW.Value;
+        }
+
         // ── Item 2c — Warning if surplus is negative after correction ─────────
         // Negative surplus after adding battery charge indicates a
         // misconfiguration: either current_charge_power_multiplier sign is
