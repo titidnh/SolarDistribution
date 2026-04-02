@@ -285,6 +285,13 @@ public class LocationConfig
 {
     public double Latitude { get; set; } = 50.85;
     public double Longitude { get; set; } = 4.35;
+
+    /// <summary>
+    /// IANA timezone identifier used for day boundaries in daily summaries
+    /// and forecast day tracking. Default: Europe/Brussels.
+    /// Examples: "Europe/Paris", "America/New_York", "Australia/Sydney"
+    /// </summary>
+    public string TimeZoneId { get; set; } = "Europe/Brussels";
 }
 
 public class SolarConfig_Solar
@@ -345,11 +352,23 @@ public class SolarConfig_Solar
     public string? ForecastTodayEntity { get; set; }
 
     /// <summary>
+    /// Unit returned by ForecastTodayEntity: "kWh" (default) or "Wh".
+    /// If "kWh", the value is multiplied by 1000 to convert to Wh.
+    /// </summary>
+    public string ForecastTodayUnit { get; set; } = "kWh";
+
+    /// <summary>
     /// [OPTIONAL — STRONGLY RECOMMENDED]
     /// HA entity: estimated solar production TOMORROW (Wh).
     /// Ex: "sensor.solcast_pv_forecast_forecast_tomorrow"
     /// </summary>
     public string? ForecastTomorrowEntity { get; set; }
+
+    /// <summary>
+    /// Unit returned by ForecastTomorrowEntity: "kWh" (default) or "Wh".
+    /// If "kWh", the value is multiplied by 1000 to convert to Wh.
+    /// </summary>
+    public string ForecastTomorrowUnit { get; set; } = "kWh";
 
     // ── Intraday Solcast forecasts ───────────────────────────────────────────
     // These three entities provide the real hourly production curve.
@@ -364,6 +383,12 @@ public class SolarConfig_Solar
     public string? ForecastThisHourEntity { get; set; }
 
     /// <summary>
+    /// Unit returned by ForecastThisHourEntity: "kWh" (default) or "Wh".
+    /// If "kWh", the value is multiplied by 1000 to convert to Wh.
+    /// </summary>
+    public string ForecastThisHourUnit { get; set; } = "kWh";
+
+    /// <summary>
     /// [OPTIONAL] HA entity: estimated solar production NEXT HOUR (Wh).
     /// Ex: "sensor.solcast_pv_forecast_forecast_next_hour"
     /// If this value is high → no need to charge from grid now,
@@ -372,12 +397,24 @@ public class SolarConfig_Solar
     public string? ForecastNextHourEntity { get; set; }
 
     /// <summary>
+    /// Unit returned by ForecastNextHourEntity: "kWh" (default) or "Wh".
+    /// If "kWh", the value is multiplied by 1000 to convert to Wh.
+    /// </summary>
+    public string ForecastNextHourUnit { get; set; } = "kWh";
+
+    /// <summary>
     /// [OPTIONAL] HA entity: estimated REMAINING solar production TODAY (Wh).
     /// Ex: "sensor.solcast_pv_forecast_forecast_remaining_today"
     /// Used in daily energy balance computation (Feature 4):
     /// if remaining solar covers battery deficit → no need for grid charging.
     /// </summary>
     public string? ForecastRemainingTodayEntity { get; set; }
+
+    /// <summary>
+    /// Unit returned by ForecastRemainingTodayEntity: "kWh" (default) or "Wh".
+    /// If "kWh", the value is multiplied by 1000 to convert to Wh.
+    /// </summary>
+    public string ForecastRemainingTodayUnit { get; set; } = "kWh";
 
     /// <summary>
     /// (OPTIONAL) Upper plausibility threshold for surplus (W).

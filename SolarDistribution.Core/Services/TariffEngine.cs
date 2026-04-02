@@ -99,8 +99,35 @@ public class TariffSlot
     public string EndTime { get; set; } = "00:00";
     public List<int>? DaysOfWeek { get; set; }
 
-    public TimeSpan ParsedStart => TimeSpan.Parse(StartTime);
-    public TimeSpan ParsedEnd => TimeSpan.Parse(EndTime);
+    // Cached parsed values — computed once on first access to avoid
+    // repeated TimeSpan.Parse() calls (and potential FormatException on every access).
+    private TimeSpan? _parsedStart;
+    private TimeSpan? _parsedEnd;
+
+    public TimeSpan ParsedStart => _parsedStart ??= SafeParseTimeSpan(StartTime);
+    public TimeSpan ParsedEnd => _parsedEnd ??= SafeParseTimeSpan(EndTime);
+
+    /// <summary>
+    /// Validates that StartTime and EndTime are parseable at load time.
+    /// Throws FormatException with a clear message if invalid.
+    /// </summary>
+    public void ValidateTimeFormats()
+    {
+        if (!TimeSpan.TryParse(StartTime, out _))
+            throw new FormatException(
+                $"TariffSlot '{Name}': start_time '{StartTime}' is not a valid time format (expected HH:mm).");
+        if (!TimeSpan.TryParse(EndTime, out _))
+            throw new FormatException(
+                $"TariffSlot '{Name}': end_time '{EndTime}' is not a valid time format (expected HH:mm).");
+    }
+
+    private static TimeSpan SafeParseTimeSpan(string value)
+    {
+        if (TimeSpan.TryParse(value, out var result))
+            return result;
+        // Fallback to midnight if unparseable — ValidateTimeFormats() should catch this at startup.
+        return TimeSpan.Zero;
+    }
 
     public bool IsActiveAt(DateTime localTime)
     {
@@ -134,7 +161,9 @@ public class TariffEngine
 
     // Rolling 24h spot price history for computing the dynamic threshold.
     // Each entry = (UTC timestamp, price €/kWh). Maximum 24h of data retained.
+    // Protected by _spotLock for thread-safety (singleton shared between Worker + API).
     private readonly List<(DateTime Ts, double Price)> _spotPriceHistory = new();
+    private readonly object _spotLock = new();
     private const int SpotHistoryMaxHours = 24;
 
     public TariffEngine(TariffConfig config, ILogger<TariffEngine>? logger = null)
@@ -155,11 +184,18 @@ public class TariffEngine
         if (pricePerKwh.HasValue)
         {
             var now = DateTime.UtcNow;
-            _spotPriceHistory.Add((now, pricePerKwh.Value));
-
-            // Purge entries older than 24h
-            var cutoff = now.AddHours(-SpotHistoryMaxHours);
-            _spotPriceHistory.RemoveAll(e => e.Ts < cutoff);
+            lock (_spotLock)
+            {
+                try
+                {
+                    _spotPriceHistory.Add((now, pricePerKwh.Value));
+                }
+                finally
+                {
+                    var cutoff = now.AddHours(-SpotHistoryMaxHours);
+                    _spotPriceHistory.RemoveAll(e => e.Ts < cutoff);
+                }
+            }
         }
     }
 
@@ -169,9 +205,20 @@ public class TariffEngine
     /// </summary>
     public double? ComputeDynamicThreshold()
     {
-        if (_spotPriceHistory.Count < 3) return null;
-        double avg24h = _spotPriceHistory.Average(e => e.Price);
-        return avg24h * _config.DynamicThresholdFactor;
+        lock (_spotLock)
+        {
+            if (_spotPriceHistory.Count < 3) return null;
+            double avg24h = _spotPriceHistory.Average(e => e.Price);
+            return avg24h * _config.DynamicThresholdFactor;
+        }
+    }
+
+    private double GetSpotAvgOrZero()
+    {
+        lock (_spotLock)
+        {
+            return _spotPriceHistory.Count >= 3 ? _spotPriceHistory.Average(e => e.Price) : 0;
+        }
     }
 
     public TariffSlot? GetActiveSlot(DateTime localTime)
@@ -201,14 +248,31 @@ public class TariffEngine
     /// <summary>
     /// Current price in €/kWh.
     /// Priority: live HA spot price (if CurrentPriceEntity configured AND read OK)
-    ///           → fallback: active YAML slot → null if no active slot.
+    ///           → fallback: active YAML slot
+    ///           → fallback: GridChargeThresholdPerKwh (conservative "peak" price
+    ///             so that cost estimations are never zero).
     /// </summary>
     public double? GetCurrentPricePerKwh(DateTime localTime)
     {
         if (_config.CurrentPriceEntity is not null && _liveSpotPrice.HasValue)
             return _liveSpotPrice.Value;
 
-        return GetActiveSlot(localTime)?.PricePerKwh;
+        var slot = GetActiveSlot(localTime);
+        if (slot is not null)
+            return slot.PricePerKwh;
+
+        // No active slot and no live spot price:
+        // return GridChargeThresholdPerKwh as a conservative peak-price fallback
+        // so that cost estimations, logs and ML labels are never zero.
+        if (_config.GridChargeThresholdPerKwh > 0)
+        {
+            _logger.LogDebug(
+                "No active tariff slot at {Time:HH:mm} — using GridChargeThresholdPerKwh ({Price:F4}€/kWh) as fallback price",
+                localTime, _config.GridChargeThresholdPerKwh);
+            return _config.GridChargeThresholdPerKwh;
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -236,7 +300,7 @@ public class TariffEngine
                 "(avg24h={Avg:F4} × {Factor}) → {Result}",
                 price.Value,
                 threshold,
-                _spotPriceHistory.Count >= 3 ? _spotPriceHistory.Average(e => e.Price) : 0,
+                GetSpotAvgOrZero(),
                 _config.DynamicThresholdFactor,
                 favorable ? "FAVORABLE" : "not favorable");
 
@@ -280,10 +344,17 @@ public class TariffEngine
         // Open-Meteo W/m²: generic signal
         bool solarExpectedFromMeteo = avgSolar >= _config.MinSolarForecastForGridBlock;
 
-        // HA Forecast Wh: installation-specific signal, more precise
-        // If HA forecast predicts enough energy today → solar will cover demand
+        // HA Forecast Wh: installation-specific signal, more precise.
+        // If HA forecast predicts enough energy today → solar will cover demand.
+        // However, without consumption data we cannot determine how much solar
+        // actually reaches the batteries — household consumption may absorb most
+        // of it. In that case, do not use the HA forecast to block grid charging;
+        // the Open-Meteo radiation signal (solarExpectedFromMeteo) still provides
+        // a basic guard. This prevents batteries from being denied HC charging
+        // when the forecast looks good but consumption is unknown.
         bool solarExpectedFromHa = forecastTodayWh.HasValue
-            && forecastTodayWh.Value >= _config.MinHaForecastWhForGridBlock;
+            && forecastTodayWh.Value >= _config.MinHaForecastWhForGridBlock
+            && estimatedConsumptionNextHoursWh.HasValue;
 
         // Logical OR: if either signal predicts solar → block grid charging
         bool solarExpected = solarExpectedFromMeteo || solarExpectedFromHa;
@@ -300,10 +371,20 @@ public class TariffEngine
                                     * totalBatteryCapacityWh;
             energyNeededWh = Math.Max(0, energyNeededWh);
 
-            energyDeficitTodayWh = energyNeededWh - forecastRemainingTodayWh.Value;
+            // Deduct estimated consumption from available solar when known.
+            // Without consumption data, use raw forecast (overestimate) but do NOT
+            // block grid charging — we can't reliably determine solar sufficiency.
+            double availableSolarWh = forecastRemainingTodayWh.Value;
+            if (estimatedConsumptionNextHoursWh.HasValue)
+                availableSolarWh = Math.Max(0, availableSolarWh - estimatedConsumptionNextHoursWh.Value);
 
-            // If remaining solar covers battery need → no grid charge needed
-            if (energyDeficitTodayWh <= 0)
+            energyDeficitTodayWh = energyNeededWh - availableSolarWh;
+
+            // Only block grid charging when consumption is known.
+            // Without consumption data the balance overestimates solar availability
+            // (all production assumed free for batteries) which can leave batteries
+            // uncharged during off-peak, triggering emergency charges later at HP rates.
+            if (energyDeficitTodayWh <= 0 && estimatedConsumptionNextHoursWh.HasValue)
             {
                 gridChargeBlockedBySolarSufficiency = true;
                 _logger.LogDebug(

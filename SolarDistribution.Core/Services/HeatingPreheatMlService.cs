@@ -15,6 +15,7 @@ public class HeatingPreheatMlService : IHeatingPreheatMlService
     private const string ModelFile = "ml_heating_eta_model.zip";
     private const string MetaFile = "ml_heating_eta_meta.json";
     private const double MinR2ToEnable = 0.30;
+    private const int MaxPoolSize = 8;
 
     private readonly MLContext _ctx = new(seed: 42);
     private readonly ILogger<HeatingPreheatMlService> _logger;
@@ -114,7 +115,9 @@ public class HeatingPreheatMlService : IHeatingPreheatMlService
             }
             finally
             {
-                _engines.Add(engine);
+                // ML-04: cap pool size to prevent unbounded growth
+                if (_engines.Count < MaxPoolSize)
+                    _engines.Add(engine);
             }
 
             var estimated = Math.Clamp((double)prediction, 1.0, 360.0);

@@ -29,6 +29,7 @@ public class SolarWorker : BackgroundService
     // Moving average over last 3 cycles to filter noisy P1 spikes.
     // A sudden spike (e.g., water heater turning on) is smoothed before distribution.
     private readonly Queue<double> _surplusWindow = new();
+    private readonly object _surplusWindowLock = new();
     private const int SurplusSmootherWindowSize = 3;
 
     // ── Daily energy balance (Feature 4) ─────────────────────────────────────
@@ -184,6 +185,22 @@ public class SolarWorker : BackgroundService
         double rawSurplus = snapshot.SurplusW;
         double correctedSurplus = rawSurplus + currentBatteriesChargeW;
 
+        // ── Surplus cap at production ─────────────────────────────────────────
+        // Solar surplus can never physically exceed total panel production.
+        // When batteries charge from the grid (emergency or off-peak), their
+        // charge power inflates correctedSurplus far beyond production, which
+        // would later trigger false surplus anomaly warnings and skip cycles.
+        // Cap at production to exclude grid-sourced charge power from the surplus.
+        if (snapshot.ProductionW.HasValue && correctedSurplus > snapshot.ProductionW.Value)
+        {
+            _logger.LogDebug(
+                "Surplus correction capped at production: {Corrected:F0}W → {Production:F0}W " +
+                "(battery charge includes {GridPortion:F0}W from grid, not solar)",
+                correctedSurplus, snapshot.ProductionW.Value,
+                correctedSurplus - snapshot.ProductionW.Value);
+            correctedSurplus = snapshot.ProductionW.Value;
+        }
+
         // ── Item 2c — Warning if surplus is negative after correction ─────────
         // Negative surplus after adding battery charge indicates a
         // misconfiguration: either current_charge_power_multiplier sign is
@@ -204,12 +221,18 @@ public class SolarWorker : BackgroundService
         // before distribution. Decision is based on average of last N
         // cycles instead of instant value, avoiding sending
         // 3000W aux batteries lors d'un spike d'une seule lecture.
-        _surplusWindow.Enqueue(correctedSurplus);
-        if (_surplusWindow.Count > SurplusSmootherWindowSize)
-            _surplusWindow.Dequeue();
-        double smoothedSurplus = _surplusWindow.Average();
+        double smoothedSurplus;
+        bool windowFull;
+        lock (_surplusWindowLock)
+        {
+            _surplusWindow.Enqueue(correctedSurplus);
+            if (_surplusWindow.Count > SurplusSmootherWindowSize)
+                _surplusWindow.Dequeue();
+            smoothedSurplus = _surplusWindow.Average();
+            windowFull = _surplusWindow.Count == SurplusSmootherWindowSize;
+        }
 
-        if (_surplusWindow.Count == SurplusSmootherWindowSize
+        if (windowFull
             && Math.Abs(smoothedSurplus - correctedSurplus) > 50)
         {
             _logger.LogDebug(
@@ -324,7 +347,9 @@ public class SolarWorker : BackgroundService
         // ── Daily energy balance: track ForecastTodayWh at day start ─────────
         // Store first ForecastTodayWh value of day to compute
         // DailySolarConsumedWh = forecastAtStartOfDay − forecastRemainingNow.
-        int todayDoy = DateTime.Now.DayOfYear;
+        // Use local timezone for consistent day boundaries (see BUG-M02).
+        var localTz = TimeZoneInfo.FindSystemTimeZoneById(_config.Location.TimeZoneId);
+        int todayDoy = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, localTz).DayOfYear;
         if (todayDoy != _lastDayOfYear)
         {
             _forecastTodayWhAtStartOfDay = snapshot.ForecastTodayWh;

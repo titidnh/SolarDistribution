@@ -110,15 +110,20 @@ public class OpenMeteoWeatherService : IWeatherService
 
     /// <summary>
     /// Estimate daylight duration in hours (Cooper formula, accuracy ~±15min).
+    /// CALC-06 fix: removed erroneous double degree-to-radian conversion
+    /// that caused declination to be ~7× too small in summer, producing
+    /// substantially wrong daylight/sunset estimates.
     /// </summary>
     private static double EstimateDaylightHours(double latitude, DateTime date)
     {
         int dayOfYear = date.DayOfYear;
-        double declination = 23.45 * Math.Sin(2 * Math.PI * (284 + dayOfYear) / 365.0 * Math.PI / 180);
+        // Cooper equation: δ = 23.45° × sin(360°/365 × (284 + n))
+        // 360°/365 × (284+n) in radians = 2π/365 × (284+n)
+        double declination = 23.45 * Math.Sin(2 * Math.PI * (284 + dayOfYear) / 365.0);
         double latRad  = latitude * Math.PI / 180;
         double declRad = declination * Math.PI / 180;
         double cosHa   = -Math.Tan(latRad) * Math.Tan(declRad);
-        cosHa = Math.Clamp(cosHa, -1, 1);
+        cosHa = Math.Clamp(cosHa, -1, 1);  // handles polar night / midnight sun
         double hourAngle = Math.Acos(cosHa) * 180 / Math.PI;
         return 2 * hourAngle / 15.0;
     }

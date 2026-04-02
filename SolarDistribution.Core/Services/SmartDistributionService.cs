@@ -21,6 +21,15 @@ public class SmartDistributionService
     // Solcast not configured.
     private double? _cachedYesterdaySelfSufficiency;
     private int _cachedYesterdayDoy = -1;
+    private readonly object _cacheLock = new();
+
+    // ── Emergency charge hysteresis ──────────────────────────────────────────
+    // Tracks batteries currently in emergency grid charge mode.
+    // Entry:  SOC < EmergencyGridChargeBelowPercent (e.g. 20%)
+    // Exit:   SOC >= EmergencyGridChargeTargetPercent (e.g. 50%)
+    // Without this, emergency would stop as soon as SOC > 20% (next cycle),
+    // never reaching the configured target of 50%.
+    private readonly HashSet<int> _emergencyActiveBatteries = new();
 
     public SmartDistributionService(
         IBatteryDistributionService algo,
@@ -73,24 +82,33 @@ public class SmartDistributionService
 
         // ── 2b. Feature 6 — Yesterday self-sufficiency (daily cache) ─────────────
         int todayDoy = DateTime.UtcNow.DayOfYear;
-        if (todayDoy != _cachedYesterdayDoy)
+        bool needsRefresh;
+        lock (_cacheLock) { needsRefresh = todayDoy != _cachedYesterdayDoy; }
+        if (needsRefresh)
         {
-            _cachedYesterdaySelfSufficiency = await _repo.GetYesterdaySelfSufficiencyAsync(ct);
-            _cachedYesterdayDoy = todayDoy;
+            var freshValue = await _repo.GetYesterdaySelfSufficiencyAsync(ct);
+            lock (_cacheLock)
+            {
+                _cachedYesterdaySelfSufficiency = freshValue;
+                _cachedYesterdayDoy = todayDoy;
+            }
             _logger.LogDebug(
                 "Feature 6: YesterdaySelfSufficiency refreshed → {Pct}%",
-                _cachedYesterdaySelfSufficiency?.ToString("F1") ?? "n/a");
+                freshValue?.ToString("F1") ?? "n/a");
         }
 
         // ── 3. Features ML ────────────────────────────────────────────────────
         MLRecommendation? mlReco = null;
         string decisionEngine = "Deterministic";
 
+        double? yesterdaySS;
+        lock (_cacheLock) { yesterdaySS = _cachedYesterdaySelfSufficiency; }
+
         if (wx is not null)
         {
             var features = BuildFeatures(
                 surplusW, batteries, wx, tariffCtx,
-                _cachedYesterdaySelfSufficiency);
+                yesterdaySS);
             mlReco = await _ml.PredictAsync(features, ct);
         }
 
@@ -116,10 +134,14 @@ public class SmartDistributionService
         foreach (var b in effective.Where(b => b.IsEmergencyGridCharge))
         {
             double target = b.EmergencyGridChargeTargetPercent ?? b.SoftMaxPercent;
+            bool isNewEmergency = b.EmergencyGridChargeBelowPercent.HasValue
+                && b.CurrentPercent < b.EmergencyGridChargeBelowPercent.Value;
             _logger.LogWarning(
-                "⚡ EMERGENCY grid charge — Battery {Id}: SOC {Soc:F1}% < threshold {Thr:F0}% " +
-                "— will charge to {Target:F0}% from grid (solar expected: {Solar})",
-                b.Id, b.CurrentPercent, b.EmergencyGridChargeBelowPercent, target,
+                "⚡ EMERGENCY grid charge — Battery {Id}: SOC {Soc:F1}% " +
+                "{Phase} target {Target:F0}% from grid (solar expected: {Solar})",
+                b.Id, b.CurrentPercent,
+                isNewEmergency ? $"< threshold {b.EmergencyGridChargeBelowPercent:F0}% — will charge to" : "— ongoing charge to",
+                target,
                 tariffCtx.SolarExpectedSoon ? "yes (skipped)" : "no");
         }
 
@@ -191,7 +213,7 @@ public class SmartDistributionService
     ///   charging when solar production is declining. This prevents overcharging when
     ///   the system can't maintain the planned charge rates.
     /// </summary>
-    private static IList<Battery> Apply(
+    private IList<Battery> Apply(
         IList<Battery> src,
         MLRecommendation? reco,
         TariffContext tariff,
@@ -200,11 +222,13 @@ public class SmartDistributionService
         double minGridChargeW = 100.0,
         double urgencyThresholdHours = 1.0)
     {
+        var emergencyActiveBatteries = _emergencyActiveBatteries;
         var localNow = DateTime.Now;
 
         return src.Select(b =>
         {
-            double softMax = reco?.RecommendedSoftMaxPercent ?? b.SoftMaxPercent;
+            double baseSoftMax = reco?.RecommendedSoftMaxPercent ?? b.SoftMaxPercent;
+            double softMax = baseSoftMax;
 
             // ── J+1 Boost: bad tomorrow + favourable tariff → charge harder now ──
             // Logic: if ForecastTomorrow < threshold AND we are in a cheap slot (off-peak or
@@ -218,40 +242,59 @@ public class SmartDistributionService
                 softMax = Math.Min(b.HardMaxPercent, boosted);
             }
 
-            // ── FIX Bug #7: End-of-day aggressiveness reduction ──────────────────────
+            // ── FIX Bug #7 + CALC-03: End-of-day aggressiveness reduction ────────────
             // As sunset approaches, progressively reduce SoftMax target to avoid
             // aggressive charging when solar production is declining.
-            // Reduction schedule:
+            //
+            // CALC-03 fix: the reduction is applied only to the BOOST DELTA
+            // (softMax - baseSoftMax), not to the full softMax. This prevents the
+            // end-of-day reduction from cancelling the D+1 boost and dropping
+            // below the original base SoftMax.
+            //
+            // Reduction schedule on the boost delta:
             //   HoursUntilSunset > 3h   : no reduction (normal operation)
-            //   3h >= hours > 2h        : reduce SoftMax by 10%
-            //   2h >= hours > 1h        : reduce SoftMax by 20%
-            //   1h >= hours             : reduce SoftMax by 30%
-            // This prevents the system from trying to charge aggressively when it's
-            // too late in the day and production is falling off.
+            //   3h >= hours > 2h        : reduce boost delta by 30%
+            //   2h >= hours > 1h        : reduce boost delta by 60%
+            //   1h >= hours             : remove boost delta entirely
             if (wx is not null && wx.HoursUntilSunset <= 3)
             {
-                double reductionPercent = wx.HoursUntilSunset switch
+                double boostDelta = softMax - baseSoftMax;
+                double reductionFactor = wx.HoursUntilSunset switch
                 {
-                    <= 1 => 30,  // Last hour: most conservative
-                    <= 2 => 20,
-                    <= 3 => 10,
+                    <= 1 => 1.0,  // Last hour: remove boost entirely
+                    <= 2 => 0.6,
+                    <= 3 => 0.3,
                     _ => 0
                 };
 
-                if (reductionPercent > 0)
+                if (reductionFactor > 0 && boostDelta > 0)
                 {
-                    double minSoftMax = b.MinPercent;  // never drop below emergency threshold
-                    double reduction = softMax * (reductionPercent / 100.0);
-                    softMax = Math.Max(minSoftMax, softMax - reduction);
+                    softMax -= boostDelta * reductionFactor;
                 }
+                // softMax never drops below baseSoftMax (the non-boosted value)
+                softMax = Math.Max(baseSoftMax, softMax);
             }
 
             bool solarWillArrive = tariff.HoursUntilSolar.HasValue
                 && tariff.HoursUntilSolar.Value < double.MaxValue;
 
-            bool isEmergency = b.EmergencyGridChargeBelowPercent.HasValue
-                && b.CurrentPercent < b.EmergencyGridChargeBelowPercent.Value
-                && !solarWillArrive;
+            // ── Emergency hysteresis ─────────────────────────────────────────
+            // Enter: SOC < EmergencyGridChargeBelowPercent (e.g. 20%)
+            // Stay:  ongoing emergency AND SOC < EmergencyGridChargeTargetPercent (e.g. 50%)
+            // Exit:  SOC >= target → emergency cleared
+            // Without hysteresis the emergency would end at SOC > 20% (next cycle)
+            // and the battery would never reach the configured target of 50%.
+            double emergencyTarget = b.EmergencyGridChargeTargetPercent ?? b.SoftMaxPercent;
+            bool enteringEmergency = b.EmergencyGridChargeBelowPercent.HasValue
+                && b.CurrentPercent < b.EmergencyGridChargeBelowPercent.Value;
+            bool ongoingEmergency = emergencyActiveBatteries.Contains(b.Id)
+                && b.CurrentPercent < emergencyTarget;
+            bool isEmergency = (enteringEmergency || ongoingEmergency) && !solarWillArrive;
+
+            if (isEmergency)
+                emergencyActiveBatteries.Add(b.Id);
+            else
+                emergencyActiveBatteries.Remove(b.Id);
 
             // Can self-consume before the slot ends?
             bool solarBeforeSlotEnd = false;
@@ -670,17 +713,20 @@ public class SmartDistributionService
 
     /// <summary>
     /// Computes the fraction of solar energy produced between [startH, endH]
-    /// assuming a sinusoidal profile normalised over [sunriseH, sunsetH].
+    /// normalised over [sunriseH, sunsetH].
     ///
-    /// Solar production ≈ sin(π × (t - sunrise) / daylightDuration)
-    /// → The integral over [a, b] normalised equals (cos(πa/D) - cos(πb/D)) / 2
-    ///   with D = daylightDuration, a/b = offsets from sunrise.
+    /// Uses a blend between a sinusoidal profile (clear sky) and a flat profile
+    /// (overcast), weighted by cloudCoverPercent:
+    ///   - Clear sky (0%): sin(π×t/D) — correctly weights the noon peak
+    ///   - Fully overcast (100%): uniform distribution — clouds flatten the profile
+    ///   - Partial cloud: linear blend between the two
     ///
-    /// Advantage over a linear fraction: correctly weights the noon peak
-    /// (the 4 central hours represent ~60% of the daily energy).
+    /// This addresses CALC-01: the pure sinusoidal model overestimates the noon
+    /// peak contribution under cloudy conditions and at high latitudes.
     /// </summary>
     private static double SolarFractionBetweenHours(
-        double startH, double endH, double sunriseH, double sunsetH)
+        double startH, double endH, double sunriseH, double sunsetH,
+        double cloudCoverPercent = 0)
     {
         double duration = sunsetH - sunriseH;
         if (duration <= 0 || endH <= startH) return 0;
@@ -690,12 +736,19 @@ public class SmartDistributionService
         double b = Math.Min(duration, endH - sunriseH);
         if (b <= a) return 0;
 
-        // Integral of sin(π×t/D) between a and b, normalized over [0, D] (total integral = 2D/π)
+        // Sinusoidal fraction: integral of sin(π×t/D) between a and b,
+        // normalized over [0, D] (total integral = 2D/π)
         double integralTotal = 2.0 * duration / Math.PI;
         double integralSlice = (duration / Math.PI)
             * (Math.Cos(Math.PI * a / duration) - Math.Cos(Math.PI * b / duration));
+        double sineFraction = integralTotal > 0 ? Math.Max(0, integralSlice / integralTotal) : 0;
 
-        return integralTotal > 0 ? Math.Max(0, integralSlice / integralTotal) : 0;
+        // Flat fraction: uniform distribution over the daylight window
+        double flatFraction = (b - a) / duration;
+
+        // Blend: cloud cover shifts the profile from peaked (sine) towards flat (uniform)
+        double cloudFactor = Math.Clamp(cloudCoverPercent / 100.0, 0, 1);
+        return (1.0 - cloudFactor) * sineFraction + cloudFactor * flatFraction;
     }
 
     private void LogTariffContext(TariffContext ctx, double surplusW)

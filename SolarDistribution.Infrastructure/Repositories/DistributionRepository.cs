@@ -171,19 +171,21 @@ public class DistributionRepository : IDistributionRepository
             return new List<DistributionSession>();
 
         // ── 2. Stratified sampling by (month × hour_bucket) ──────────────────
-        // 12 months × 4 buckets of 6h = 48 strata
-        // Each stratum receives a quota = maxRecords / 48, rounded.
-        // Strata with fewer data points contribute what they have.
+        // ML-03 fix: compute quota dynamically based on populated strata
+        // instead of dividing by a fixed 48. When data is concentrated in
+        // 2-3 months, empty strata no longer waste quota — the budget is
+        // redistributed among strata that actually contain data.
         const int HourBuckets = 4;          // 0-5h, 6-11h, 12-17h, 18-23h
-        const int TotalStrata = 12 * HourBuckets; // 48
-        int quotaPerStratum = Math.Max(1, maxRecords / TotalStrata);
 
         var selectedIds = new HashSet<long>(maxRecords);
 
         var byStratum = candidates.GroupBy(s => (
             Month: s.RequestedAt.Month,
             HourBucket: s.RequestedAt.Hour / 6
-        ));
+        )).ToList();
+
+        int populatedStrata = byStratum.Count;
+        int quotaPerStratum = Math.Max(1, maxRecords / Math.Max(1, populatedStrata));
 
         foreach (var stratum in byStratum)
         {

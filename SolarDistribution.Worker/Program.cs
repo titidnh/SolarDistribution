@@ -128,7 +128,17 @@ var host = Host.CreateDefaultBuilder(args)
                     ModelDirectory = heatingModelDir
                 });
         });
-        services.AddSingleton<IHeatingOrchestratorService, HeatingOrchestratorService>();
+        services.AddSingleton<IHeatingOrchestratorService>(sp =>
+            new HeatingOrchestratorService(
+                sp.GetRequiredService<IHeatingPreheatMlService>(),
+                new HeatingComfortOptions
+                {
+                    Enabled = config.Heating.ComfortConstraints.Enabled,
+                    MinimumComfortTempC = config.Heating.ComfortConstraints.MinimumComfortTempC,
+                    CriticalDeltaTempC = config.Heating.ComfortConstraints.CriticalDeltaTempC,
+                    MaxMlEtaP90Minutes = config.Heating.ComfortConstraints.MaxMlEtaP90Minutes,
+                },
+                sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<HeatingOrchestratorService>>()));
         services.AddSingleton<IHeatingStatusService, HeatingStatusService>();
         services.AddSingleton<IHeatingSourceSelectorService, HeatingSourceSelectorService>();
 

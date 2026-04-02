@@ -83,6 +83,19 @@ public sealed class HeatingMlOptions
     public string? ModelDirectory { get; set; } = null;
 }
 
+/// <summary>
+/// Comfort-first safeguards injected into HeatingOrchestratorService.
+/// When temperature is critically low and the estimated heating time is too high,
+/// the orchestrator overrides the normal decision and forces immediate heating.
+/// </summary>
+public sealed class HeatingComfortOptions
+{
+    public bool Enabled { get; set; } = true;
+    public double MinimumComfortTempC { get; set; } = 19.0;
+    public double CriticalDeltaTempC { get; set; } = 1.5;
+    public double MaxMlEtaP90Minutes { get; set; } = 90.0;
+}
+
 public interface IHeatingPreheatMlService
 {
     Task<HeatingPreheatEstimate> EstimateAsync(HeatingOrchestratorContext context, CancellationToken ct = default);

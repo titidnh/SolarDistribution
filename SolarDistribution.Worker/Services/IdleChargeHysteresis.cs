@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Logging;
+﻿using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
 using SolarDistribution.Worker.Configuration;
 
 namespace SolarDistribution.Worker.Services;
@@ -27,7 +28,7 @@ public class IdleChargeHysteresis
     private readonly ILogger _logger;
 
     // Key = BatteryConfig.Id, value = currently active idle state
-    private readonly Dictionary<int, bool> _state = new();
+    private readonly ConcurrentDictionary<int, bool> _state = new();
 
     public IdleChargeHysteresis(ILogger logger)
     {
@@ -84,5 +85,5 @@ public class IdleChargeHysteresis
     }
 
     /// <summary>Exposes current state (for tests and logs).</summary>
-    public bool IsIdle(int batteryId) => _state.GetValueOrDefault(batteryId, false);
+    public bool IsIdle(int batteryId) => _state.TryGetValue(batteryId, out var v) && v;
 }

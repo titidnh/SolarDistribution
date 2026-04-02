@@ -171,7 +171,9 @@ public class BatteryDistributionService : IBatteryDistributionService
                        && solar > 0.01 && solar <= b.IdleChargeW + 0.01
                        && currentPct[b.Id] >= b.SoftMaxPercent - 0.5;
 
-            double energyForSoc = isIdle ? 0 : (solar + grid) * _allocationWindowHours;
+            double energyForSoc = isIdle
+                ? b.IdleChargeW * _allocationWindowHours
+                : (solar + grid) * _allocationWindowHours;
             double projectedPct = Math.Clamp(
                 b.CurrentPercent + (energyForSoc / b.CapacityWh * 100.0),
                 0.0, b.HardMaxPercent);

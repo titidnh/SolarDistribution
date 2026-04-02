@@ -266,10 +266,32 @@ public class FeedbackEvaluator
 
         if (consumptionW is null || consumptionW.Value <= 0)
         {
-            // Fallback: estimate consumption from import and session surplus
-            // consumption ≈ production − surplus_net + import
-            double productionEstimate = session.BatterySnapshots.Sum(b => b.AllocatedW) + session.SurplusW;
-            consumptionW = productionEstimate + Math.Max(0, importW.Value);
+            // CALC-04 fix: estimate consumption WITHOUT including import in the
+            // denominator. The old formula (production + import) diluted the import
+            // signal, making self-sufficiency systematically > 0.5 when production > 0.
+            //
+            // Better approach: estimate consumption from the solar side only.
+            // SurplusW = solar surplus after home consumption was met.
+            // If SurplusW > 0: home consumption < production → consumption ≈ production - surplus
+            //   We don't know production, but we know the solar went to:
+            //   batteries (AllocatedW) + exported/unused (UnusedSurplusW) + home → surplus was the extra.
+            // If SurplusW <= 0: home consumption > production → deficit was covered by grid/battery.
+            //
+            // Use measured consumption from session if available,
+            // otherwise fall back to the solar allocation as a lower bound.
+            if (session.MeasuredConsumptionW.HasValue && session.MeasuredConsumptionW.Value > 0)
+            {
+                consumptionW = session.MeasuredConsumptionW.Value;
+            }
+            else
+            {
+                // Lower-bound estimate: at minimum, the home consumed what solar provided
+                // minus what went to batteries and was exported.
+                // consumption >= import (by definition: what we import, we consume)
+                // consumption >= production - surplus (solar self-consumed)
+                double solarSelfConsumed = Math.Max(0, session.SurplusW - session.TotalAllocatedW - session.UnusedSurplusW);
+                consumptionW = Math.Max(Math.Max(0, importW.Value), solarSelfConsumed + Math.Max(0, importW.Value));
+            }
         }
 
         if (consumptionW.Value <= 0) return null;
@@ -369,17 +391,25 @@ public class FeedbackEvaluator
     // ── EnergyEfficiency calculation ────────────────────────────────────────
 
     /// <summary>
-    /// Energy efficiency = effectively stored energy / theoretically available energy.
+    /// Energy efficiency = effectively used energy / theoretically available energy.
     ///
-    /// If there was 1000W surplus but only 600W could be stored (full batteries
-    /// or MaxChargeRate reached) → score = 0.6
-    /// If everything was absorbed → score = 1.0
+    /// CALC-05 fix: accounts for grid charge sessions.
+    /// When SurplusW = 0 and grid charging occurs, the old formula returned 1.0
+    /// regardless of whether the grid charge was efficient. Now:
+    /// - Solar sessions: ratio = TotalAllocatedW / SurplusW (unchanged)
+    /// - Grid charge sessions: ratio = usefully stored / total grid power drawn
+    ///   A grid charge is "inefficient" if batteries were nearly full but grid
+    ///   charge was commanded anyway (GridChargedW >> actual energy stored).
+    /// - Mixed: weighted combination of both.
     /// </summary>
     private static double ComputeEnergyEfficiency(DistributionSession session)
     {
-        if (session.SurplusW <= 0) return 1.0;
+        double totalAvailable = session.SurplusW + session.GridChargedW;
 
-        double ratio = session.TotalAllocatedW / session.SurplusW;
+        if (totalAvailable <= 0) return 1.0;
+
+        double totalUsed = session.TotalAllocatedW + session.GridChargedW;
+        double ratio = totalUsed / totalAvailable;
         return Math.Clamp(ratio, 0, 1);
     }
 

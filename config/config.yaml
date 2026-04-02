@@ -234,6 +234,9 @@ heating:
 location:
   latitude:  50.85    # Bruxelles — adapter à votre emplacement
   longitude:  4.35
+  # Fuseau horaire IANA — utilisé pour les limites de jour dans les bilans quotidiens
+  # et le suivi des prévisions. Exemples : "Europe/Paris", "America/New_York"
+  timezone_id: "Europe/Brussels"
 
 # ── Production solaire ─────────────────────────────────────────────────────────
 #
@@ -364,11 +367,15 @@ solar:
   # │    Onduleur HA :    Chercher "Production estimée" dans Outils → États      │
   # └────────────────────────────────────────────────────────────────────────────┘
 
-  # Production solaire estimée AUJOURD'HUI (Wh) — décommenter et adapter
+  # Production solaire estimée AUJOURD'HUI — décommenter et adapter
   # forecast_today_entity: "sensor.solcast_pv_forecast_forecast_today"
+  # Unité renvoyée par l'entité : "kWh" (défaut, Solcast) ou "Wh"
+  # forecast_today_unit: "kWh"
 
-  # Production solaire estimée DEMAIN (Wh) — décommenter et adapter
+  # Production solaire estimée DEMAIN — décommenter et adapter
   # forecast_tomorrow_entity: "sensor.solcast_pv_forecast_forecast_tomorrow"
+  # Unité renvoyée par l'entité : "kWh" (défaut, Solcast) ou "Wh"
+  # forecast_tomorrow_unit: "kWh"
 
   # ┌────────────────────────────────────────────────────────────────────────────┐
   # │  PRÉVISIONS SOLCAST INTRA-JOURNALIÈRES — OPTIONNEL                        │
@@ -397,15 +404,21 @@ solar:
   # │    sensor.solcast_pv_forecast_forecast_remaining_today                     │
   # └────────────────────────────────────────────────────────────────────────────┘
 
-  # Production Solcast CETTE HEURE (Wh) — décommenter et adapter
+  # Production Solcast CETTE HEURE — décommenter et adapter
   # forecast_this_hour_entity: "sensor.solcast_pv_forecast_forecast_this_hour"
+  # Unité renvoyée par l'entité : "kWh" (défaut, Solcast) ou "Wh"
+  # forecast_this_hour_unit: "kWh"
 
-  # Production Solcast HEURE SUIVANTE (Wh) — décommenter et adapter
+  # Production Solcast HEURE SUIVANTE — décommenter et adapter
   # forecast_next_hour_entity: "sensor.solcast_pv_forecast_forecast_next_hour"
+  # Unité renvoyée par l'entité : "kWh" (défaut, Solcast) ou "Wh"
+  # forecast_next_hour_unit: "kWh"
 
-  # Production Solcast RESTANTE AUJOURD'HUI (Wh) — décommenter et adapter
+  # Production Solcast RESTANTE AUJOURD'HUI — décommenter et adapter
   # Requis pour le bilan énergétique journalier (Feature 4).
   # forecast_remaining_today_entity: "sensor.solcast_pv_forecast_forecast_remaining_today"
+  # Unité renvoyée par l'entité : "kWh" (défaut, Solcast) ou "Wh"
+  # forecast_remaining_today_unit: "kWh"
 
   # ── Seuil de plausibilité du surplus (Feature 9) ───────────────────────────
   # Si observé, un surplus supérieur à cette valeur est considéré comme anormal

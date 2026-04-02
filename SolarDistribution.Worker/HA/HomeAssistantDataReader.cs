@@ -72,8 +72,10 @@ public class HomeAssistantDataReader
     private readonly ILogger<HomeAssistantDataReader> _logger;
     private DateTime _lastHeatingSamplePersistedAtUtc = DateTime.MinValue;
     private DateTime _lastLearningRefreshUtc = DateTime.MinValue;
-    private Dictionary<string, double> _learnedSpeedDegPerHour = new(StringComparer.OrdinalIgnoreCase);
-    private Dictionary<string, int> _learnedSpeedSampleCount = new(StringComparer.OrdinalIgnoreCase);
+    // Volatile reference swap: writer replaces the entire dictionary atomically.
+    // Readers always see a consistent snapshot (no torn reads).
+    private volatile Dictionary<string, double> _learnedSpeedDegPerHour = new(StringComparer.OrdinalIgnoreCase);
+    private volatile Dictionary<string, int> _learnedSpeedSampleCount = new(StringComparer.OrdinalIgnoreCase);
 
     public HomeAssistantDataReader(
         IHomeAssistantClient client,
@@ -169,10 +171,17 @@ public class HomeAssistantDataReader
 
             if (rollingAvgW is not null)
             {
-                estimatedConsumptionNextHoursWh = rollingAvgW.Value * projectionHours;
+                // CALC-02 fix: apply time-of-day weighting to the rolling average.
+                // Standard residential consumption peaks in the morning (7-9) and
+                // evening (17-21). The rolling average ignores these patterns,
+                // leading to underestimation during peaks and overestimation during
+                // off-peak hours. The multiplier adjusts the flat average to better
+                // reflect expected consumption in the upcoming projection window.
+                double todMultiplier = GetTimeOfDayConsumptionMultiplier(DateTime.Now.Hour);
+                estimatedConsumptionNextHoursWh = rollingAvgW.Value * todMultiplier * projectionHours;
                 _logger.LogDebug(
-                    "Load forecast: rolling avg={Avg:F0}W (last {N} cycles) × {H:F1}h = {Wh:F0}Wh estimated consumption",
-                    rollingAvgW.Value, rollingWindow, projectionHours, estimatedConsumptionNextHoursWh);
+                    "Load forecast: rolling avg={Avg:F0}W (last {N} cycles) × ToD={Tod:F2} × {H:F1}h = {Wh:F0}Wh estimated consumption",
+                    rollingAvgW.Value, rollingWindow, todMultiplier, projectionHours, estimatedConsumptionNextHoursWh);
             }
             else if (consumptionW is not null)
             {
@@ -195,11 +204,11 @@ public class HomeAssistantDataReader
             var rawToday = await _client.GetNumericStateAsync(_config.Solar.ForecastTodayEntity, ct);
             if (rawToday is not null)
             {
-                // Solcast returns kWh → convert to Wh
-                forecastTodayWh = rawToday.Value * 1000.0;
+                double mult = IsKwh(_config.Solar.ForecastTodayUnit) ? 1000.0 : 1.0;
+                forecastTodayWh = rawToday.Value * mult;
                 _logger.LogDebug(
-                    "Solar forecast today: {V:F0} Wh (from HA, raw={Raw:F3} kWh)",
-                    forecastTodayWh, rawToday);
+                    "Solar forecast today: {V:F0} Wh (raw={Raw:F3} {Unit})",
+                    forecastTodayWh, rawToday, _config.Solar.ForecastTodayUnit);
             }
             else
                 _logger.LogDebug(
@@ -212,11 +221,11 @@ public class HomeAssistantDataReader
             var rawTomorrow = await _client.GetNumericStateAsync(_config.Solar.ForecastTomorrowEntity, ct);
             if (rawTomorrow is not null)
             {
-                // Solcast returns kWh → convert to Wh
-                forecastTomorrowWh = rawTomorrow.Value * 1000.0;
+                double mult = IsKwh(_config.Solar.ForecastTomorrowUnit) ? 1000.0 : 1.0;
+                forecastTomorrowWh = rawTomorrow.Value * mult;
                 _logger.LogDebug(
-                    "Solar forecast tomorrow: {V:F0} Wh (from HA, raw={Raw:F3} kWh)",
-                    forecastTomorrowWh, rawTomorrow);
+                    "Solar forecast tomorrow: {V:F0} Wh (raw={Raw:F3} {Unit})",
+                    forecastTomorrowWh, rawTomorrow, _config.Solar.ForecastTomorrowUnit);
             }
             else
                 _logger.LogDebug(
@@ -225,22 +234,30 @@ public class HomeAssistantDataReader
         }
 
         // ── Intraday Solcast forecasts ───────────────────────────────────────
-        // forecast_this_hour and forecast_next_hour are already in Wh — no conversion.
-        // forecast_remaining_today is in kWh → convert to Wh.
         if (_config.Solar.ForecastThisHourEntity is not null)
         {
-            forecastThisHourWh = await _client.GetNumericStateAsync(_config.Solar.ForecastThisHourEntity, ct);
+            var rawThisHour = await _client.GetNumericStateAsync(_config.Solar.ForecastThisHourEntity, ct);
+            if (rawThisHour is not null)
+            {
+                double mult = IsKwh(_config.Solar.ForecastThisHourUnit) ? 1000.0 : 1.0;
+                forecastThisHourWh = rawThisHour.Value * mult;
+            }
             _logger.LogDebug(
-                "Solcast this_hour: {V} Wh",
-                forecastThisHourWh?.ToString("F0") ?? "n/a");
+                "Solcast this_hour: {V} Wh (unit={Unit})",
+                forecastThisHourWh?.ToString("F0") ?? "n/a", _config.Solar.ForecastThisHourUnit);
         }
 
         if (_config.Solar.ForecastNextHourEntity is not null)
         {
-            forecastNextHourWh = await _client.GetNumericStateAsync(_config.Solar.ForecastNextHourEntity, ct);
+            var rawNextHour = await _client.GetNumericStateAsync(_config.Solar.ForecastNextHourEntity, ct);
+            if (rawNextHour is not null)
+            {
+                double mult = IsKwh(_config.Solar.ForecastNextHourUnit) ? 1000.0 : 1.0;
+                forecastNextHourWh = rawNextHour.Value * mult;
+            }
             _logger.LogDebug(
-                "Solcast next_hour: {V} Wh",
-                forecastNextHourWh?.ToString("F0") ?? "n/a");
+                "Solcast next_hour: {V} Wh (unit={Unit})",
+                forecastNextHourWh?.ToString("F0") ?? "n/a", _config.Solar.ForecastNextHourUnit);
         }
 
         if (_config.Solar.ForecastRemainingTodayEntity is not null)
@@ -248,11 +265,11 @@ public class HomeAssistantDataReader
             var rawRemaining = await _client.GetNumericStateAsync(_config.Solar.ForecastRemainingTodayEntity, ct);
             if (rawRemaining is not null)
             {
-                // Solcast returns kWh → convert to Wh
-                forecastRemainingTodayWh = rawRemaining.Value * 1000.0;
+                double mult = IsKwh(_config.Solar.ForecastRemainingTodayUnit) ? 1000.0 : 1.0;
+                forecastRemainingTodayWh = rawRemaining.Value * mult;
                 _logger.LogDebug(
-                    "Solcast remaining_today: {V:F0} Wh (raw={Raw:F3} kWh)",
-                    forecastRemainingTodayWh, rawRemaining);
+                    "Solcast remaining_today: {V:F0} Wh (raw={Raw:F3} {Unit})",
+                    forecastRemainingTodayWh, rawRemaining, _config.Solar.ForecastRemainingTodayUnit);
             }
             else
                 _logger.LogDebug("Solcast remaining_today: n/a");
@@ -306,7 +323,9 @@ public class HomeAssistantDataReader
 
                 if (rawCharge is not null)
                 {
-                    currentChargeW = Math.Max(0, rawCharge.Value * b.Entities.CurrentChargePowerMultiplier);
+                    // Allow negative values (discharge) — needed for surplus correction.
+                    // Positive = charging, negative = discharging.
+                    currentChargeW = rawCharge.Value * b.Entities.CurrentChargePowerMultiplier;
                     _logger.LogDebug(
                         "Battery {Id} ({Name}): current charge = {W:F0}W (raw={Raw:F2})",
                         b.Id, b.Name, currentChargeW, rawCharge);
@@ -766,6 +785,27 @@ public class HomeAssistantDataReader
         return values[0];
     }
 
+    private static bool IsKwh(string unit) =>
+        string.Equals(unit, "kWh", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// CALC-02 fix: time-of-day multiplier for consumption estimation.
+    /// Adjusts the flat rolling average to reflect typical residential consumption
+    /// patterns (morning/evening peaks, overnight trough).
+    /// Multiplier is centred around 1.0 so the daily average is preserved.
+    /// </summary>
+    private static double GetTimeOfDayConsumptionMultiplier(int hour) => hour switch
+    {
+        >= 0 and < 6  => 0.6,   // Night: low baseline (standby, fridge)
+        >= 6 and < 9  => 1.3,   // Morning peak: heating, hot water, breakfast
+        >= 9 and < 12 => 1.0,   // Late morning: moderate
+        >= 12 and < 14 => 1.1,  // Lunch: cooking
+        >= 14 and < 17 => 0.9,  // Afternoon: below average
+        >= 17 and < 21 => 1.4,  // Evening peak: cooking, lighting, appliances
+        >= 21 and < 23 => 1.0,  // Late evening: moderate
+        _ => 0.7                // 23h: winding down
+    };
+
     private static double? TryReadNumericAttribute(HaState? state, string attributeName)
     {
         if (state is null) return null;
@@ -855,15 +895,19 @@ public class HomeAssistantDataReader
             bucket.Add(speed);
         }
 
-        _learnedSpeedDegPerHour = speedBySource.ToDictionary(
+        // Build new dictionaries then swap references atomically (volatile write).
+        var newSpeed = speedBySource.ToDictionary(
             kv => kv.Key,
             kv => kv.Value.OrderBy(v => v).ElementAt(kv.Value.Count / 2),
             StringComparer.OrdinalIgnoreCase);
 
-        _learnedSpeedSampleCount = speedBySource.ToDictionary(
+        var newCount = speedBySource.ToDictionary(
             kv => kv.Key,
             kv => kv.Value.Count,
             StringComparer.OrdinalIgnoreCase);
+
+        _learnedSpeedDegPerHour = newSpeed;
+        _learnedSpeedSampleCount = newCount;
 
         _lastLearningRefreshUtc = nowUtc;
     }

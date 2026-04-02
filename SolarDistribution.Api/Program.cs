@@ -34,7 +34,11 @@ builder.Services.AddSingleton<IHeatingPreheatMlService>(sp =>
         sp.GetRequiredService<ILogger<HeatingPreheatMlService>>(),
         sp.GetRequiredService<IServiceScopeFactory>(),
         new HeatingMlOptions()));
-builder.Services.AddSingleton<IHeatingOrchestratorService, HeatingOrchestratorService>();
+builder.Services.AddSingleton<IHeatingOrchestratorService>(sp =>
+    new HeatingOrchestratorService(
+        sp.GetRequiredService<IHeatingPreheatMlService>(),
+        new HeatingComfortOptions(),
+        sp.GetRequiredService<ILogger<HeatingOrchestratorService>>()));
 builder.Services.AddSingleton<IHeatingStatusService, HeatingStatusService>();
 builder.Services.AddSingleton<IHeatingSourceSelectorService, HeatingSourceSelectorService>();
 // Fix #6 : session factory (business model → EF entities mapping)

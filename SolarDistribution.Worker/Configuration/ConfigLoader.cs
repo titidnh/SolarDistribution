@@ -52,6 +52,23 @@ public static class ConfigLoader
         if (!config.Batteries.Any())
             errors.Add("At least one battery must be configured in 'batteries'");
 
+        if (config.Polling.SurplusBufferW < 0)
+            errors.Add("polling.surplus_buffer_w must be >= 0");
+        if (config.Polling.SurplusStopBufferW < 0)
+            errors.Add("polling.surplus_stop_buffer_w must be >= 0");
+
+        // ML-05: validate ML feedback parameters to prevent disproportionate corrections
+        if (config.Ml.FeedbackSoftmaxCorrectionFactor < 0 || config.Ml.FeedbackSoftmaxCorrectionFactor > 50)
+            errors.Add("ml.feedback_softmax_correction_factor must be in [0, 50]");
+        if (config.Ml.FeedbackSoftmaxReduction < 0 || config.Ml.FeedbackSoftmaxReduction > 30)
+            errors.Add("ml.feedback_softmax_reduction must be in [0, 30]");
+        if (config.Ml.FeedbackPreventiveFactor < 0 || config.Ml.FeedbackPreventiveFactor > 10)
+            errors.Add("ml.feedback_preventive_factor must be in [0, 10]");
+        if (config.Ml.FeedbackMaxPreventiveCorrection < 0 || config.Ml.FeedbackMaxPreventiveCorrection > 50)
+            errors.Add("ml.feedback_max_preventive_correction must be in [0, 50]");
+        if (config.Ml.FeedbackPreventiveReduction < 0 || config.Ml.FeedbackPreventiveReduction > 20)
+            errors.Add("ml.feedback_preventive_reduction must be in [0, 20]");
+
         foreach (var b in config.Batteries)
         {
             if (b.CapacityWh <= 0)
@@ -62,6 +79,13 @@ public static class ConfigLoader
                 errors.Add($"Battery {b.Id} ({b.Name}): entities.soc is required");
             if (string.IsNullOrWhiteSpace(b.Entities.ChargePower))
                 errors.Add($"Battery {b.Id} ({b.Name}): entities.charge_power is required");
+        }
+
+        // Validate tariff slot time formats at load time (BUG-M01)
+        foreach (var slot in config.Tariff.Slots)
+        {
+            try { slot.ValidateTimeFormats(); }
+            catch (FormatException ex) { errors.Add(ex.Message); }
         }
 
         if (config.Heating.Enabled)

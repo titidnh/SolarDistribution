@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using SolarDistribution.Core.Repositories;
+using SolarDistribution.Worker.Configuration;
 
 namespace SolarDistribution.Worker.Services;
 
@@ -9,7 +10,7 @@ namespace SolarDistribution.Worker.Services;
 ///
 /// TRIGGERING:
 ///   Called by MlRetrainScheduler every hour (feedback check interval).
-///   The service detects by itself when a day has just ended (UTC date transition)
+///   The service detects by itself when a day has just ended (local date transition)
 ///   to avoid redundant aggregations during the day.
 ///   It can also be called in "force" mode to compute the balance for any day
 ///   (backfill or manual recomputation).
@@ -24,27 +25,31 @@ public class DailySummaryService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<DailySummaryService> _logger;
+    private readonly TimeZoneInfo _localTz;
 
-    // Last UTC day for which the balance was computed.
+    // Last local day for which the balance was computed.
     // Null at startup → first check computes yesterday if needed.
     private DateTime? _lastComputedDate;
 
     public DailySummaryService(
         IServiceScopeFactory scopeFactory,
-        ILogger<DailySummaryService> logger)
+        ILogger<DailySummaryService> logger,
+        SolarConfig config)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
+        _localTz = TimeZoneInfo.FindSystemTimeZoneById(config.Location.TimeZoneId);
     }
 
     /// <summary>
-    /// Checks whether the previous UTC day has been computed.
+    /// Checks whether the previous local day has been computed.
     /// If not, triggers aggregation and persists the result.
     /// Idempotent: multiple calls for the same date have no effect.
     /// </summary>
     public async Task CheckAndComputeYesterdayAsync(CancellationToken ct = default)
     {
-        var yesterday = DateTime.UtcNow.Date.AddDays(-1);
+        var nowLocal = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, _localTz);
+        var yesterday = nowLocal.Date.AddDays(-1);
 
         // Already computed for this date → nothing to do
         if (_lastComputedDate.HasValue && _lastComputedDate.Value.Date == yesterday.Date)

@@ -5,13 +5,16 @@ namespace SolarDistribution.Core.Services;
 public class HeatingOrchestratorService : IHeatingOrchestratorService
 {
     private readonly IHeatingPreheatMlService _preheatMl;
+    private readonly HeatingComfortOptions _comfort;
     private readonly ILogger<HeatingOrchestratorService> _logger;
 
     public HeatingOrchestratorService(
         IHeatingPreheatMlService preheatMl,
+        HeatingComfortOptions comfort,
         ILogger<HeatingOrchestratorService> logger)
     {
         _preheatMl = preheatMl;
+        _comfort = comfort;
         _logger = logger;
     }
 
@@ -29,6 +32,31 @@ public class HeatingOrchestratorService : IHeatingOrchestratorService
                 StartAtLocal: null,
                 TargetTempC: Math.Min(context.TargetTempC, 17.0),
                 Reason: "Occupancy mode is away/sleep: hold eco setpoint",
+                EstimatedMinutesToTarget: estimate.EstimatedMinutes,
+                EstimatedCostEur: estimatedCost);
+        }
+
+        // ── Comfort constraints override (BUG-M06) ──────────────────────────
+        // When temperature is critically low AND the ML-estimated ETA is too high,
+        // force immediate heating regardless of other conditions.
+        if (_comfort.Enabled
+            && context.CurrentTempC < _comfort.MinimumComfortTempC
+            && (context.TargetTempC - context.CurrentTempC) >= _comfort.CriticalDeltaTempC
+            && estimate.P90Minutes > _comfort.MaxMlEtaP90Minutes)
+        {
+            _logger.LogWarning(
+                "Comfort override: temp={Current:F1}°C < {Min:F1}°C, delta={Delta:F1}°C >= {Critical:F1}°C, " +
+                "p90 ETA={P90:F0}min > {Max:F0}min → forcing immediate heating",
+                context.CurrentTempC, _comfort.MinimumComfortTempC,
+                context.TargetTempC - context.CurrentTempC, _comfort.CriticalDeltaTempC,
+                estimate.P90Minutes, _comfort.MaxMlEtaP90Minutes);
+
+            return new HeatingDecision(
+                Action: HeatingActionType.HeatNow,
+                StartAtLocal: context.NowLocal,
+                TargetTempC: context.TargetTempC,
+                Reason: $"Comfort override: critically low temperature ({context.CurrentTempC:F1}°C), " +
+                        $"delta={context.TargetTempC - context.CurrentTempC:F1}°C, p90 ETA={estimate.P90Minutes:F0}min",
                 EstimatedMinutesToTarget: estimate.EstimatedMinutes,
                 EstimatedCostEur: estimatedCost);
         }
