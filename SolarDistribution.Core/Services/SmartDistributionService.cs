@@ -22,6 +22,14 @@ public class SmartDistributionService
     private double? _cachedYesterdaySelfSufficiency;
     private int _cachedYesterdayDoy = -1;
 
+    // ── Emergency charge hysteresis ──────────────────────────────────────────
+    // Tracks batteries currently in emergency grid charge mode.
+    // Entry:  SOC < EmergencyGridChargeBelowPercent (e.g. 20%)
+    // Exit:   SOC >= EmergencyGridChargeTargetPercent (e.g. 50%)
+    // Without this, emergency would stop as soon as SOC > 20% (next cycle),
+    // never reaching the configured target of 50%.
+    private readonly HashSet<int> _emergencyActiveBatteries = new();
+
     public SmartDistributionService(
         IBatteryDistributionService algo,
         IDistributionMLService ml,
@@ -116,10 +124,14 @@ public class SmartDistributionService
         foreach (var b in effective.Where(b => b.IsEmergencyGridCharge))
         {
             double target = b.EmergencyGridChargeTargetPercent ?? b.SoftMaxPercent;
+            bool isNewEmergency = b.EmergencyGridChargeBelowPercent.HasValue
+                && b.CurrentPercent < b.EmergencyGridChargeBelowPercent.Value;
             _logger.LogWarning(
-                "⚡ EMERGENCY grid charge — Battery {Id}: SOC {Soc:F1}% < threshold {Thr:F0}% " +
-                "— will charge to {Target:F0}% from grid (solar expected: {Solar})",
-                b.Id, b.CurrentPercent, b.EmergencyGridChargeBelowPercent, target,
+                "⚡ EMERGENCY grid charge — Battery {Id}: SOC {Soc:F1}% " +
+                "{Phase} target {Target:F0}% from grid (solar expected: {Solar})",
+                b.Id, b.CurrentPercent,
+                isNewEmergency ? $"< threshold {b.EmergencyGridChargeBelowPercent:F0}% — will charge to" : "— ongoing charge to",
+                target,
                 tariffCtx.SolarExpectedSoon ? "yes (skipped)" : "no");
         }
 
@@ -191,7 +203,7 @@ public class SmartDistributionService
     ///   charging when solar production is declining. This prevents overcharging when
     ///   the system can't maintain the planned charge rates.
     /// </summary>
-    private static IList<Battery> Apply(
+    private IList<Battery> Apply(
         IList<Battery> src,
         MLRecommendation? reco,
         TariffContext tariff,
@@ -200,6 +212,7 @@ public class SmartDistributionService
         double minGridChargeW = 100.0,
         double urgencyThresholdHours = 1.0)
     {
+        var emergencyActiveBatteries = _emergencyActiveBatteries;
         var localNow = DateTime.Now;
 
         return src.Select(b =>
@@ -249,9 +262,23 @@ public class SmartDistributionService
             bool solarWillArrive = tariff.HoursUntilSolar.HasValue
                 && tariff.HoursUntilSolar.Value < double.MaxValue;
 
-            bool isEmergency = b.EmergencyGridChargeBelowPercent.HasValue
-                && b.CurrentPercent < b.EmergencyGridChargeBelowPercent.Value
-                && !solarWillArrive;
+            // ── Emergency hysteresis ─────────────────────────────────────────
+            // Enter: SOC < EmergencyGridChargeBelowPercent (e.g. 20%)
+            // Stay:  ongoing emergency AND SOC < EmergencyGridChargeTargetPercent (e.g. 50%)
+            // Exit:  SOC >= target → emergency cleared
+            // Without hysteresis the emergency would end at SOC > 20% (next cycle)
+            // and the battery would never reach the configured target of 50%.
+            double emergencyTarget = b.EmergencyGridChargeTargetPercent ?? b.SoftMaxPercent;
+            bool enteringEmergency = b.EmergencyGridChargeBelowPercent.HasValue
+                && b.CurrentPercent < b.EmergencyGridChargeBelowPercent.Value;
+            bool ongoingEmergency = emergencyActiveBatteries.Contains(b.Id)
+                && b.CurrentPercent < emergencyTarget;
+            bool isEmergency = (enteringEmergency || ongoingEmergency) && !solarWillArrive;
+
+            if (isEmergency)
+                emergencyActiveBatteries.Add(b.Id);
+            else
+                emergencyActiveBatteries.Remove(b.Id);
 
             // Can self-consume before the slot ends?
             bool solarBeforeSlotEnd = false;
