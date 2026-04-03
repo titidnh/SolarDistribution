@@ -54,6 +54,7 @@ public class SmartDistributionService
         double? forecastTodayWh = null,
         double? forecastTomorrowWh = null,
         double? estimatedConsumptionNextHoursWh = null,
+        double? estimatedConsumptionAverageW = null,
         double? measuredConsumptionW = null,
         double? forecastThisHourWh = null,
         double? forecastNextHourWh = null,
@@ -117,7 +118,7 @@ public class SmartDistributionService
 
         if (mlReco is not null)
         {
-            effective = Apply(batteries, mlReco, tariffCtx, surplusW, wx);
+            effective = Apply(batteries, mlReco, tariffCtx, surplusW, wx, estimatedConsumptionAverageW: estimatedConsumptionAverageW);
             decisionEngine = mlReco.ConfidenceScore >= 0.75 ? "ML" : "ML-Fallback";
             _logger.LogInformation(
                 "ML: softMax={SoftMax:F1}%, preventive={Prev:F1}%, confidence={Conf:P0} [{Engine}]",
@@ -127,7 +128,7 @@ public class SmartDistributionService
         }
         else
         {
-            effective = Apply(batteries, null, tariffCtx, surplusW, wx);
+            effective = Apply(batteries, null, tariffCtx, surplusW, wx, estimatedConsumptionAverageW: estimatedConsumptionAverageW);
         }
 
         // ── 5. Log urgences + charge adaptative ──────────────────────────────
@@ -161,7 +162,22 @@ public class SmartDistributionService
         // Log lazy charge: eligible batteries waiting (GridChargeAllowedW == 0 in off-peak)
         if (tariffCtx.GridChargeAllowed)
         {
+            foreach (var b in effective.Where(b => b.IsWaitingForMeaningfulSolar && b.GridChargeAllowedW == 0 && !b.IsEmergencyGridCharge))
+            {
+                _logger.LogInformation(
+                    "⏳ Wait meaningful solar — Battery {Id}: SOC {Soc:F1}% (target {SoftMax:F0}%), " +
+                    "first usable solar in {SolarH:F1}h, reserve={Reserve:F0}Wh, expected load={Load:F0}Wh before solar [{Slot}]",
+                    b.Id,
+                    b.CurrentPercent,
+                    b.SoftMaxPercent,
+                    b.HoursUntilMeaningfulSolar ?? 0,
+                    b.FleetReserveAboveEmergencyWh ?? 0,
+                    b.ExpectedLoadBeforeMeaningfulSolarWh ?? 0,
+                    tariffCtx.ActiveSlotName);
+            }
+
             foreach (var b in effective.Where(b => b.GridChargeAllowedW == 0
+                && !b.IsWaitingForMeaningfulSolar
                 && !b.IsEmergencyGridCharge
                 && b.CurrentPercent < b.SoftMaxPercent - b.SocHysteresisPercent))
             {
@@ -219,16 +235,28 @@ public class SmartDistributionService
         TariffContext tariff,
         double surplusW,
         WeatherData? wx,
+        double? estimatedConsumptionAverageW = null,
         double minGridChargeW = 100.0,
         double urgencyThresholdHours = 1.0)
     {
         var emergencyActiveBatteries = _emergencyActiveBatteries;
-        var localNow = DateTime.Now;
+        double totalFleetReserveAboveEmergencyWh = src.Sum(GetUsableReserveAboveEmergencyWh);
 
         return src.Select(b =>
         {
             double baseSoftMax = reco?.RecommendedSoftMaxPercent ?? b.SoftMaxPercent;
             double softMax = baseSoftMax;
+            bool stableAroundBaseSoftMax = b.CurrentPercent >= baseSoftMax - b.SocHysteresisPercent;
+            double? hoursUntilMeaningfulSolar = GetHoursUntilMeaningfulSolarForBattery(b, tariff);
+            bool meaningfulSolarWillArrive = hoursUntilMeaningfulSolar.HasValue
+                && hoursUntilMeaningfulSolar.Value < double.MaxValue;
+            double? expectedLoadBeforeMeaningfulSolarWh = GetExpectedLoadBeforeMeaningfulSolarWh(
+                hoursUntilMeaningfulSolar,
+                estimatedConsumptionAverageW);
+            bool fleetCanWaitUntilMeaningfulSolar = CanFleetWaitUntilMeaningfulSolar(
+                totalFleetReserveAboveEmergencyWh,
+                hoursUntilMeaningfulSolar,
+                estimatedConsumptionAverageW);
 
             // ── J+1 Boost: bad tomorrow + favourable tariff → charge harder now ──
             // Logic: if ForecastTomorrow < threshold AND we are in a cheap slot (off-peak or
@@ -299,9 +327,14 @@ public class SmartDistributionService
                 && tariff.HoursRemainingInSlot.HasValue
                 && tariff.HoursRemainingInSlot.Value > 0
                 && tariff.HoursRemainingInSlot.Value < 1.0  // Last hour of slot
+                && !stableAroundBaseSoftMax          // Already stable near soft max → do not force hard max
                 && b.CurrentPercent < b.HardMaxPercent)    // Battery not already at max
             {
                 double energyNeededToHardMax = (b.HardMaxPercent - b.CurrentPercent) / 100.0 * b.CapacityWh;
+                bool batteryCanWaitForMeaningfulSolar = fleetCanWaitUntilMeaningfulSolar
+                    && meaningfulSolarWillArrive
+                    && (!b.EmergencyGridChargeBelowPercent.HasValue
+                        || b.CurrentPercent > b.EmergencyGridChargeBelowPercent.Value);
                 
                 // Check if solar is coming soon and could cover the charge demand
                 bool solarCanCoverDemand = false;
@@ -319,7 +352,7 @@ public class SmartDistributionService
                 }
 
                 // Charge to hard_max ONLY if solar won't cover the demand soon
-                if (!solarCanCoverDemand)
+                if (!solarCanCoverDemand && !batteryCanWaitForMeaningfulSolar)
                 {
                     softMax = b.HardMaxPercent;
                 }
@@ -361,11 +394,18 @@ public class SmartDistributionService
                 solarBeforeSlotEnd = solarArrivesBeforeSlotEnd && batteryCanWait;
             }
 
+            bool canWaitUntilMeaningfulSolar = !isEmergency
+                && tariff.IsFavorableForGrid
+                && fleetCanWaitUntilMeaningfulSolar
+                && meaningfulSolarWillArrive
+                && (!b.EmergencyGridChargeBelowPercent.HasValue
+                    || b.CurrentPercent > b.EmergencyGridChargeBelowPercent.Value);
+
             double gridAllowedW = 0;
 
             if (isEmergency)
                 gridAllowedW = b.MaxChargeRateW;
-            else if (solarBeforeSlotEnd)
+            else if (solarBeforeSlotEnd || canWaitUntilMeaningfulSolar)
                 gridAllowedW = 0;
             else if (tariff.GridChargeAllowed)
                 gridAllowedW = ComputeAdaptiveGridChargeW(
@@ -404,6 +444,10 @@ public class SmartDistributionService
                 EmergencyGridChargeBelowPercent = b.EmergencyGridChargeBelowPercent,
                 EmergencyGridChargeTargetPercent = isEmergency ? b.EmergencyGridChargeTargetPercent : null,
                 IsEmergencyGridCharge = isEmergency,
+                IsWaitingForMeaningfulSolar = canWaitUntilMeaningfulSolar,
+                HoursUntilMeaningfulSolar = hoursUntilMeaningfulSolar,
+                FleetReserveAboveEmergencyWh = canWaitUntilMeaningfulSolar ? totalFleetReserveAboveEmergencyWh : null,
+                ExpectedLoadBeforeMeaningfulSolarWh = canWaitUntilMeaningfulSolar ? expectedLoadBeforeMeaningfulSolarWh : null,
             };
         }).ToList();
     }
@@ -450,15 +494,6 @@ public class SmartDistributionService
     {
         double hoursRemaining = tariff.HoursRemainingInSlot ?? 0;
 
-        if (hoursRemaining <= urgencyThresholdHours)
-            return b.MaxChargeRateW;
-
-        bool solarAfterSlot = !tariff.HoursUntilSolar.HasValue
-            || tariff.HoursUntilSolar.Value >= double.MaxValue
-            || tariff.HoursUntilSolar.Value > hoursRemaining;
-        if (solarAfterSlot && hoursRemaining <= urgencyThresholdHours * 2)
-            return b.MaxChargeRateW;
-
         // ── FIX Bug #1: SOC hysteresis ────────────────────────────────────────────────────────
         // Original problem: when SOC reaches 90% then drops to 89.9%
         // (EcoFlow self-powered self-discharge), the calculation produced energyNeeded=1Wh
@@ -475,6 +510,15 @@ public class SmartDistributionService
         if (b.CurrentPercent >= rechargeThreshold)
             return 0;
         // ─────────────────────────────────────────────────────────────────────
+
+        if (hoursRemaining <= urgencyThresholdHours)
+            return b.MaxChargeRateW;
+
+        bool solarAfterSlot = !tariff.HoursUntilSolar.HasValue
+            || tariff.HoursUntilSolar.Value >= double.MaxValue
+            || tariff.HoursUntilSolar.Value > hoursRemaining;
+        if (solarAfterSlot && hoursRemaining <= urgencyThresholdHours * 2)
+            return b.MaxChargeRateW;
 
         double energyNeededWh = (softMaxPercent - b.CurrentPercent) / 100.0 * b.CapacityWh;
 
@@ -651,6 +695,63 @@ public class SmartDistributionService
         targetW *= intradaySolarReductionFactor;
 
         return Math.Clamp(targetW, minGridChargeW, b.MaxChargeRateW);
+    }
+
+    private static double GetUsableReserveAboveEmergencyWh(Battery battery)
+    {
+        double emergencyFloorPercent = battery.EmergencyGridChargeBelowPercent ?? battery.MinPercent;
+        return Math.Max(0, (battery.CurrentPercent - emergencyFloorPercent) / 100.0 * battery.CapacityWh);
+    }
+
+    private static bool CanFleetWaitUntilMeaningfulSolar(
+        double totalFleetReserveAboveEmergencyWh,
+        double? hoursUntilMeaningfulSolar,
+        double? estimatedConsumptionAverageW)
+    {
+        double? expectedLoadBeforeSolarWh = GetExpectedLoadBeforeMeaningfulSolarWh(
+            hoursUntilMeaningfulSolar,
+            estimatedConsumptionAverageW);
+
+        return expectedLoadBeforeSolarWh.HasValue
+            && totalFleetReserveAboveEmergencyWh >= expectedLoadBeforeSolarWh.Value;
+    }
+
+    private static double? GetExpectedLoadBeforeMeaningfulSolarWh(
+        double? hoursUntilMeaningfulSolar,
+        double? estimatedConsumptionAverageW)
+    {
+        if (!hoursUntilMeaningfulSolar.HasValue || hoursUntilMeaningfulSolar.Value >= double.MaxValue)
+            return null;
+
+        if (!estimatedConsumptionAverageW.HasValue)
+            return null;
+
+        return Math.Max(0, estimatedConsumptionAverageW.Value)
+            * Math.Max(0, hoursUntilMeaningfulSolar.Value);
+    }
+
+    private static double? GetHoursUntilMeaningfulSolarForBattery(Battery b, TariffContext tariff)
+    {
+        double thresholdW = b.HardwareMinChargeW;
+        if (thresholdW <= 0)
+            return tariff.HoursUntilSolar;
+
+        if (tariff.ForecastThisHourWh.HasValue && tariff.ForecastThisHourWh.Value >= thresholdW)
+            return 0;
+
+        if (tariff.SolcastHourlyCurveWh is { Length: > 0 })
+        {
+            for (int hour = 0; hour < tariff.SolcastHourlyCurveWh.Length; hour++)
+            {
+                if (tariff.SolcastHourlyCurveWh[hour] >= thresholdW)
+                    return hour;
+            }
+        }
+
+        if (tariff.ForecastNextHourWh.HasValue && tariff.ForecastNextHourWh.Value >= thresholdW)
+            return 1;
+
+        return tariff.HoursUntilSolar;
     }
 
     private static DistributionFeatures BuildFeatures(

@@ -74,6 +74,10 @@ public class Battery
     public double? EmergencyGridChargeTargetPercent { get; set; }
     public double? EmergencyGridChargeBelowPercent { get; set; }
     public bool IsEmergencyGridCharge { get; set; } = false;
+    public bool IsWaitingForMeaningfulSolar { get; set; } = false;
+    public double? HoursUntilMeaningfulSolar { get; set; }
+    public double? FleetReserveAboveEmergencyWh { get; set; }
+    public double? ExpectedLoadBeforeMeaningfulSolarWh { get; set; }
 
     // ── ML-8 : cycle de vie ───────────────────────────────────────────────────
 

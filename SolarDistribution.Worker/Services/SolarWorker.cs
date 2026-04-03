@@ -369,6 +369,7 @@ public class SolarWorker : BackgroundService
             forecastTodayWh: snapshot.ForecastTodayWh,
             forecastTomorrowWh: snapshot.ForecastTomorrowWh,
             estimatedConsumptionNextHoursWh: snapshot.EstimatedConsumptionNextHoursWh,
+            estimatedConsumptionAverageW: snapshot.EstimatedConsumptionAverageW,
             measuredConsumptionW: snapshot.ConsumptionW,
             forecastThisHourWh: snapshot.ForecastThisHourWh,
             forecastNextHourWh: snapshot.ForecastNextHourWh,

@@ -38,6 +38,11 @@ public record HaSnapshot(
     /// Null if insufficient data or entities not configured.
     /// </summary>
     double? EstimatedConsumptionNextHoursWh,
+    /// <summary>
+    /// Estimated average household consumption power (W) used as the base load
+    /// projection before multiplying by the configured horizon.
+    /// </summary>
+    double? EstimatedConsumptionAverageW,
     List<BatteryReading> Batteries,
     DateTime ReadAt
 );
@@ -156,6 +161,7 @@ public class HomeAssistantDataReader
 
         // ── Consumption rolling average + projection ─────────────────────────
         double? estimatedConsumptionNextHoursWh = null;
+        double? estimatedConsumptionAverageW = null;
 
         int rollingWindow = _config.Solar.ConsumptionRollingWindowCycles;
         double projectionHours = _config.Solar.ConsumptionProjectionHours;
@@ -178,14 +184,16 @@ public class HomeAssistantDataReader
                 // off-peak hours. The multiplier adjusts the flat average to better
                 // reflect expected consumption in the upcoming projection window.
                 double todMultiplier = GetTimeOfDayConsumptionMultiplier(DateTime.Now.Hour);
-                estimatedConsumptionNextHoursWh = rollingAvgW.Value * todMultiplier * projectionHours;
+                estimatedConsumptionAverageW = rollingAvgW.Value * todMultiplier;
+                estimatedConsumptionNextHoursWh = estimatedConsumptionAverageW.Value * projectionHours;
                 _logger.LogDebug(
                     "Load forecast: rolling avg={Avg:F0}W (last {N} cycles) × ToD={Tod:F2} × {H:F1}h = {Wh:F0}Wh estimated consumption",
                     rollingAvgW.Value, rollingWindow, todMultiplier, projectionHours, estimatedConsumptionNextHoursWh);
             }
             else if (consumptionW is not null)
             {
-                estimatedConsumptionNextHoursWh = consumptionW.Value * projectionHours;
+                estimatedConsumptionAverageW = consumptionW.Value;
+                estimatedConsumptionNextHoursWh = estimatedConsumptionAverageW.Value * projectionHours;
                 _logger.LogDebug(
                     "Load forecast: no DB history yet — using live consumption={W:F0}W × {H:F1}h = {Wh:F0}Wh",
                     consumptionW.Value, projectionHours, estimatedConsumptionNextHoursWh);
@@ -410,7 +418,7 @@ public class HomeAssistantDataReader
         return new HaSnapshot(surplusW, productionW, consumptionW,
             forecastTodayWh, forecastTomorrowWh,
             forecastThisHourWh, forecastNextHourWh, forecastRemainingTodayWh,
-            zoneConsumptionW, estimatedConsumptionNextHoursWh,
+            zoneConsumptionW, estimatedConsumptionNextHoursWh, estimatedConsumptionAverageW,
             readings, DateTime.UtcNow);
     }
 
