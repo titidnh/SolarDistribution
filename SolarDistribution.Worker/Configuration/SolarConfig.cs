@@ -494,6 +494,25 @@ public class BatteryConfig
     public double IdleChargeW { get; set; } = 100;
 
     /// <summary>
+    /// Estimated passive self-discharge (% SOC lost per hour) used to project
+    /// battery SOC before meaningful solar arrives.
+    ///
+    /// Default 0 → conservative behaviour: the battery is assumed not to drift
+    /// while waiting for solar.
+    /// </summary>
+    public double SelfDischargePercentPerHour { get; set; } = 0.0;
+
+    /// <summary>
+    /// Optional preventive-charge mode for batteries where only the remaining
+    /// percentage matters before solar returns.
+    ///
+    /// False (default): off-peak preventive charge is triggered if projected SOC
+    /// before meaningful solar drops below MinPercent.
+    /// True: off-peak preventive charge is triggered only if projected SOC reaches 0%.
+    /// </summary>
+    public bool PreventiveChargeOnlyIfEmptyBeforeSolar { get; set; } = false;
+
+    /// <summary>
     /// SOC dead-band (%) around SoftMax target for off-peak grid charge (Fix Bug #1).
     ///
     /// Example: SoftMaxPercent=90, SocHysteresisPercent=2

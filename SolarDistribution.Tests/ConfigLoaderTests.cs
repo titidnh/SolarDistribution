@@ -31,6 +31,10 @@ namespace SolarDistribution.Tests
             Assert.AreEqual("sensor.house_presence_mode", config.Heating.PresenceModeEntity, "Heating.PresenceModeEntity mismatch");
             Assert.AreEqual(180, config.Heating.MlTrainingWindowDays, "Heating.MlTrainingWindowDays mismatch");
             Assert.AreEqual(30, config.Heating.PurgeCompressionAgeDays, "Heating.PurgeCompressionAgeDays mismatch");
+
+            Assert.IsTrue(config.Batteries.Count >= 2, "At least two batteries are expected in config.yaml for sample assertions");
+            Assert.AreEqual(0.0, config.Batteries[0].SelfDischargePercentPerHour, "Battery[0].SelfDischargePercentPerHour mismatch");
+            Assert.IsFalse(config.Batteries[0].PreventiveChargeOnlyIfEmptyBeforeSolar, "Battery[0].PreventiveChargeOnlyIfEmptyBeforeSolar mismatch");
         }
     }
 }

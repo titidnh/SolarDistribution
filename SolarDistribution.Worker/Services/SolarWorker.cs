@@ -477,6 +477,8 @@ public class SolarWorker : BackgroundService
                 Priority = bc.Priority,
                 HardwareMinChargeW = bc.HardwareMinChargeW,
                 IdleChargeW = effectiveIdleChargeW,
+                SelfDischargePercentPerHour = bc.SelfDischargePercentPerHour,
+                PreventiveChargeOnlyIfEmptyBeforeSolar = bc.PreventiveChargeOnlyIfEmptyBeforeSolar,
                 SocHysteresisPercent = bc.SocHysteresisPercent,
                 EmergencyGridChargeBelowPercent = bc.EmergencyGridChargeBelowPercent,
                 EmergencyGridChargeTargetPercent = bc.EmergencyGridChargeTargetPercent,

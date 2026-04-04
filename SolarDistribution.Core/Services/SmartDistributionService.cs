@@ -162,6 +162,19 @@ public class SmartDistributionService
         // Log lazy charge: eligible batteries waiting (GridChargeAllowedW == 0 in off-peak)
         if (tariffCtx.GridChargeAllowed)
         {
+            foreach (var b in effective.Where(b => b.IsPreventiveGridChargeSkippedUntilSolar && b.GridChargeAllowedW == 0 && !b.IsEmergencyGridCharge))
+            {
+                _logger.LogInformation(
+                    "⏳ Skip preventive HC charge — Battery {Id}: SOC {Soc:F1}% stays above floor {Floor:F1}% " +
+                    "at first usable solar ({Projected:F1}% in {SolarH:F1}h) [{Slot}]",
+                    b.Id,
+                    b.CurrentPercent,
+                    b.PreventiveChargeFloorPercent ?? 0,
+                    b.ProjectedPercentAtMeaningfulSolar ?? b.CurrentPercent,
+                    b.HoursUntilMeaningfulSolar ?? 0,
+                    tariffCtx.ActiveSlotName);
+            }
+
             foreach (var b in effective.Where(b => b.IsWaitingForMeaningfulSolar && b.GridChargeAllowedW == 0 && !b.IsEmergencyGridCharge))
             {
                 _logger.LogInformation(
@@ -178,6 +191,7 @@ public class SmartDistributionService
 
             foreach (var b in effective.Where(b => b.GridChargeAllowedW == 0
                 && !b.IsWaitingForMeaningfulSolar
+                && !b.IsPreventiveGridChargeSkippedUntilSolar
                 && !b.IsEmergencyGridCharge
                 && b.CurrentPercent < b.SoftMaxPercent - b.SocHysteresisPercent))
             {
@@ -240,7 +254,6 @@ public class SmartDistributionService
         double urgencyThresholdHours = 1.0)
     {
         var emergencyActiveBatteries = _emergencyActiveBatteries;
-        double totalFleetReserveAboveEmergencyWh = src.Sum(GetUsableReserveAboveEmergencyWh);
 
         return src.Select(b =>
         {
@@ -250,13 +263,14 @@ public class SmartDistributionService
             double? hoursUntilMeaningfulSolar = GetHoursUntilMeaningfulSolarForBattery(b, tariff);
             bool meaningfulSolarWillArrive = hoursUntilMeaningfulSolar.HasValue
                 && hoursUntilMeaningfulSolar.Value < double.MaxValue;
-            double? expectedLoadBeforeMeaningfulSolarWh = GetExpectedLoadBeforeMeaningfulSolarWh(
-                hoursUntilMeaningfulSolar,
-                estimatedConsumptionAverageW);
-            bool fleetCanWaitUntilMeaningfulSolar = CanFleetWaitUntilMeaningfulSolar(
-                totalFleetReserveAboveEmergencyWh,
-                hoursUntilMeaningfulSolar,
-                estimatedConsumptionAverageW);
+            double? projectedPercentAtMeaningfulSolar = GetProjectedPercentAtMeaningfulSolar(
+                b,
+                hoursUntilMeaningfulSolar);
+            double preventiveChargeFloorPercent = GetPreventiveChargeFloorPercent(b);
+            bool shouldUsePreventiveGridCharge = ShouldUsePreventiveGridChargeBeforeMeaningfulSolar(
+                b,
+                projectedPercentAtMeaningfulSolar,
+                meaningfulSolarWillArrive);
 
             // ── J+1 Boost: bad tomorrow + favourable tariff → charge harder now ──
             // Logic: if ForecastTomorrow < threshold AND we are in a cheap slot (off-peak or
@@ -331,8 +345,8 @@ public class SmartDistributionService
                 && b.CurrentPercent < b.HardMaxPercent)    // Battery not already at max
             {
                 double energyNeededToHardMax = (b.HardMaxPercent - b.CurrentPercent) / 100.0 * b.CapacityWh;
-                bool batteryCanWaitForMeaningfulSolar = fleetCanWaitUntilMeaningfulSolar
-                    && meaningfulSolarWillArrive
+                bool batteryCanWaitForMeaningfulSolar = meaningfulSolarWillArrive
+                    && !shouldUsePreventiveGridCharge
                     && (!b.EmergencyGridChargeBelowPercent.HasValue
                         || b.CurrentPercent > b.EmergencyGridChargeBelowPercent.Value);
                 
@@ -379,25 +393,10 @@ public class SmartDistributionService
             else
                 emergencyActiveBatteries.Remove(b.Id);
 
-            // Can self-consume before the slot ends?
-            bool solarBeforeSlotEnd = false;
-            if (!isEmergency
+            bool skipPreventiveGridChargeUntilSolar = !isEmergency
                 && tariff.IsFavorableForGrid
-                && tariff.HoursRemainingInSlot.HasValue
-                && tariff.HoursUntilSolar.HasValue
-                && tariff.HoursUntilSolar.Value < double.MaxValue)
-            {
-                bool solarArrivesBeforeSlotEnd =
-                    tariff.HoursUntilSolar.Value <= tariff.HoursRemainingInSlot.Value;
-                bool batteryCanWait = !b.EmergencyGridChargeBelowPercent.HasValue
-                    || b.CurrentPercent > b.EmergencyGridChargeBelowPercent.Value;
-                solarBeforeSlotEnd = solarArrivesBeforeSlotEnd && batteryCanWait;
-            }
-
-            bool canWaitUntilMeaningfulSolar = !isEmergency
-                && tariff.IsFavorableForGrid
-                && fleetCanWaitUntilMeaningfulSolar
                 && meaningfulSolarWillArrive
+                && !shouldUsePreventiveGridCharge
                 && (!b.EmergencyGridChargeBelowPercent.HasValue
                     || b.CurrentPercent > b.EmergencyGridChargeBelowPercent.Value);
 
@@ -405,7 +404,7 @@ public class SmartDistributionService
 
             if (isEmergency)
                 gridAllowedW = b.MaxChargeRateW;
-            else if (solarBeforeSlotEnd || canWaitUntilMeaningfulSolar)
+            else if (skipPreventiveGridChargeUntilSolar)
                 gridAllowedW = 0;
             else if (tariff.GridChargeAllowed)
                 gridAllowedW = ComputeAdaptiveGridChargeW(
@@ -444,10 +443,13 @@ public class SmartDistributionService
                 EmergencyGridChargeBelowPercent = b.EmergencyGridChargeBelowPercent,
                 EmergencyGridChargeTargetPercent = isEmergency ? b.EmergencyGridChargeTargetPercent : null,
                 IsEmergencyGridCharge = isEmergency,
-                IsWaitingForMeaningfulSolar = canWaitUntilMeaningfulSolar,
+                IsWaitingForMeaningfulSolar = false,
+                IsPreventiveGridChargeSkippedUntilSolar = skipPreventiveGridChargeUntilSolar,
                 HoursUntilMeaningfulSolar = hoursUntilMeaningfulSolar,
-                FleetReserveAboveEmergencyWh = canWaitUntilMeaningfulSolar ? totalFleetReserveAboveEmergencyWh : null,
-                ExpectedLoadBeforeMeaningfulSolarWh = canWaitUntilMeaningfulSolar ? expectedLoadBeforeMeaningfulSolarWh : null,
+                ProjectedPercentAtMeaningfulSolar = projectedPercentAtMeaningfulSolar,
+                PreventiveChargeFloorPercent = skipPreventiveGridChargeUntilSolar ? preventiveChargeFloorPercent : null,
+                FleetReserveAboveEmergencyWh = null,
+                ExpectedLoadBeforeMeaningfulSolarWh = null,
             };
         }).ToList();
     }
@@ -701,6 +703,36 @@ public class SmartDistributionService
     {
         double emergencyFloorPercent = battery.EmergencyGridChargeBelowPercent ?? battery.MinPercent;
         return Math.Max(0, (battery.CurrentPercent - emergencyFloorPercent) / 100.0 * battery.CapacityWh);
+    }
+
+    private static double? GetProjectedPercentAtMeaningfulSolar(
+        Battery battery,
+        double? hoursUntilMeaningfulSolar)
+    {
+        if (!hoursUntilMeaningfulSolar.HasValue || hoursUntilMeaningfulSolar.Value >= double.MaxValue)
+            return null;
+
+        double hours = Math.Max(0, hoursUntilMeaningfulSolar.Value);
+        double selfDischarge = Math.Max(0, battery.SelfDischargePercentPerHour);
+
+        return Math.Max(0, battery.CurrentPercent - selfDischarge * hours);
+    }
+
+    private static double GetPreventiveChargeFloorPercent(Battery battery)
+        => battery.PreventiveChargeOnlyIfEmptyBeforeSolar ? 0.0 : battery.MinPercent;
+
+    private static bool ShouldUsePreventiveGridChargeBeforeMeaningfulSolar(
+        Battery battery,
+        double? projectedPercentAtMeaningfulSolar,
+        bool meaningfulSolarWillArrive)
+    {
+        if (!meaningfulSolarWillArrive || !projectedPercentAtMeaningfulSolar.HasValue)
+            return true;
+
+        if (battery.PreventiveChargeOnlyIfEmptyBeforeSolar)
+            return projectedPercentAtMeaningfulSolar.Value <= 0.01;
+
+        return projectedPercentAtMeaningfulSolar.Value < battery.MinPercent;
     }
 
     private static bool CanFleetWaitUntilMeaningfulSolar(

@@ -87,8 +87,8 @@ public class SmartDistributionServiceTests
     }
 
     [Test]
-    [Description("Preventive HC charge is skipped when fleet reserve can hold until the first meaningful solar window")]
-    public void Apply_FleetCanHoldUntilMeaningfulSolar_SkipsPreventiveSoftMaxCharge()
+    [Description("Preventive HC charge is skipped when projected SOC stays above MinPercent at meaningful solar")]
+    public void Apply_ProjectedSocStaysAboveMinPercent_SkipsPreventiveSoftMaxCharge()
     {
         var battery = Battery(currentPercent: 40, softMax: 80, hardMax: 90, hardwareMinChargeW: 100);
         var tariff = Tariff(
@@ -103,14 +103,20 @@ public class SmartDistributionServiceTests
         var updated = effective.Should().ContainSingle().Subject;
 
         updated.GridChargeAllowedW.Should().Be(0,
-            "40% SOC still leaves enough reserve above the 15% emergency floor to cover 4h at 40W");
+            "with self-discharge at 0%/h, 40% SOC is still above the 20% floor when solar returns");
+        updated.IsPreventiveGridChargeSkippedUntilSolar.Should().BeTrue();
     }
 
     [Test]
-    [Description("Preventive HC charge remains allowed when fleet reserve cannot hold until meaningful solar")]
-    public void Apply_FleetCannotHoldUntilMeaningfulSolar_AllowsPreventiveCharge()
+    [Description("Preventive HC charge becomes allowed when self-discharge pushes projected SOC below MinPercent")]
+    public void Apply_ProjectedSocBelowMinPercent_AllowsPreventiveCharge()
     {
-        var battery = Battery(currentPercent: 40, softMax: 80, hardMax: 90, hardwareMinChargeW: 100);
+        var battery = Battery(
+            currentPercent: 22,
+            softMax: 80,
+            hardMax: 90,
+            hardwareMinChargeW: 100,
+            selfDischargePercentPerHour: 1.0);
         var tariff = Tariff(
             hoursRemainingInSlot: 0.8,
             hoursUntilSolar: 4.0,
@@ -123,7 +129,62 @@ public class SmartDistributionServiceTests
         var updated = effective.Should().ContainSingle().Subject;
 
         updated.GridChargeAllowedW.Should().BeGreaterThan(0,
-            "40% SOC does not leave enough reserve above the 15% emergency floor to cover 4h at 80W");
+            "22% SOC with 1%/h self-discharge drops below the 20% floor before solar returns");
+        updated.IsPreventiveGridChargeSkippedUntilSolar.Should().BeFalse();
+    }
+
+    [Test]
+    [Description("Optional empty-before-solar mode skips preventive HC charge while projected SOC stays above 0%")]
+    public void Apply_EmptyBeforeSolarMode_WithProjectedPercentRemaining_SkipsPreventiveCharge()
+    {
+        var battery = Battery(
+            currentPercent: 5,
+            softMax: 80,
+            hardMax: 90,
+            hardwareMinChargeW: 100,
+            preventiveChargeOnlyIfEmptyBeforeSolar: true);
+        var tariff = Tariff(
+            hoursRemainingInSlot: 0.8,
+            hoursUntilSolar: 4.0,
+            hasLowForecastTomorrow: true,
+            eveningBoostPercent: 10,
+            forecastNext3HoursWh: 0,
+            solcastCurveWh: [0, 0, 0]);
+
+        var effective = InvokeApply(new[] { battery }, tariff, estimatedConsumptionAverageW: 80);
+        var updated = effective.Should().ContainSingle().Subject;
+
+        updated.GridChargeAllowedW.Should().Be(0,
+            "the optional mode must not charge from HC while some projected SOC still remains before solar");
+        updated.PreventiveChargeFloorPercent.Should().Be(0);
+        updated.IsPreventiveGridChargeSkippedUntilSolar.Should().BeTrue();
+    }
+
+    [Test]
+    [Description("Optional empty-before-solar mode allows preventive HC charge once projected SOC reaches 0%")]
+    public void Apply_EmptyBeforeSolarMode_WhenProjectedEmpty_AllowsPreventiveCharge()
+    {
+        var battery = Battery(
+            currentPercent: 5,
+            softMax: 80,
+            hardMax: 90,
+            hardwareMinChargeW: 100,
+            selfDischargePercentPerHour: 1.0,
+            preventiveChargeOnlyIfEmptyBeforeSolar: true);
+        var tariff = Tariff(
+            hoursRemainingInSlot: 0.8,
+            hoursUntilSolar: 6.0,
+            hasLowForecastTomorrow: true,
+            eveningBoostPercent: 10,
+            forecastNext3HoursWh: 0,
+            solcastCurveWh: [0, 0, 0]);
+
+        var effective = InvokeApply(new[] { battery }, tariff, estimatedConsumptionAverageW: 80);
+        var updated = effective.Should().ContainSingle().Subject;
+
+        updated.GridChargeAllowedW.Should().BeGreaterThan(0,
+            "once the projected SOC reaches 0% before solar, the battery should use HC preventively");
+        updated.IsPreventiveGridChargeSkippedUntilSolar.Should().BeFalse();
     }
 
     private IList<Battery> InvokeApply(
@@ -145,7 +206,9 @@ public class SmartDistributionServiceTests
         double currentPercent,
         double softMax,
         double hardMax,
-        double hardwareMinChargeW) => new()
+        double hardwareMinChargeW,
+        double selfDischargePercentPerHour = 0,
+        bool preventiveChargeOnlyIfEmptyBeforeSolar = false) => new()
     {
         Id = 1,
         CapacityWh = 1024,
@@ -156,6 +219,8 @@ public class SmartDistributionServiceTests
         CurrentPercent = currentPercent,
         Priority = 1,
         HardwareMinChargeW = hardwareMinChargeW,
+        SelfDischargePercentPerHour = selfDischargePercentPerHour,
+        PreventiveChargeOnlyIfEmptyBeforeSolar = preventiveChargeOnlyIfEmptyBeforeSolar,
         SocHysteresisPercent = 2.0,
         EmergencyGridChargeBelowPercent = 20,
         EmergencyGridChargeTargetPercent = 50,

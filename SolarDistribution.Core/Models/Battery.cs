@@ -37,6 +37,26 @@ public class Battery
     public double IdleChargeW { get; set; } = 0;
 
     /// <summary>
+    /// Estimated passive self-discharge (% SOC lost per hour) used when deciding
+    /// whether preventive off-peak charging is needed before meaningful solar arrives.
+    ///
+    /// Default 0 → conservative behaviour: no decay is assumed while waiting.
+    /// Configured via BatteryConfig.SelfDischargePercentPerHour.
+    /// </summary>
+    public double SelfDischargePercentPerHour { get; set; } = 0.0;
+
+    /// <summary>
+    /// Optional preventive-charge mode for batteries where only the remaining
+    /// percentage matters before solar returns.
+    ///
+    /// False (default): preventive off-peak charge is allowed only if the projected
+    /// SOC before meaningful solar drops below MinPercent.
+    /// True: preventive off-peak charge is allowed only if the projected SOC before
+    /// meaningful solar reaches 0%.
+    /// </summary>
+    public bool PreventiveChargeOnlyIfEmptyBeforeSolar { get; set; } = false;
+
+    /// <summary>
     /// Minimum power below which the battery does not accept charging (W).
     ///
     /// Hardware constraint: some batteries (e.g. EcoFlow Delta) refuse or ignore
@@ -75,7 +95,10 @@ public class Battery
     public double? EmergencyGridChargeBelowPercent { get; set; }
     public bool IsEmergencyGridCharge { get; set; } = false;
     public bool IsWaitingForMeaningfulSolar { get; set; } = false;
+    public bool IsPreventiveGridChargeSkippedUntilSolar { get; set; } = false;
     public double? HoursUntilMeaningfulSolar { get; set; }
+    public double? ProjectedPercentAtMeaningfulSolar { get; set; }
+    public double? PreventiveChargeFloorPercent { get; set; }
     public double? FleetReserveAboveEmergencyWh { get; set; }
     public double? ExpectedLoadBeforeMeaningfulSolarWh { get; set; }
 

@@ -456,6 +456,23 @@ batteries:
     # Mettre à 0 pour désactiver (aucun seuil minimum).
     hardware_min_charge_w: 100
 
+    # ── Projection avant retour du soleil (charge préventive HC) ─────────────
+    # self_discharge_percent_per_hour : dérive SOC passive estimée pendant l'absence
+    # de soleil. Utilisée pour projeter le % restant au moment du premier soleil
+    # utile pour CETTE batterie.
+    #   Défaut 0.0 → comportement conservateur : on considère qu'elle garde son %.
+    #   Exemple 1.0 → batterie à 22% avec soleil utile dans 4h → projection 18%.
+    self_discharge_percent_per_hour: 0.0
+
+    # preventive_charge_only_if_empty_before_solar : mode optionnel.
+    #   false (défaut) : la charge préventive HC démarre seulement si la projection
+    #                    passe SOUS min_percent à l'arrivée du soleil utile.
+    #   true          : la charge préventive HC démarre seulement si la projection
+    #                    tombe à 0% avant le soleil utile.
+    # Pratique pour les batteries où vous voulez simplement dire :
+    #   "tant qu'il reste encore du %, ne recharge pas en heures creuses".
+    preventive_charge_only_if_empty_before_solar: false
+
     # ── Anti-oscillation IdleCharge ───────────────────────────────────────────
     # Zone morte autour du seuil d'activation IdleChargeW.
     #
@@ -604,6 +621,8 @@ batteries:
     hard_max_percent: 100
     idle_charge_w: 100
     hardware_min_charge_w: 100  # Seuil physique hardware — voir batterie 1 pour la doc complète
+    self_discharge_percent_per_hour: 0.0
+    preventive_charge_only_if_empty_before_solar: false
     idle_stop_buffer_w: 30      # Zone morte IdleCharge — voir batterie 1 pour la doc complète
     soc_hysteresis_percent: 2.0 # Zone morte SOC — voir batterie 1 pour la doc complète
 

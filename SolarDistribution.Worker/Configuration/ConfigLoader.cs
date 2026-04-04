@@ -75,6 +75,8 @@ public static class ConfigLoader
                 errors.Add($"Battery {b.Id} ({b.Name}): capacity_wh must be > 0");
             if (b.MaxChargeRateW <= 0)
                 errors.Add($"Battery {b.Id} ({b.Name}): max_charge_rate_w must be > 0");
+            if (b.SelfDischargePercentPerHour < 0)
+                errors.Add($"Battery {b.Id} ({b.Name}): self_discharge_percent_per_hour must be >= 0");
             if (string.IsNullOrWhiteSpace(b.Entities.Soc))
                 errors.Add($"Battery {b.Id} ({b.Name}): entities.soc is required");
             if (string.IsNullOrWhiteSpace(b.Entities.ChargePower))
