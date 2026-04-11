@@ -372,21 +372,24 @@ public class SmartDistributionService
                 }
             }
 
-            bool solarWillArrive = tariff.HoursUntilSolar.HasValue
-                && tariff.HoursUntilSolar.Value < double.MaxValue;
-
             // ── Emergency hysteresis ─────────────────────────────────────────
             // Enter: SOC < EmergencyGridChargeBelowPercent (e.g. 20%)
             // Stay:  ongoing emergency AND SOC < EmergencyGridChargeTargetPercent (e.g. 50%)
             // Exit:  SOC >= target → emergency cleared
             // Without hysteresis the emergency would end at SOC > 20% (next cycle)
             // and the battery would never reach the configured target of 50%.
+            //
+            // NOTE: solarWillArrive is intentionally NOT used here.
+            // Emergency is a safety mechanism that must fire whenever SOC drops
+            // below the critical threshold, regardless of solar forecast.
+            // Solar forecast doesn't help a battery that is already critically low
+            // (forecast ≠ available power NOW, especially under 100% cloud cover).
             double emergencyTarget = b.EmergencyGridChargeTargetPercent ?? b.SoftMaxPercent;
             bool enteringEmergency = b.EmergencyGridChargeBelowPercent.HasValue
                 && b.CurrentPercent < b.EmergencyGridChargeBelowPercent.Value;
             bool ongoingEmergency = emergencyActiveBatteries.Contains(b.Id)
                 && b.CurrentPercent < emergencyTarget;
-            bool isEmergency = (enteringEmergency || ongoingEmergency) && !solarWillArrive;
+            bool isEmergency = enteringEmergency || ongoingEmergency;
 
             if (isEmergency)
                 emergencyActiveBatteries.Add(b.Id);
