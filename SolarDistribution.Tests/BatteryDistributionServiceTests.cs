@@ -306,6 +306,31 @@ public class BatteryDistributionServiceTests
     }
 
     [Test]
+    [Description("IdleCharge hold — when SOC is above HardMax and surplus remains, keep minimum charge to avoid ON/OFF cycling")]
+    public void IdleCharge_StaysApplied_WhenSocIsAboveHardMax_AndSurplusIsAvailable()
+    {
+        var battery = new Battery
+        {
+            Id = 1,
+            CapacityWh = 1024,
+            MaxChargeRateW = 1000,
+            MinPercent = 20,
+            CurrentPercent = 90.5,
+            Priority = 1,
+            SoftMaxPercent = 80,
+            HardMaxPercent = 90,
+            HardwareMinChargeW = 100,
+            IdleChargeW = 100
+        };
+
+        var result = _sut.Distribute(surplusW: 300, new[] { battery });
+
+        Alloc(result, 1).Should().BeApproximately(100, Tolerance,
+            "SOC can momentarily exceed HardMax; with strong surplus we keep IdleCharge to avoid self-powered ON/OFF toggling");
+        result.Allocations.First(a => a.BatteryId == 1).Reason.Should().Contain("Idle hold");
+    }
+
+    [Test]
     [Description("HardwareMin — hardware_min_charge_w = 0: no guard, IdleCharge applied even with low surplus")]
     public void HardwareMin_IdleCharge_Applied_WhenHardwareMinIsZero()
     {

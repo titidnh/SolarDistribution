@@ -26,7 +26,7 @@ namespace SolarDistribution.Core.Services;
 /// │  POST-DISTRIBUTION — IdleChargeW                                          │
 /// │    Any battery allocated 0 W AND at its target (>= SoftMax) receives      │
 /// │    IdleChargeW to keep the BMS active.                                    │
-/// │    Conditions: total=0W, SOC >= SoftMax, SOC <= HardMax,                  │
+/// │    Conditions: total=0W, SOC >= SoftMax,                                   │
 /// │                 surplus >= IdleChargeW (Fix Bug #5).                      │
 /// │    FIX Bug #4: IdleChargeW disabled if surplusW = 0.                      │
 /// │    FIX Bug #5: IdleChargeW disabled if surplus < IdleChargeW —            │
@@ -128,8 +128,7 @@ public class BatteryDistributionService : IBatteryDistributionService
         {
             double total = allocated[b.Id] + gridAlloc[b.Id];
             if (total <= 0.01
-                && currentPct[b.Id] >= b.SoftMaxPercent - 0.1  // battery at its target (SoftMax reached)
-                && currentPct[b.Id] <= b.HardMaxPercent         // but not beyond hard max
+                && currentPct[b.Id] >= b.SoftMaxPercent - 0.1  // battery at/above target (SoftMax reached)
                 && b.IdleChargeW > 0
                 && surplusW > 0                                  // FIX Bug #4: no IdleCharge without solar surplus
                 && (b.HardwareMinChargeW <= 0 || surplusW >= b.HardwareMinChargeW) // hardware threshold
@@ -147,7 +146,6 @@ public class BatteryDistributionService : IBatteryDistributionService
                 double total = allocated[b.Id] + gridAlloc[b.Id];
                 if (total <= 0.01
                     && currentPct[b.Id] >= b.SoftMaxPercent - 0.1
-                    && currentPct[b.Id] <= b.HardMaxPercent
                     && b.IdleChargeW > 0
                     && surplusW > 0
                     && (b.HardwareMinChargeW <= 0 || surplusW >= b.HardwareMinChargeW)
