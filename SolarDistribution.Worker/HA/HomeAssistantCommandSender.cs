@@ -153,6 +153,25 @@ public class HomeAssistantCommandSender
             _cache.UpdateZoneOnly(battConfig.Id, currentIsZero);
         }
 
+        // -- If charging is disabled (currentIsZero), don't send any value ---
+        if (currentIsZero)
+        {
+            _logger.LogDebug(
+                "Battery {Id} ({Name}): charging disabled (0W or below HardwareMinChargeW) — no value sent",
+                battConfig.Id, battConfig.Name);
+            
+            // Disable ChargeSwitch if present
+            if (battConfig.Entities.ChargeSwitch is not null)
+            {
+                _logger.LogDebug("Battery {Id}: disabling charge switch {Switch}",
+                    battConfig.Id, battConfig.Entities.ChargeSwitch);
+                await _client.TurnOffSwitchAsync(battConfig.Entities.ChargeSwitch, ct);
+            }
+            
+            _cache.Update(battConfig.Id, 0, currentIsZero);
+            return true;
+        }
+
         // ── 2. Power delta check in W ────────────────────────────────────────
         // Placed AFTER zone actions: affects only HA value write,
         // not already-processed zone transitions above.
@@ -173,25 +192,13 @@ public class HomeAssistantCommandSender
         // ── 3. Enable / disable ChargeSwitch ─────────────────────────────────
         if (battConfig.Entities.ChargeSwitch is not null)
         {
-            if (!currentIsZero)
-            {
-                _logger.LogDebug("Battery {Id}: enabling charge switch {Switch}",
-                    battConfig.Id, battConfig.Entities.ChargeSwitch);
-                await _client.TurnOnSwitchAsync(battConfig.Entities.ChargeSwitch, ct);
-            }
-            else
-            {
-                _logger.LogDebug("Battery {Id}: disabling charge switch {Switch} (0W or below HardwareMinChargeW)",
-                    battConfig.Id, battConfig.Entities.ChargeSwitch);
-                await _client.TurnOffSwitchAsync(battConfig.Entities.ChargeSwitch, ct);
-                // Don't send any value when disabling charge (switch manages power)
-                _cache.Update(battConfig.Id, 0, currentIsZero);
-                return true;
-            }
+            _logger.LogDebug("Battery {Id}: enabling charge switch {Switch}",
+                battConfig.Id, battConfig.Entities.ChargeSwitch);
+            await _client.TurnOnSwitchAsync(battConfig.Entities.ChargeSwitch, ct);
         }
 
         // ── 4. Write power ───────────────────────────────────────────────────
-        // Only send power value if charging is enabled (currentIsZero = false)
+        // Only reached if !currentIsZero (charging enabled)
         bool success = await _client.SetNumberValueAsync(
             battConfig.Entities.ChargePower, rawValue, ct);
 
