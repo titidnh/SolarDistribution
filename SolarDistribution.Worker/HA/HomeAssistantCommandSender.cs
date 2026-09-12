@@ -84,15 +84,16 @@ public class HomeAssistantCommandSender
         rawValue = Math.Round(rawValue, 2);
 
         // Determine effective zero (for zone change + clamping)
-        bool currentIsZero = alloc.AllocatedW == 0 || (alloc.AllocatedW > 0 && alloc.AllocatedW < battConfig.Entities.MinChargePowerW);
+        // If AllocatedW is below HardwareMinChargeW, treat as 0W (disable charging)
+        bool currentIsZero = alloc.AllocatedW == 0 || (alloc.AllocatedW > 0 && alloc.AllocatedW < battConfig.HardwareMinChargeW);
 
-        // -- Clamp to minimum charge power (if configured) --
-        // If AllocatedW is above 0 but below MinChargePowerW, disable charging (send 0)
+        // -- Clamp to minimum hardware charge power --
+        // If AllocatedW is above 0 but below HardwareMinChargeW, disable charging (send 0)
         if (currentIsZero && alloc.AllocatedW > 0)
         {
             _logger.LogDebug(
-                "Battery {Id} ({Name}): AllocatedW {Alloc}W < MinChargePowerW {Min}W — treating as 0W (triggers zero_w_actions)",
-                battConfig.Id, battConfig.Name, alloc.AllocatedW, battConfig.Entities.MinChargePowerW);
+                "Battery {Id} ({Name}): AllocatedW {Alloc}W < HardwareMinChargeW {Min}W — treating as 0W (triggers zero_w_actions)",
+                battConfig.Id, battConfig.Name, alloc.AllocatedW, battConfig.HardwareMinChargeW);
             rawValue = 0;
         }
 
@@ -113,7 +114,7 @@ public class HomeAssistantCommandSender
 
             // Log conditional actions only if zone changes
             if (zoneChanged)
-                LogConditionalActions(alloc.AllocatedW, battConfig);
+                LogConditionalActions(currentIsZero, battConfig);
 
             _cache.Update(battConfig.Id, rawValue, currentIsZero);
             return true;
@@ -172,7 +173,7 @@ public class HomeAssistantCommandSender
         // ── 3. Enable / disable ChargeSwitch ─────────────────────────────────
         if (battConfig.Entities.ChargeSwitch is not null)
         {
-            if (alloc.AllocatedW > 0)
+            if (!currentIsZero)
             {
                 _logger.LogDebug("Battery {Id}: enabling charge switch {Switch}",
                     battConfig.Id, battConfig.Entities.ChargeSwitch);
@@ -180,13 +181,17 @@ public class HomeAssistantCommandSender
             }
             else
             {
-                _logger.LogDebug("Battery {Id}: disabling charge switch {Switch} (0W allocated)",
+                _logger.LogDebug("Battery {Id}: disabling charge switch {Switch} (0W or below HardwareMinChargeW)",
                     battConfig.Id, battConfig.Entities.ChargeSwitch);
                 await _client.TurnOffSwitchAsync(battConfig.Entities.ChargeSwitch, ct);
+                // Don't send any value when disabling charge (switch manages power)
+                _cache.Update(battConfig.Id, 0, currentIsZero);
+                return true;
             }
         }
 
         // ── 4. Write power ───────────────────────────────────────────────────
+        // Only send power value if charging is enabled (currentIsZero = false)
         bool success = await _client.SetNumberValueAsync(
             battConfig.Entities.ChargePower, rawValue, ct);
 
@@ -267,13 +272,13 @@ public class HomeAssistantCommandSender
         }
     }
 
-    private void LogConditionalActions(double allocatedW, BatteryConfig battConfig)
+    private void LogConditionalActions(bool isZero, BatteryConfig battConfig)
     {
-        var actions = allocatedW == 0
+        var actions = isZero
             ? battConfig.Entities.ZeroWActions
             : battConfig.Entities.NonZeroWActions;
 
-        string trigger = allocatedW == 0 ? "ZeroW" : "NonZeroW";
+        string trigger = isZero ? "ZeroW" : "NonZeroW";
 
         foreach (var action in actions)
         {
