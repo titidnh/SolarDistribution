@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using SolarDistribution.Core.Models;
 using SolarDistribution.Worker.Configuration;
 
@@ -83,11 +83,23 @@ public class HomeAssistantCommandSender
         double rawValue = alloc.AllocatedW * battConfig.Entities.ValueMultiplier;
         rawValue = Math.Round(rawValue, 2);
 
+        // Determine effective zero (for zone change + clamping)
+        bool currentIsZero = alloc.AllocatedW == 0 || (alloc.AllocatedW > 0 && alloc.AllocatedW < battConfig.Entities.MinChargePowerW);
+
+        // -- Clamp to minimum charge power (if configured) --
+        // If AllocatedW is above 0 but below MinChargePowerW, disable charging (send 0)
+        if (currentIsZero && alloc.AllocatedW > 0)
+        {
+            _logger.LogDebug(
+                "Battery {Id} ({Name}): AllocatedW {Alloc}W < MinChargePowerW {Min}W — treating as 0W (triggers zero_w_actions)",
+                battConfig.Id, battConfig.Name, alloc.AllocatedW, battConfig.Entities.MinChargePowerW);
+            rawValue = 0;
+        }
+
         // ── Detect 0W ↔ active-charge zone change ───────────────────────────
         // Evaluated FIRST, before the power delta check.
         // "active charge" = allocated solar surplus OR emergency grid charge.
         // Fix: delta check must not block zone transition actions.
-        bool currentIsZero = alloc.AllocatedW == 0;
         bool? prevWasZero = _cache.GetLastWasZero(battConfig.Id);
         bool zoneChanged = prevWasZero is null || prevWasZero.Value != currentIsZero;
 
@@ -298,3 +310,6 @@ public class HomeAssistantCommandSender
         return await _client.CallServiceGenericAsync("persistent_notification", "create", data, ct);
     }
 }
+
+
+

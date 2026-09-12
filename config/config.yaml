@@ -543,6 +543,15 @@ batteries:
       # OPTIONNEL — switch pour activer/désactiver la recharge
       # charge_switch: "switch.battery_main_charge_enable"
 
+      # [OPTIONAL] Minimum charge power (W) accepted by Home Assistant.
+      # If AllocatedW < min_charge_power_w, send 0 (disable charging).
+      # Examples:
+      #   EcoFlow Delta 3:  100 W (out_of_range if below this)
+      #   Victron Multi:    50 W
+      #   Generic Li-ion:   0 (no minimum, default)
+      min_charge_power_w: 0
+      
+
       # Multiplicateur si HA attend des Ampères plutôt que des Watts
       # Exemple batterie 48V : value_multiplier: 0.02083  (W / 48 = A)
       value_multiplier: 1.0

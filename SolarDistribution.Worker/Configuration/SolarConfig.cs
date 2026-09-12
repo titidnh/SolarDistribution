@@ -646,6 +646,26 @@ public class BatteryEntitiesConfig
 
     public string? MaxChargeRateEntity { get; set; }
     public string? ChargeSwitch { get; set; }
+    /// <summary>
+    /// [OPTIONAL] Minimum charge power (W) that Home Assistant will accept.
+    /// 
+    /// WHY: Some inverter/battery combos (e.g., EcoFlow) reject values below a threshold.
+    /// HA will return "out_of_range" error if value < MinChargePowerW.
+    /// 
+    /// BEHAVIOR:
+    ///   - If AllocatedW >= MinChargePowerW: send AllocatedW to HA
+    ///   - If AllocatedW > 0 BUT < MinChargePowerW: send 0 instead (disable charge)
+    ///   - If AllocatedW == 0: send 0 (no surplus)
+    ///
+    /// EXAMPLES:
+    ///   EcoFlow Delta 3  : 100 W
+    ///   Victron Multi    : 50 W
+    ///   Generic Li-ion   : 0 (no minimum, default)
+    ///
+    /// Default: 0 (no minimum check).
+    /// </summary>
+    public double MinChargePowerW { get; set; } = 0;
+
     public double ValueMultiplier { get; set; } = 1.0;
     public double MaxRateReadMultiplier { get; set; } = 1.0;
     public string ValueUnit { get; set; } = "W";
